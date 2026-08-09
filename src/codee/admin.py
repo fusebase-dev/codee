@@ -32,6 +32,13 @@ class SkillSummary(BaseModel):
     issue_type: str = ""
 
 
+class ModelOption(BaseModel):
+    """One entry in the skill editor's model picker: code plus friendly name."""
+
+    id: str
+    name: str
+
+
 class MemoryEntry(BaseModel):
     title: str
     file: str
@@ -66,6 +73,7 @@ class AdminState(rx.State):
     selected_skill: str = ""
     skill_name: str = ""
     skill_description: str = ""
+    skill_model: str = ""
     skill_type: str = "knowledge"
     skill_cron: str = "0 0 * * *"
     skill_email: str = ""
@@ -74,6 +82,10 @@ class AdminState(rx.State):
     skill_issue_type: str = "story"
     skill_body: str = ""
     skill_extra: str = ""
+
+    agent_models: list[ModelOption] = []
+    model_query: str = ""
+    models_loading: bool = False
 
     editing_agents: bool = False
     agents_content: str = ""
@@ -142,6 +154,32 @@ class AdminState(rx.State):
         return SERVICE.describe_cron(self.skill_cron)
 
     @rx.var
+    def filtered_models(self) -> list[ModelOption]:
+        query = self.model_query.strip().lower()
+        return [
+            model for model in self.agent_models
+            if not query or query in f"{model.name} {model.id}".lower()
+        ]
+
+    @rx.var
+    def skill_model_label(self) -> str:
+        """Friendly name of the selected model, falling back to the raw code."""
+        if not self.skill_model:
+            return "Agent default"
+        for model in self.agent_models:
+            if model.id == self.skill_model:
+                return model.name
+        return self.skill_model
+
+    @rx.var
+    def custom_model_query(self) -> str:
+        """The search text when it names no known model, so it can be used as-is."""
+        query = self.model_query.strip()
+        if not query or any(model.id == query for model in self.agent_models):
+            return ""
+        return query
+
+    @rx.var
     def active_route(self) -> str:
         return self.router.url.path.rstrip("/") or "/"
 
@@ -162,6 +200,34 @@ class AdminState(rx.State):
 
     def set_skill_type(self, value: str) -> None:
         self.skill_type = value
+
+    def set_model_query(self, value: str) -> None:
+        self.model_query = value
+
+    def choose_model(self, model_id: str) -> None:
+        """Pick a model from the list, or use whatever the user typed."""
+        self.skill_model = model_id.strip()
+        self.model_query = ""
+
+    @rx.event(background=True)
+    async def load_agent_models(self) -> None:
+        """Fetch the configured agent's catalog off the event loop.
+
+        Asking an agent can mean spawning its CLI, so this runs in the
+        background while the skill list renders; the picker still accepts a
+        hand-typed model code if the list never arrives.
+        """
+        async with self:
+            if self.models_loading:
+                return
+            self.models_loading = True
+        try:
+            models = await asyncio.to_thread(SERVICE.list_agent_models)
+        except Exception:
+            models = []
+        async with self:
+            self.agent_models = [ModelOption(**model) for model in models]
+            self.models_loading = False
 
     def set_skill_cron(self, value: str) -> None:
         self.skill_cron = value
@@ -200,6 +266,8 @@ class AdminState(rx.State):
         self.selected_skill = skill["slug"]
         self.skill_name = skill["name"]
         self.skill_description = skill["description"]
+        self.skill_model = skill["model"]
+        self.model_query = ""
         self.skill_type = skill["type"]
         self.skill_cron = skill["cron"]
         self.skill_email = skill["email"]
@@ -217,6 +285,7 @@ class AdminState(rx.State):
             "slug": self.selected_skill,
             "name": self.skill_name,
             "description": self.skill_description,
+            "model": self.skill_model,
             "type": self.skill_type,
             "cron": self.skill_cron,
             "email": self.skill_email,
@@ -875,6 +944,98 @@ def field(label: str, control: rx.Component, hint: rx.Component | None = None) -
     return rx.vstack(*children, spacing="2", align="start", width="100%")
 
 
+def model_menu_item(button: rx.Component) -> rx.Component:
+    """Make a picker row dismiss the popover while staying clickable end to end.
+
+    ``rx.popover.close`` wraps any child carrying an ``on_click`` in a Flex of
+    its own, and that wrapper hugs its content — so a full-width button inside
+    it is still only clickable across the text. The width has to be restated at
+    every level to give the row a full-width hit area.
+    """
+    return rx.popover.close(rx.flex(button, width="100%"), width="100%")
+
+
+def model_option_row(option: ModelOption) -> rx.Component:
+    """One row of the model picker: friendly name left, model code right."""
+    return model_menu_item(
+        rx.button(
+            # No spacer between the two: pinning the code to the right edge ran
+            # it under the scroll bar.
+            rx.hstack(rx.text(option.name, font_size="0.85rem"),
+                      rx.code(option.id, font_size="0.72rem",
+                              color_scheme="gray"),
+                      align="center", spacing="2", width="100%"),
+            variant="ghost", color_scheme="gray", width="100%",
+            justify_content="start", padding="0.45rem 0.6rem",
+            on_click=AdminState.choose_model(option.id)))
+
+
+def model_picker() -> rx.Component:
+    """Searchable model select that also accepts a model code typed by hand.
+
+    The agent's own catalog is only a convenience — anything typed here is saved
+    verbatim, so a model the agent gained after this list was built still works.
+    """
+    return field(
+        "Model",
+        rx.popover.root(
+            rx.popover.trigger(
+                rx.button(
+                    rx.hstack(rx.text(AdminState.skill_model_label), rx.spacer(),
+                              rx.icon("chevrons-up-down", size=14),
+                              align="center", width="100%"),
+                    variant="surface", color_scheme="gray", width="100%",
+                    type="button")),
+            rx.popover.content(
+                rx.vstack(
+                    rx.input(placeholder="Search models, or type a model code",
+                             value=AdminState.model_query,
+                             on_change=AdminState.set_model_query,
+                             auto_focus=True, width="100%"),
+                    rx.cond(
+                        AdminState.custom_model_query != "",
+                        model_menu_item(
+                            rx.button(
+                                rx.hstack(rx.icon("plus", size=14),
+                                          rx.text("Use "),
+                                          rx.code(
+                                              AdminState.custom_model_query),
+                                          align="center", spacing="2"),
+                                variant="soft", width="100%",
+                                justify_content="start",
+                                padding="0.45rem 0.6rem",
+                                on_click=AdminState.choose_model(
+                                    AdminState.custom_model_query)))),
+                    rx.scroll_area(
+                        rx.vstack(
+                            model_menu_item(
+                                rx.button(
+                                    "Agent default", variant="ghost",
+                                    color_scheme="gray", width="100%",
+                                    justify_content="start",
+                                    padding="0.45rem 0.6rem",
+                                    on_click=AdminState.choose_model(""))),
+                            rx.foreach(AdminState.filtered_models,
+                                       model_option_row),
+                            rx.cond(
+                                AdminState.models_loading,
+                                rx.text("Loading models from the coding agent…",
+                                        color=MUTED, font_size="0.8rem",
+                                        padding="0.5rem")),
+                            spacing="1", width="100%"),
+                        type="auto", scrollbars="vertical",
+                        max_height="15rem", width="100%"),
+                    spacing="2", width="100%"),
+                width="24rem"),
+        ),
+        rx.text(
+            rx.cond(AdminState.skill_model == "",
+                    "Runs on whatever the coding agent defaults to.",
+                    rx.fragment("Saved as ", rx.code(AdminState.skill_model),
+                                " in the skill frontmatter.")),
+            color=MUTED, font_size="0.82rem"))
+
+
 def delete_skill_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.trigger(
@@ -914,6 +1075,7 @@ def skill_editor() -> rx.Component:
         field("Description", rx.text_area(value=AdminState.skill_description,
                                           on_change=AdminState.set_skill_description,
                                           width="100%", min_height="5rem")),
+        model_picker(),
         rx.cond(AdminState.skill_type == "cron trigger",
                 field("Cron expression", rx.input(value=AdminState.skill_cron,
                                                   on_change=AdminState.set_skill_cron, width="100%"),
@@ -1471,7 +1633,7 @@ app = rx.App(
 app.add_page(dashboard_page, route="/", title="Dashboard | Codee",
              on_load=AdminState.poll_dashboard)
 app.add_page(skills_page, route="/skills", title="Skills | Codee",
-             on_load=AdminState.load_skills)
+             on_load=[AdminState.load_skills, AdminState.load_agent_models])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",
              on_load=AdminState.load_workflow)
 app.add_page(memory_page, route="/memory", title="Memory | Codee",

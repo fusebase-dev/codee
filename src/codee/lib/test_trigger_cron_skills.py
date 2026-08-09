@@ -166,7 +166,7 @@ class CronSkillTests(unittest.TestCase):
     def test_reconcile_runs_due_skill_once_per_minute(self):
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -200,7 +200,7 @@ class CronSkillTests(unittest.TestCase):
         # the next tick within the catch-up window runs it again.
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append(session_id)
             if len(calls) == 1:
                 raise RuntimeError("over limit")
@@ -248,7 +248,7 @@ class CronSkillTests(unittest.TestCase):
     def test_reconcile_catches_up_missed_minute(self):
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -305,7 +305,7 @@ class CronSkillTests(unittest.TestCase):
         # it should only seed a baseline so future misses are caught.
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -340,7 +340,7 @@ class CronSkillTests(unittest.TestCase):
     def test_force_run_fires_off_schedule_then_clears(self):
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append(session_id)
             return "done"
 
@@ -380,7 +380,7 @@ class CronSkillTests(unittest.TestCase):
     def test_force_run_stays_queued_when_run_fails(self):
         calls = []
 
-        def run_claude(message: str, session_id: str) -> str:
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
             calls.append(session_id)
             raise RuntimeError("over limit")
 
@@ -408,6 +408,38 @@ class CronSkillTests(unittest.TestCase):
             self.assertEqual(len(key), 1)
             self.assertEqual(len(calls), 1)
 
+    def test_reconcile_passes_the_skill_model_to_the_agent(self):
+        calls = []
+
+        def run_claude(message: str, session_id: str, model: str = "") -> str:
+            calls.append(model)
+            return "done"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            for slug, model_line in (("with-model", "model: claude-opus-5\n"),
+                                     ("without-model", "")):
+                skill_dir = skills_dir / slug
+                skill_dir.mkdir(parents=True)
+                (skill_dir / "SKILL.md").write_text(
+                    "---\n"
+                    f"name: {slug}\n"
+                    "disable-model-invocation: true\n"
+                    "cron: 15 10 * * *\n"
+                    f"{model_line}"
+                    "---\n\n"
+                    "Run it.\n"
+                )
+            tick = datetime(2026, 6, 7, 10, 15)
+
+            trigger_cron_skills(run_claude, now=tick, skills_dir=skills_dir,
+                                state_file=root / "state.json",
+                                main_context=_ctx(root))
+
+        # Sorted by directory name, so the skill declaring a model comes first.
+        self.assertEqual(calls, ["claude-opus-5", ""])
+
     def test_reconcile_runs_one_aws_sqs_message_per_tick(self):
         calls = []
         message = AwsSqsMessage(
@@ -417,7 +449,7 @@ class CronSkillTests(unittest.TestCase):
         )
         sqs_source = FakeSqsMessageSource([message])
 
-        def run_claude(user_message: str, session_id: str) -> str:
+        def run_claude(user_message: str, session_id: str, model: str = "") -> str:
             calls.append((user_message, session_id))
             return "done"
 

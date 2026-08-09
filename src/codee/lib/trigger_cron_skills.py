@@ -21,7 +21,9 @@ SKILLS_DIR = default_skills_dir(REPO_ROOT)
 DEFAULT_CATCHUP = timedelta(hours=24)
 
 
-RunClaude = Callable[[str, str], str]
+# (prompt, session_id, model) -> agent reply. `model` is the skill's `model:`
+# frontmatter, empty when it declares none.
+RunClaude = Callable[[str, str, str], str]
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class ScheduledSkill:
     path: Path
     cron: str
     body: str
+    model: str
 
 
 def _get_force_file_path(main_context: CodeeMainContext) -> Path:
@@ -115,7 +118,7 @@ def trigger_cron_skills(
                 f"[cron_skills] Running {skill.name} ({skill.cron}) from {skill.path}")
         session_id = str(uuid.uuid4())
         try:
-            response = run_claude(skill.body, session_id)
+            response = run_claude(skill.body, session_id, skill.model)
             print(
                 f"[cron_skills] Claude response for {skill.name} ({len(response)} chars)")
             runs_db.record_run(skill.name, "cron", session_id,
@@ -192,6 +195,7 @@ def _find_scheduled_skills(skills_dir: Path = SKILLS_DIR) -> list[ScheduledSkill
                 path=path,
                 cron=cron,
                 body=body.strip(),
+                model=metadata.get("model", "").strip(),
             )
         )
     return skills

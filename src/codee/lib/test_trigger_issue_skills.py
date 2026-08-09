@@ -15,6 +15,28 @@ class IssueTriggeredSkillsTest(unittest.TestCase):
         directory.mkdir()
         (directory / "SKILL.md").write_text(f"---\n{frontmatter}---\nBody\n")
 
+    def test_reads_the_model_frontmatter_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._skill(
+                root, "with-model",
+                "name: With model\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\nmodel: claude-opus-5\n",
+            )
+            self._skill(
+                root, "without-model",
+                "name: Without model\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: task\n",
+            )
+
+            models = {skill.slug: skill.model
+                      for skill in find_issue_triggered_skills(root)}
+
+            self.assertEqual(models,
+                             {"with-model": "claude-opus-5", "without-model": ""})
+
     def test_loads_valid_issue_type_and_rejects_invalid_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

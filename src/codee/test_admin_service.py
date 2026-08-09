@@ -1,9 +1,14 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
+
+from codee_agent_abstract.provider import AgentModel
+from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import AdminService, azure_oauth, parse_skill
 from codee_main_context.context import (
@@ -531,6 +536,96 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertIs(service.generate_workflow(force=True), generated)
 
         self.assertEqual(generate.call_count, 2)
+
+
+class AdminServiceSkillModelTest(unittest.TestCase):
+    def _service(self, skills_dir: Path, frontmatter: str) -> AdminService:
+        skill_dir = skills_dir / "nightly"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}---\nBody\n")
+        service = AdminService.__new__(AdminService)
+        service.skills_dir = skills_dir
+        return service
+
+    def test_save_writes_the_model_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "claude-opus-5",
+                    "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertEqual(frontmatter["model"], "claude-opus-5")
+
+    def test_an_empty_model_is_left_out_of_the_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "  ", "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertNotIn("model", frontmatter)
+
+    def test_load_returns_the_model_and_keeps_it_out_of_preserved_extras(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(
+                skills_dir, "name: nightly\nmodel: claude-opus-5\nlicense: MIT\n")
+
+            skill = service.load_skill("nightly")
+
+            self.assertEqual(skill["model"], "claude-opus-5")
+            # Managed keys are rewritten on save, so only `license` is carried over.
+            self.assertEqual(skill["extra"], "license")
+
+    def test_load_reports_no_model_when_the_skill_declares_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            self.assertEqual(service.load_skill("nightly")["model"], "")
+
+
+class AdminServiceAgentModelsTest(unittest.TestCase):
+    def _service(self, agent: CodingAgent) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.context = CodeeMainContext(
+            data_dir=Path("/tmp"), settings=Settings(coding_agent=agent))
+        service._models_cache = {}
+        service._models_lock = threading.Lock()
+        return service
+
+    def test_lists_the_configured_agents_models_once_and_caches_them(self) -> None:
+        service = self._service(CodingAgent.CLAUDE_CODE)
+
+        with patch.object(ClaudeCodeAgent, "list_models",
+                          return_value=[AgentModel("claude-opus-5", "Claude Opus 5")]
+                          ) as list_models:
+            first = service.list_agent_models()
+            second = service.list_agent_models()
+
+        self.assertEqual(first, [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
+        self.assertEqual(second, first)
+        list_models.assert_called_once()
+
+    def test_an_agent_that_cannot_be_asked_yields_an_empty_list(self) -> None:
+        service = self._service(CodingAgent.GITHUB_COPILOT)
+
+        with patch.object(GitHubCopilotAgent, "list_models",
+                          side_effect=RuntimeError("copilot is not logged in")):
+            self.assertEqual(service.list_agent_models(), [])
 
 
 class AdminServiceAgentsFileTest(unittest.TestCase):

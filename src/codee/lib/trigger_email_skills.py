@@ -27,7 +27,7 @@ ALLOWED_SENDER_DOMAINS = tuple(
     if domain.strip()
 )
 
-RunClaude = Callable[[str, str], str]
+RunClaude = Callable[[str, str, str], str]
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,7 @@ class EmailTriggeredSkill:
     path: Path
     address: str
     body: str
+    model: str
 
 
 def trigger_email_skills(
@@ -81,7 +82,7 @@ def trigger_email_skills(
         session_id = str(uuid.uuid4())
         prompt = render_email_prompt(skill.body, message)
         try:
-            response = run_claude(prompt, session_id)
+            response = run_claude(prompt, session_id, skill.model)
             print(
                 f"[email_skills] Claude response for {skill.name} ({len(response)} chars)")
             path.unlink(missing_ok=True)
@@ -139,6 +140,7 @@ def find_email_triggered_skills(skills_dir: Path = SKILLS_DIR) -> dict[str, Emai
             path=path,
             address=address,
             body=body.strip(),
+            model=metadata.get("model", "").strip(),
         )
     return skills_by_address
 

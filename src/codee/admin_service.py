@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from codee_database import oauth_tokens
 from codee_tasks_azure_devops import oauth as azure_oauth
-from codee_agent_abstract.provider import AbstractCodingAgent
+from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee.lib import runs_db
@@ -45,6 +45,7 @@ load_dotenv()
 MANAGED = {
     "name",
     "description",
+    "model",
     "disable-model-invocation",
     "cron",
     "x-codee-trigger",
@@ -228,6 +229,10 @@ class AdminService:
         self.context.settings = load_settings(self.data_dir)
         self._workflow_cache: dict[str, Any] | None = None
         self._workflow_lock = threading.Lock()
+        # Asking an agent for its catalog can mean spawning its CLI, so the
+        # answer is cached per agent for the life of the process.
+        self._models_cache: dict[CodingAgent, list[AgentModel]] = {}
+        self._models_lock = threading.Lock()
 
     def _git_push(self, message: str) -> tuple[bool, str]:
         # AGENTS.md is only staged once it exists, so git add never fails on it.
@@ -286,6 +291,26 @@ class AdminService:
                 ).strip().lower(),
             })
         return skills
+
+    def list_agent_models(self) -> list[dict[str, str]]:
+        """Models the configured coding agent offers, for the skill editor's picker.
+
+        Best-effort: an agent that can't be asked yields an empty list and the
+        editor falls back to a hand-typed model id.
+        """
+        agent_key = self.context.settings.coding_agent
+        with self._models_lock:
+            models = self._models_cache.get(agent_key)
+            if models is None:
+                agent_type = _CODING_AGENTS.get(agent_key)
+                try:
+                    models = agent_type.list_models() if agent_type else []
+                except Exception as error:
+                    print(f"[admin] Failed to list models for "
+                          f"{agent_key.value}: {error}")
+                    models = []
+                self._models_cache[agent_key] = models
+        return [{"id": model.id, "name": model.name} for model in models]
 
     def resolve_skill_slug(self, label: str) -> str:
         """Map a workflow transition label back to the skill directory it names."""
@@ -674,6 +699,7 @@ class AdminService:
             "slug": slug,
             "name": str(frontmatter.get("name", slug)),
             "description": str(frontmatter.get("description", "")),
+            "model": str(frontmatter.get("model", "") or ""),
             "type": infer_skill_type(frontmatter),
             "cron": str(frontmatter.get("x-codee-cron", frontmatter.get("cron", "0 0 * * *"))),
             "email": str(frontmatter.get("x-codee-email-address", "")),
@@ -709,6 +735,11 @@ class AdminService:
             "name": name,
             "description": skill["description"],
         }
+        # Left out entirely when unset, so the skill keeps running on whatever
+        # the agent defaults to rather than on an empty model id.
+        model = skill.get("model", "").strip()
+        if model:
+            frontmatter["model"] = model
         skill_type = skill["type"]
         if skill_type == "slash command":
             frontmatter["disable-model-invocation"] = True

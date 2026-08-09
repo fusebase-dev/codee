@@ -211,23 +211,25 @@ def _pull_latest_code() -> bool:
     return True
 
 
-def _run_agent(user_message: str, session_id: str) -> str:
+def _run_agent(user_message: str, session_id: str, model: str = "") -> str:
     """Run the configured coding agent and return its response text.
 
-    Wraps the agent run in job tracking; the agent itself raises on any failure
-    so callers can retry.
+    ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
+    that can't be told which model to use ignore it. Wraps the agent run in job
+    tracking; the agent itself raises on any failure so callers can retry.
     """
     job_id = runs_db.start_job(session_id, user_message, main_context=context)
-    log.debug("job %s started: session=%s message=%r",
-              job_id, session_id, user_message)
+    log.debug("job %s started: session=%s message=%r model=%r",
+              job_id, session_id, user_message, model)
     try:
-        return coding_agent.run(user_message, session_id)
+        return coding_agent.run(user_message, session_id, model)
     finally:
         log.debug("job %s finished", job_id)
         runs_db.finish_job(job_id, main_context=context)
 
 
-def _run_task(task_id: str, message: str, session_id: str, skill_name: str) -> None:
+def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
+              model: str = "") -> None:
     """Pool worker: run one task's coding agent, then release its in-flight slot.
 
     Logs the outcome to the runs table like the cron/email/sqs triggers do, so
@@ -237,7 +239,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str) -> N
     """
     started_at = datetime.now(timezone.utc).isoformat()
     try:
-        response = _run_agent(message, session_id)
+        response = _run_agent(message, session_id, model)
         log.info("Agent response for %s (%d chars): %s",
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
@@ -256,7 +258,8 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str) -> N
             _inflight.discard(task_id)
 
 
-def _submit_task(task_id: str, message: str, session_id: str, skill_name: str) -> bool:
+def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
+                 model: str = "") -> bool:
     """Hand a task to the agent pool unless one is already in flight for it.
 
     Returns True if submitted, False if skipped as a duplicate. Only the main
@@ -269,7 +272,8 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str) -
             return False
         _inflight.add(task_id)
         depth = len(_inflight)
-    _agent_pool.submit(_run_task, task_id, message, session_id, skill_name)
+    _agent_pool.submit(_run_task, task_id, message,
+                       session_id, skill_name, model)
     log.info("Submitted %s to agent pool (%d in flight/queued, max %d).",
              task_id, depth, MAX_PARALLEL_AGENTS)
     return True
@@ -346,7 +350,7 @@ def run_once() -> None:
         log.info("Processing %s (%s, %s): %s  session-id=%s",
                  task_id, status, issue_type, summary, session_id)
 
-        _submit_task(task_id, message, session_id, skill.name)
+        _submit_task(task_id, message, session_id, skill.name, skill.model)
 
 
 def main() -> None:

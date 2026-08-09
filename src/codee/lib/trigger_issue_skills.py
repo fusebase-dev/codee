@@ -18,6 +18,7 @@ class IssueTriggeredSkill:
     path: Path
     statuses: tuple[str, ...]
     issue_type: str
+    model: str = ""
 
 
 def find_issue_triggered_skills(
@@ -64,6 +65,7 @@ def find_issue_triggered_skills(
             path=path,
             statuses=statuses,
             issue_type=issue_type,
+            model=str(metadata.get("model", "")).strip(),
         ))
     return skills
 

@@ -2,12 +2,29 @@ import json
 import subprocess
 from pathlib import Path
 
-from codee_agent_abstract.provider import AbstractCodingAgent
+from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
 
 log = get_logger(__name__)
+
+# The `claude` CLI has no command that enumerates its models, so this catalog is
+# maintained by hand. It only feeds the admin UI's picker — the editor also takes
+# a model id typed by hand, so a model missing here is still usable.
+MODELS = [
+    AgentModel("claude-opus-5", "Claude Opus 5"),
+    AgentModel("claude-sonnet-5", "Claude Sonnet 5"),
+    AgentModel("claude-fable-5", "Claude Fable 5"),
+    AgentModel("claude-opus-4-8", "Claude Opus 4.8"),
+    AgentModel("claude-opus-4-7", "Claude Opus 4.7"),
+    AgentModel("claude-opus-4-6", "Claude Opus 4.6"),
+    AgentModel("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    AgentModel("claude-haiku-4-5", "Claude Haiku 4.5"),
+    AgentModel("opus", "Latest Opus (alias)"),
+    AgentModel("sonnet", "Latest Sonnet (alias)"),
+    AgentModel("haiku", "Latest Haiku (alias)"),
+]
 
 
 class ClaudeCodeAgent(AbstractCodingAgent):
@@ -19,7 +36,13 @@ class ClaudeCodeAgent(AbstractCodingAgent):
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
 
-    def run(self, user_message: str, session_id: str) -> str:
+    @classmethod
+    def list_models(cls) -> list[AgentModel]:
+        return list(MODELS)
+
+    def run(self, user_message: str, session_id: str, model: str = "") -> str:
+        # `model` is deliberately not forwarded as --model: Claude Code reads the
+        # skill's `model:` frontmatter itself.
         cmd = [
             "claude",
             "-p", user_message,
