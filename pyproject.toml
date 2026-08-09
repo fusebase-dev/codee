@@ -1,0 +1,45 @@
+[project]
+name = "codee"
+version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "boto3 >= 1.35,<2",
+    "requests >= 2.31,<3",
+    "aiosmtpd >= 1.4,<2",
+    "pyyaml >= 6.0.3,<7",
+    "cron-descriptor >= 2.1.0,<3",
+    "python-dotenv >= 1.2.2,<2",
+    "codee-main-context",
+    "codee-database",
+    "codee-tasks-jira",
+    "codee-tasks-azure-devops",
+    "codee-agent-claude-code",
+    "reflex>=0.9.7",
+]
+
+[project.scripts]
+executor = "codee:executor.main"
+codee-admin = "codee:admin_cli.main"
+codee-init = "codee:init_cli.main"
+codee-start = "codee:start_cli.main"
+
+[tool.setuptools.package-data]
+codee = ["templates/*.md", "templates/**/*.md"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+codee-main-context = { workspace = true }
+codee-database = { workspace = true }
+codee-tasks-jira = { workspace = true }
+codee-tasks-azure-devops = { workspace = true }
+codee-tasks-abstract = { workspace = true }
+codee-agent-claude-code = { workspace = true }
+codee-agent-abstract = { workspace = true }
+
+[build-system]
+requires = ["uv_build >= 0.11.29,<0.12", "setuptools >= 83,<84"]
+build_backend = "uv_build"

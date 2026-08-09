@@ -1,0 +1,15 @@
+[project]
+name = "codee-tasks-azure-devops"
+requires-python = ">=3.12"
+version = "0.1.0"
+dependencies = [
+    "codee-tasks-abstract",
+    "codee-main-context",
+    "codee-database",
+    "requests >= 2.31,<3",
+]
+
+[tool.uv.sources]
+codee-tasks-abstract = { workspace = true }
+codee-main-context = { workspace = true }
+codee-database = { workspace = true }
