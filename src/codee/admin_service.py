@@ -133,15 +133,35 @@ def infer_skill_type(frontmatter: dict[str, Any]) -> str:
     return "knowledge"
 
 
-def build_skill(frontmatter: dict[str, Any], extra: dict[str, Any], body: str) -> str:
-    dumped = yaml.safe_dump(
-        {**frontmatter, **extra},
+def dump_frontmatter(frontmatter: dict[str, Any]) -> str:
+    return yaml.safe_dump(
+        frontmatter,
         sort_keys=False,
         allow_unicode=True,
         default_flow_style=False,
         width=10**9,
     )
-    return f"---\n{dumped}---\n\n{body.lstrip()}\n"
+
+
+def parse_extra_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """Read the free-form frontmatter field, or explain why it cannot be used."""
+    if not text.strip():
+        return {}, ""
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        return {}, f"Other frontmatter fields are not valid YAML: {error}"
+    if not isinstance(parsed, dict):
+        return {}, "Write other frontmatter fields as `key: value` lines"
+    managed = [str(key) for key in parsed if key in MANAGED]
+    if managed:
+        return {}, (f"{', '.join(managed)} already has a field of its own: "
+                    "remove it from the other frontmatter fields")
+    return {str(key): value for key, value in parsed.items()}, ""
+
+
+def build_skill(frontmatter: dict[str, Any], extra: dict[str, Any], body: str) -> str:
+    return f"---\n{dump_frontmatter({**frontmatter, **extra})}---\n\n{body.lstrip()}\n"
 
 
 def _format_issue_status(value: Any) -> str:
@@ -707,7 +727,7 @@ class AdminService:
             "issue_status": _format_issue_status(frontmatter.get("x-codee-issue-status", [])),
             "issue_type": str(frontmatter.get("x-codee-issue-type", "")).strip().lower(),
             "body": body,
-            "extra": ", ".join(extra),
+            "extra": dump_frontmatter(extra) if extra else "",
         }
 
     def create_skill(self, name: str) -> tuple[bool, bool, str, str]:
@@ -730,6 +750,13 @@ class AdminService:
         name = slugify(skill["name"])
         if not name:
             return False, False, "Enter a valid skill name", old_slug
+
+        # A caller that leaves `extra` out is not editing the free-form fields,
+        # so whatever the file already carries is kept below.
+        edits_extra = "extra" in skill
+        extra, extra_error = parse_extra_frontmatter(skill.get("extra", ""))
+        if extra_error:
+            return False, False, extra_error, old_slug
 
         frontmatter: dict[str, Any] = {
             "name": name,
@@ -783,10 +810,11 @@ class AdminService:
             current_path.parent.rename(destination)
             current_path = destination / "SKILL.md"
 
-        existing, _ = parse_skill(current_path.read_text())
-        extra = {key: value for key, value in existing.items()
-                 if key not in MANAGED}
-        action = f"rename {old_slug} -> {name}" if name != old_slug else f"update {name}"
+        if not edits_extra:
+            existing, _ = parse_skill(current_path.read_text())
+            extra = {key: value for key, value in existing.items()
+                     if key not in MANAGED}
+        action =f"rename {old_slug} -> {name}" if name != old_slug else f"update {name}"
         saved, pushed, message = self._write_and_push(
             current_path,
             build_skill(frontmatter, extra, skill["body"]),

@@ -82,6 +82,7 @@ class AdminState(rx.State):
     skill_issue_type: str = "story"
     skill_body: str = ""
     skill_extra: str = ""
+    skill_extra_enabled: bool = False
 
     agent_models: list[ModelOption] = []
     model_query: str = ""
@@ -247,6 +248,12 @@ class AdminState(rx.State):
     def set_skill_body(self, value: str) -> None:
         self.skill_body = value
 
+    def set_skill_extra(self, value: str) -> None:
+        self.skill_extra = value
+
+    def set_skill_extra_enabled(self, value: bool) -> None:
+        self.skill_extra_enabled = value
+
     def load_skills(self) -> None:
         self.skills = [SkillSummary(**skill)
                        for skill in SERVICE.list_skills()]
@@ -276,6 +283,7 @@ class AdminState(rx.State):
         self.skill_issue_type = skill["issue_type"] or "story"
         self.skill_body = skill["body"]
         self.skill_extra = skill["extra"]
+        self.skill_extra_enabled = bool(skill["extra"])
 
     def close_skill(self) -> None:
         self.selected_skill = ""
@@ -293,6 +301,9 @@ class AdminState(rx.State):
             "issue_status": self.skill_issue_status,
             "issue_type": self.skill_issue_type,
             "body": self.skill_body,
+            # Unchecking the box drops the fields from the frontmatter, while
+            # the text stays around in case the box goes back on.
+            "extra": self.skill_extra if self.skill_extra_enabled else "",
         })
         if saved:
             self.selected_skill = slug
@@ -1096,8 +1107,23 @@ def skill_editor() -> rx.Component:
                                                      on_change=AdminState.set_skill_issue_status,
                                                      placeholder="Ready, In progress", width="100%")),
                     columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%")),
-        rx.cond(AdminState.skill_extra != "", rx.text("Preserved frontmatter: ", AdminState.skill_extra,
-                                                      color=MUTED, font_size="0.82rem")),
+        rx.vstack(
+            rx.checkbox("Use other fields in frontmatter (for instance allowed-tools)",
+                        checked=AdminState.skill_extra_enabled,
+                        on_change=AdminState.set_skill_extra_enabled,
+                        size="2"),
+            rx.cond(
+                AdminState.skill_extra_enabled,
+                field("Other frontmatter fields",
+                      rx.text_area(value=AdminState.skill_extra,
+                                   on_change=AdminState.set_skill_extra,
+                                   placeholder="allowed-tools: Bash",
+                                   width="100%", min_height="7rem",
+                                   font_family="IBM Plex Mono, monospace"),
+                      rx.text("YAML lines written into the frontmatter as they are. "
+                              "Leave out the fields that already have their own control above.",
+                              color=MUTED, font_size="0.82rem"))),
+            spacing="3", align="start", width="100%"),
         field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
                                          width="100%", min_height="25rem",
                                          font_family="IBM Plex Mono, monospace")),

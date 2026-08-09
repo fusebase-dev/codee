@@ -588,7 +588,7 @@ class AdminServiceSkillModelTest(unittest.TestCase):
 
             self.assertEqual(skill["model"], "claude-opus-5")
             # Managed keys are rewritten on save, so only `license` is carried over.
-            self.assertEqual(skill["extra"], "license")
+            self.assertEqual(skill["extra"], "license: MIT\n")
 
     def test_load_reports_no_model_when_the_skill_declares_none(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -596,6 +596,96 @@ class AdminServiceSkillModelTest(unittest.TestCase):
             service = self._service(skills_dir, "name: nightly\n")
 
             self.assertEqual(service.load_skill("nightly")["model"], "")
+
+
+class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
+    def _service(self, skills_dir: Path, frontmatter: str) -> AdminService:
+        skill_dir = skills_dir / "nightly"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}---\nBody\n")
+        service = AdminService.__new__(AdminService)
+        service.skills_dir = skills_dir
+        return service
+
+    def _save(self, service: AdminService, extra: str | None) -> tuple[Mock, tuple]:
+        skill: dict[str, str] = {
+            "slug": "nightly", "name": "nightly", "description": "",
+            "type": "knowledge", "model": "", "body": "Body",
+        }
+        if extra is not None:
+            skill["extra"] = extra
+        with patch.object(service, "_write_and_push",
+                          return_value=(True, True, "saved")) as write:
+            result = service.save_skill(skill)
+        return write, result
+
+    def test_save_writes_the_extra_fields_into_the_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), "name: nightly\n")
+
+            write, _ = self._save(
+                service, "allowed-tools: Bash\ncompatibility: Claude Code\n")
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertEqual(frontmatter["allowed-tools"], "Bash")
+            self.assertEqual(frontmatter["compatibility"], "Claude Code")
+
+    def test_empty_extra_fields_drop_what_the_file_carried(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory), "name: nightly\nlicense: MIT\n")
+
+            write, _ = self._save(service, "")
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertNotIn("license", frontmatter)
+
+    def test_a_caller_that_omits_extra_keeps_the_fields_on_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory), "name: nightly\nlicense: MIT\n")
+
+            write, _ = self._save(service, None)
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertEqual(frontmatter["license"], "MIT")
+
+    def test_invalid_yaml_is_reported_and_nothing_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), "name: nightly\n")
+
+            write, (saved, _, message, slug) = self._save(service, "allowed-tools")
+
+            write.assert_not_called()
+            self.assertFalse(saved)
+            self.assertIn("key: value", message)
+            self.assertEqual(slug, "nightly")
+
+    def test_a_field_that_has_its_own_control_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), "name: nightly\n")
+
+            write, (saved, _, message, _) = self._save(
+                service, "model: claude-opus-5\n")
+
+            write.assert_not_called()
+            self.assertFalse(saved)
+            self.assertIn("model", message)
+
+    def test_load_returns_the_extra_fields_as_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory),
+                "name: nightly\nallowed-tools: Bash\nlicense: MIT\n")
+
+            self.assertEqual(service.load_skill("nightly")["extra"],
+                             "allowed-tools: Bash\nlicense: MIT\n")
+
+    def test_load_returns_an_empty_string_when_there_are_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), "name: nightly\n")
+
+            self.assertEqual(service.load_skill("nightly")["extra"], "")
 
 
 class AdminServiceAgentModelsTest(unittest.TestCase):
