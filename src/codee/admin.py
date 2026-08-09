@@ -13,6 +13,8 @@ from codee.workflow_graph import workflow_graph
 
 SERVICE = AdminService()
 
+RUNS_PAGE_SIZE = 20
+
 
 def _save_toast(persisted: bool, pushed: bool, message: str) -> Any:
     """Warn instead of erroring when the change landed on disk but not in Git."""
@@ -87,6 +89,8 @@ class AdminState(rx.State):
     dashboard_polling: bool = False
 
     runs: list[RunRecord] = []
+    runs_has_more: bool = False
+    runs_loading: bool = False
     session_viewer: str = SERVICE.session_viewer
 
     story_workflow_nodes: list[dict[str, Any]] = []
@@ -305,9 +309,12 @@ class AdminState(rx.State):
                 self._refresh_dashboard()
             await asyncio.sleep(1)
 
-    def load_runs(self) -> None:
+    def _fetch_runs_page(self, offset: int) -> list[RunRecord]:
+        """One page of runs. Reads one row past the page to learn whether more exist."""
+        rows = SERVICE.recent_runs(RUNS_PAGE_SIZE + 1, offset)
+        self.runs_has_more = len(rows) > RUNS_PAGE_SIZE
         records = []
-        for run in SERVICE.recent_runs():
+        for run in rows[:RUNS_PAGE_SIZE]:
             message = (run.get("message") or "").strip()
             preview = message.splitlines()[0] if message else "No message"
             records.append(RunRecord(
@@ -321,7 +328,21 @@ class AdminState(rx.State):
                 viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
                             if SERVICE.session_viewer and run.get("session_id") else ""),
             ))
-        self.runs = records
+        return records
+
+    def load_runs(self) -> None:
+        """Load (or reload) the first page. Runs on every visit to /runs."""
+        self.runs_loading = False
+        self.runs = self._fetch_runs_page(0)
+
+    def load_more_runs(self) -> None:
+        if self.runs_loading or not self.runs_has_more:
+            return
+        self.runs_loading = True
+        try:
+            self.runs = self.runs + self._fetch_runs_page(len(self.runs))
+        finally:
+            self.runs_loading = False
 
     @rx.event(background=True)
     async def load_workflow(self, force: bool = False) -> None:
@@ -1017,10 +1038,17 @@ def run_row(run: RunRecord) -> rx.Component:
 
 
 def runs_page() -> rx.Component:
+    listing = rx.vstack(
+        rx.foreach(AdminState.runs, run_row),
+        rx.cond(AdminState.runs_has_more,
+                rx.button(rx.cond(AdminState.runs_loading, "Loading...",
+                                  f"Load {RUNS_PAGE_SIZE} more"),
+                          variant="soft", width="100%",
+                          disabled=AdminState.runs_loading,
+                          on_click=AdminState.load_more_runs)),
+        spacing="3", width="100%")
     return shell(rx.vstack(page_header("Runs", "Recent trigger executions and outcomes."),
-                           rx.cond(AdminState.runs.length() > 0,
-                                   rx.vstack(rx.foreach(
-                                       AdminState.runs, run_row), spacing="3", width="100%"),
+                           rx.cond(AdminState.runs.length() > 0, listing,
                                    empty_state("history", "No runs recorded yet.")),
                            align="start", width="100%"))
 

@@ -8,9 +8,9 @@ class AbstractCodingAgent(ABC):
     """Base class every coding agent (e.g. Claude Code) inherits from.
 
     A coding agent is constructed from the app ``Settings`` and the working
-    directory it should run in, and knows how to run one prompt against a
-    resumable session. The executor never has to know which agent it's driving
-    or what configuration that agent needs.
+    directory it should run in, and knows how to run one prompt under a session
+    id the caller hands it. The executor never has to know which agent it's
+    driving or what configuration that agent needs.
     """
 
     def __init__(self, settings: Settings, cwd: Path):
@@ -23,11 +23,6 @@ class AbstractCodingAgent(ABC):
         Must raise on any failure so callers can retry (SQS keeps the message,
         cron doesn't mark the slot done, email keeps the ``.eml``).
         """
-        ...
-
-    @abstractmethod
-    def session_exists(self, session_id: str) -> bool:
-        """Whether a resumable session with this id already exists."""
         ...
 
     def describe(self) -> str:

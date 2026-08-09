@@ -63,16 +63,17 @@ def record_run(skill_name, trigger_type, session_id, status, error=None, started
         print(f"[runs_db] Failed to record run for {skill_name}: {exc}")
 
 
-def recent_runs(limit: int = 100, *, main_context: CodeeMainContext) -> list[dict]:
-    """Most recent runs newest-first as dicts; [] on empty/missing DB (FR-006)."""
+def recent_runs(limit: int = 100, offset: int = 0, *,
+                main_context: CodeeMainContext) -> list[dict]:
+    """Most recent runs newest-first as dicts, skipping `offset` rows; [] on empty/missing DB (FR-006)."""
     try:
         init(main_context)
         with get_db_connection(main_context) as conn:
             rows = conn.execute(
                 "SELECT id, skill_name, trigger_type, session_id, status, error,"
                 " started_at, message"
-                " FROM runs ORDER BY started_at DESC, id DESC LIMIT ?",
-                (limit,),
+                " FROM runs ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
+                (limit, max(offset, 0)),
             ).fetchall()
         return [dict(zip(_COLUMNS, row)) for row in rows]
     except Exception as exc:

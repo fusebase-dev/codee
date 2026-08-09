@@ -18,6 +18,7 @@ from codee_database import oauth_tokens
 from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee.lib import runs_db
 from codee.lib.cron_describe import describe_cron
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -68,6 +69,7 @@ INDEX_RE = re.compile(
 
 _CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
     CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
+    CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
 }
 WORKFLOW_NODE_SPACING = 440
 WORKFLOW_NODE_CENTER_OFFSET = 110
@@ -822,8 +824,8 @@ class AdminService:
             "hourly": runs_db.runs_by_hour(main_context=self.context),
         }
 
-    def recent_runs(self) -> list[dict[str, Any]]:
-        return runs_db.recent_runs(main_context=self.context)
+    def recent_runs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        return runs_db.recent_runs(limit, offset, main_context=self.context)
 
     def load_settings(self) -> Settings:
         self.context.settings = load_settings(self.data_dir)

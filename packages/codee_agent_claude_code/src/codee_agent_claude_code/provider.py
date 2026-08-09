@@ -11,11 +11,7 @@ log = get_logger(__name__)
 
 
 class ClaudeCodeAgent(AbstractCodingAgent):
-    """Runs the ``claude`` CLI, resuming a session when one already exists on disk."""
-
-    # Where the claude CLI stores its per-session transcripts.
-    SESSIONS_DIR = Path.home() / ".claude" / "projects" / \
-        "-home-ubuntu-claude-coder"
+    """Runs the ``claude`` CLI in a fresh session, under the id the caller supplies."""
 
     MAX_BUDGET_USD = "20.00"
     TIMEOUT_SECONDS = 7200  # 2 hours
@@ -23,27 +19,15 @@ class ClaudeCodeAgent(AbstractCodingAgent):
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
 
-    def session_exists(self, session_id: str) -> bool:
-        return (self.SESSIONS_DIR / f"{session_id}.jsonl").exists()
-
     def run(self, user_message: str, session_id: str) -> str:
         cmd = [
             "claude",
             "-p", user_message,
+            "--session-id", session_id,
             "--max-budget-usd", self.MAX_BUDGET_USD,
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
         ]
-
-        # Resume an existing session, otherwise start one with a fixed id.
-        if self.session_exists(session_id):
-            cmd.extend(["--resume", session_id])
-            log.debug("resuming session %s from %s",
-                      session_id, self.SESSIONS_DIR)
-        else:
-            cmd.extend(["--session-id", session_id])
-            log.debug("no transcript for %s in %s; starting a new session",
-                      session_id, self.SESSIONS_DIR)
 
         log.info("Running claude with message: %s", user_message)
         log.debug("cwd=%s cmd=%s", self._cwd, " ".join(cmd))

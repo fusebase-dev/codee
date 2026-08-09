@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, data_dir,
     load_settings, project_root)
@@ -40,6 +41,7 @@ _TASKS_PROVIDERS: dict[TasksProvider, type[AbstractTasksProvider]] = {
 # initializes itself from the settings, so nothing here is agent-specific.
 _CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
     CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
+    CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
 }
 
 POLL_INTERVAL = 60  # 1 minute

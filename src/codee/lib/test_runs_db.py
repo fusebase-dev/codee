@@ -39,6 +39,22 @@ def test_empty_db_returns_empty_list(tmp_path):
     assert runs_db.recent_runs(main_context=_ctx(tmp_path)) == []
 
 
+def test_limit_and_offset_page_through_runs(tmp_path):
+    ctx = _ctx(tmp_path)
+    for i in range(5):
+        runs_db.record_run(f"skill-{i}", "cron", f"sid-{i}", "succeeded",
+                           started_at=f"2026-06-27T1{i}:00:00+00:00", main_context=ctx)
+
+    page1 = runs_db.recent_runs(2, main_context=ctx)
+    page2 = runs_db.recent_runs(2, 2, main_context=ctx)
+    page3 = runs_db.recent_runs(2, 4, main_context=ctx)
+
+    assert [r["skill_name"] for r in page1] == ["skill-4", "skill-3"]
+    assert [r["skill_name"] for r in page2] == ["skill-2", "skill-1"]
+    assert [r["skill_name"] for r in page3] == ["skill-0"]
+    assert runs_db.recent_runs(2, 5, main_context=ctx) == []
+
+
 def test_record_run_never_raises_on_bad_path(tmp_path):
     # An unopenable db path must be swallowed (FR-009).
     runs_db.record_run("skill", "cron", "sid", "succeeded",

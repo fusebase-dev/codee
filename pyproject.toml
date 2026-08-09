@@ -16,6 +16,7 @@ dependencies = [
     "codee-tasks-jira",
     "codee-tasks-azure-devops",
     "codee-agent-claude-code",
+    "codee-agent-github-copilot",
     "reflex>=0.9.7",
 ]
 
@@ -38,6 +39,7 @@ codee-tasks-jira = { workspace = true }
 codee-tasks-azure-devops = { workspace = true }
 codee-tasks-abstract = { workspace = true }
 codee-agent-claude-code = { workspace = true }
+codee-agent-github-copilot = { workspace = true }
 codee-agent-abstract = { workspace = true }
 
 [build-system]

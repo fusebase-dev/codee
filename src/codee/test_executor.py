@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
     CodingAgent, Settings, TasksProvider, save_settings)
 from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
@@ -114,11 +115,24 @@ class RefreshConfigTest(unittest.TestCase):
     def test_switching_coding_agent_rebuilds_it(self) -> None:
         self._save(coding_agent=CodingAgent.CLAUDE_CODE)
         executor._refresh_config()
-        agent = executor.coding_agent
 
-        # An agent the registry doesn't know must not take down the poll loop.
         self._save(coding_agent=CodingAgent.GITHUB_COPILOT)
         executor._refresh_config()
+
+        self.assertIsInstance(executor.coding_agent, GitHubCopilotAgent)
+        self.assertEqual(executor.context.settings.coding_agent,
+                         CodingAgent.GITHUB_COPILOT)
+
+    def test_broken_coding_agent_settings_keep_polling_with_the_old_one(self) -> None:
+        self._save(coding_agent=CodingAgent.CLAUDE_CODE)
+        executor._refresh_config()
+        agent = executor.coding_agent
+
+        # An agent that can't be built must not take down the poll loop.
+        self._save(coding_agent=CodingAgent.GITHUB_COPILOT)
+        with patch.dict(executor._CODING_AGENTS,
+                        {CodingAgent.GITHUB_COPILOT: _Exploding}):
+            executor._refresh_config()
 
         self.assertIs(executor.coding_agent, agent)
 

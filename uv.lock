@@ -15,6 +15,7 @@ members = [
     "codee",
     "codee-agent-abstract",
     "codee-agent-claude-code",
+    "codee-agent-github-copilot",
     "codee-database",
     "codee-main-context",
     "codee-tasks-abstract",
@@ -202,6 +203,7 @@ dependencies = [
     { name = "aiosmtpd" },
     { name = "boto3" },
     { name = "codee-agent-claude-code" },
+    { name = "codee-agent-github-copilot" },
     { name = "codee-database" },
     { name = "codee-main-context" },
     { name = "codee-tasks-azure-devops" },
@@ -218,6 +220,7 @@ requires-dist = [
     { name = "aiosmtpd", specifier = ">=1.4,<2" },
     { name = "boto3", specifier = ">=1.35,<2" },
     { name = "codee-agent-claude-code", editable = "packages/codee_agent_claude_code" },
+    { name = "codee-agent-github-copilot", editable = "packages/codee_agent_github_copilot" },
     { name = "codee-database", editable = "packages/codee_database" },
     { name = "codee-main-context", editable = "packages/codee_main_context" },
     { name = "codee-tasks-azure-devops", editable = "packages/codee_tasks_azure_devops" },
@@ -244,6 +247,21 @@ requires-dist = [{ name = "codee-main-context", editable = "packages/codee_main_
 name = "codee-agent-claude-code"
 version = "0.1.0"
 source = { editable = "packages/codee_agent_claude_code" }
+dependencies = [
+    { name = "codee-agent-abstract" },
+    { name = "codee-main-context" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "codee-agent-abstract", editable = "packages/codee_agent_abstract" },
+    { name = "codee-main-context", editable = "packages/codee_main_context" },
+]
+
+[[package]]
+name = "codee-agent-github-copilot"
+version = "0.1.0"
+source = { editable = "packages/codee_agent_github_copilot" }
 dependencies = [
     { name = "codee-agent-abstract" },
     { name = "codee-main-context" },
