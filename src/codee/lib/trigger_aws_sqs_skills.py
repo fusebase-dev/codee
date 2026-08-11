@@ -53,7 +53,9 @@ def trigger_aws_sqs_skills(
         return
 
     if sqs_message_source is None:
-        sqs_message_source = Boto3AwsSqsMessageSource()
+        sqs_message_source = _build_boto3_message_source()
+        if sqs_message_source is None:
+            return
 
     for skill in skills:
         try:
@@ -129,6 +131,30 @@ def find_aws_sqs_triggered_skills(skills_dir: Path = SKILLS_DIR) -> list[AwsSqsT
             )
         )
     return skills
+
+
+def _build_boto3_message_source() -> "Boto3AwsSqsMessageSource | None":
+    """Build the SQS client, or return None when AWS isn't configured.
+
+    boto3 raises (NoRegionError, missing credentials, boto3 not installed) at
+    client construction. That must not abort the executor tick -- the rest of
+    run_once() still has cron skills, email skills and tasks to process -- so we
+    report it once per process and let SQS triggers stay idle.
+    """
+    global _boto3_unavailable_reported
+    try:
+        return Boto3AwsSqsMessageSource()
+    except Exception as exc:
+        if not _boto3_unavailable_reported:
+            _boto3_unavailable_reported = True
+            print(
+                f"[aws_sqs_skills] AWS SQS client unavailable ({exc}); SQS triggers "
+                "stay idle until AWS is configured (e.g. AWS_DEFAULT_REGION)."
+            )
+        return None
+
+
+_boto3_unavailable_reported = False
 
 
 class Boto3AwsSqsMessageSource:

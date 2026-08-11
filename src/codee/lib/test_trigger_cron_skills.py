@@ -6,11 +6,13 @@ import unittest
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from codee_main_context.context import CodeeMainContext
 
+from codee.lib import trigger_aws_sqs_skills as trigger_aws_sqs_skills_module
 from codee.lib.trigger_aws_sqs_skills import (
     AwsSqsMessage,
     find_aws_sqs_triggered_skills,
@@ -479,6 +481,36 @@ class CronSkillTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "Process this content: payload")
         self.assertTrue(calls[0][1])
         self.assertEqual(sqs_source.deleted, [message])
+
+    def test_reconcile_survives_unconfigured_aws_client(self):
+        def run_claude(user_message: str, session_id: str, model: str = "") -> str:
+            raise AssertionError("should not run without an SQS client")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            skill_dir = skills_dir / "sqs-check"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: SQS Check\n"
+                "disable-model-invocation: true\n"
+                "x-codee-trigger: aws-sqs\n"
+                "x-codee-aws-sqs-queue: codee-queue\n"
+                "---\n\n"
+                "Process this content: {CONTENT}\n"
+            )
+
+            with patch.object(
+                trigger_aws_sqs_skills_module,
+                "Boto3AwsSqsMessageSource",
+                side_effect=Exception("You must specify a region."),
+            ):
+                trigger_aws_sqs_skills(
+                    run_claude,
+                    skills_dir=skills_dir,
+                    main_context=_ctx(root),
+                )
 
 
 if __name__ == "__main__":
