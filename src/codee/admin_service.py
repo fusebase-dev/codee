@@ -1,4 +1,5 @@
 """Framework-independent operations for the Codee admin UI."""
+import hashlib
 import json
 import re
 import os
@@ -74,6 +75,9 @@ _CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
 }
 WORKFLOW_NODE_SPACING = 440
 WORKFLOW_NODE_CENTER_OFFSET = 110
+# Inferring the workflow costs a coding-agent run, so the graph is kept in the
+# data directory and reused by later admin processes.
+WORKFLOW_CACHE_FILE = "workflow.json"
 
 # Port the admin UI listens on unless ``codee-admin --port`` says otherwise.
 # The OAuth redirect URI is built from it, and Entra ID matches redirect URIs
@@ -199,6 +203,18 @@ def _transition_values(value: Any) -> list[dict[str, str]]:
     return transitions
 
 
+def _is_workflow(value: Any) -> bool:
+    """Whether a stored graph still has the shape the workflow page reads."""
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(value.get(issue_type), dict)
+        and all(isinstance(value[issue_type].get(key), list)
+                for key in ("nodes", "edges", "warnings"))
+        for issue_type in ISSUE_TYPES
+    )
+
+
 def _remove_redundant_skill_transitions(
     transitions: list[dict[str, str]],
 ) -> list[dict[str, str]]:
@@ -247,7 +263,8 @@ class AdminService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.context = CodeeMainContext(data_dir=self.data_dir)
         self.context.settings = load_settings(self.data_dir)
-        self._workflow_cache: dict[str, Any] | None = None
+        # Cached graph plus the skill fingerprint it was generated from.
+        self._workflow_cache: tuple[str, dict[str, Any]] | None = None
         self._workflow_lock = threading.Lock()
         # Asking an agent for its catalog can mean spawning its CLI, so the
         # answer is cached per agent for the life of the process.
@@ -343,16 +360,73 @@ class AdminService:
         return ""
 
     def generate_workflow(self, force: bool = False) -> dict[str, Any]:
-        """Return cached workflows by issue type, regenerating when requested."""
+        """Return cached workflows by issue type, regenerating when requested.
+
+        The cache outlives the admin process: it is stored in the data
+        directory under the fingerprint of the skill documents the graph was
+        inferred from, so a restart reuses it while an edited skill still
+        regenerates it.
+        """
         workflow_lock = getattr(self, "_workflow_lock", None)
         if workflow_lock is None:
             workflow_lock = self._workflow_lock = threading.Lock()
         with workflow_lock:
-            workflow_cache = getattr(self, "_workflow_cache", None)
-            if not force and workflow_cache is not None:
-                return workflow_cache
-            self._workflow_cache = self._generate_workflow()
-            return self._workflow_cache
+            fingerprint = self._workflow_fingerprint()
+            if not force:
+                cached = self._cached_workflow(fingerprint)
+                if cached is not None:
+                    return cached
+            workflow = self._generate_workflow()
+            self._workflow_cache = (fingerprint, workflow)
+            self._store_workflow(fingerprint, workflow)
+            return workflow
+
+    def _workflow_fingerprint(self) -> str:
+        """Digest the skill documents the workflow graph is inferred from."""
+        digest = hashlib.sha256()
+        for skill in find_issue_triggered_skills(self.skills_dir):
+            digest.update(skill.slug.encode())
+            digest.update(b"\0")
+            digest.update(skill.path.read_bytes())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _workflow_cache_path(self) -> Path:
+        return self.data_dir / WORKFLOW_CACHE_FILE
+
+    def _cached_workflow(self, fingerprint: str) -> dict[str, Any] | None:
+        """This process's graph, else the one an earlier process stored."""
+        cached = getattr(self, "_workflow_cache", None)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        try:
+            stored = json.loads(self._workflow_cache_path().read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as error:
+            print(f"[admin] Ignoring unreadable workflow cache: {error}")
+            return None
+        if not isinstance(stored, dict) or stored.get("fingerprint") != fingerprint:
+            return None
+        workflow = stored.get("workflow")
+        if not _is_workflow(workflow):
+            return None
+        self._workflow_cache = (fingerprint, workflow)
+        return workflow
+
+    def _store_workflow(self, fingerprint: str, workflow: dict[str, Any]) -> None:
+        """Persist the graph for the next admin process; failing is not fatal."""
+        path = self._workflow_cache_path()
+        pending = path.with_suffix(".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pending.write_text(json.dumps(
+                {"fingerprint": fingerprint, "workflow": workflow}))
+            # Replace in one step so a crash mid-write cannot leave a
+            # half-written cache behind.
+            pending.replace(path)
+        except OSError as error:
+            print(f"[admin] Failed to store workflow cache: {error}")
 
     def _generate_workflow(self) -> dict[str, Any]:
         """Infer separate status graphs for story and task skills."""

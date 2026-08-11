@@ -335,6 +335,11 @@ class AdminState(rx.State):
         return _save_toast(*SERVICE.save_agents(self.agents_content))
 
     def load_memories(self) -> None:
+        self.coding_agent = SERVICE.load_settings().coding_agent.value
+        if self.coding_agent == "github_copilot":
+            self.memories = []
+            self.selected_memory = ""
+            return
         self.memories = [MemoryEntry(**entry)
                          for entry in SERVICE.list_memories()]
 
@@ -605,6 +610,7 @@ class AdminState(rx.State):
 
 
 ACCENT = "var(--codee-accent)"
+ACCENT_DEEP = "var(--codee-accent-deep)"
 BORDER = "1px solid var(--codee-border)"
 MUTED = "var(--codee-muted)"
 SURFACE = "var(--codee-surface)"
@@ -706,23 +712,26 @@ def shell(content: rx.Component) -> rx.Component:
         color=TEXT,
         font_family="IBM Plex Sans, sans-serif",
         style={
-            "--codee-accent": rx.color_mode_cond("#167d5a", "#4abd85"),
-            "--codee-border": rx.color_mode_cond("#dfe4df", "#354039"),
-            "--codee-muted": rx.color_mode_cond("#68716b", "#a1ada5"),
-            "--codee-surface": rx.color_mode_cond("#ffffff", "#18201c"),
-            "--codee-page-background": rx.color_mode_cond("#f3f5f3", "#101512"),
-            "--codee-nav-background": rx.color_mode_cond("#f7f9f7", "#141b17"),
-            "--codee-text": rx.color_mode_cond("#202721", "#edf3ef"),
-            "--codee-hover": rx.color_mode_cond("#edf5f0", "#213029"),
-            "--codee-active": rx.color_mode_cond("#e2efe9", "#23372e"),
-            "--codee-grid": rx.color_mode_cond("#e4e9e5", "#2e3932"),
-            "--codee-subtle-icon": rx.color_mode_cond("#91a097", "#718078"),
-            "--codee-warning-background": rx.color_mode_cond("#fffbeb", "#332a13"),
-            "--codee-warning-border": rx.color_mode_cond("#d97706", "#f59e0b"),
+            "--codee-accent": rx.color_mode_cond("#2f6fd6", "#7aa9f0"),
+            # The darker half of the two-blue brand pairing, for filled marks
+            # that should recede behind the interactive blue (step markers).
+            "--codee-accent-deep": rx.color_mode_cond("#232c9b", "#5866de"),
+            "--codee-border": rx.color_mode_cond("#dbe1ec", "#2b3350"),
+            "--codee-muted": rx.color_mode_cond("#5d687f", "#a3adc4"),
+            "--codee-surface": rx.color_mode_cond("#ffffff", "#171d33"),
+            "--codee-page-background": rx.color_mode_cond("#f2f5fb", "#0e1224"),
+            "--codee-nav-background": rx.color_mode_cond("#f7f9fd", "#121729"),
+            "--codee-text": rx.color_mode_cond("#1b2440", "#e9edf7"),
+            "--codee-hover": rx.color_mode_cond("#edf3fc", "#1e2742"),
+            "--codee-active": rx.color_mode_cond("#e0eafb", "#24304f"),
+            "--codee-grid": rx.color_mode_cond("#e2e7f1", "#2a3350"),
+            "--codee-subtle-icon": rx.color_mode_cond("#8e99b0", "#6e7a94"),
+            "--codee-warning-background": rx.color_mode_cond("#fff5ed", "#33200f"),
+            "--codee-warning-border": rx.color_mode_cond("#e26128", "#f5854a"),
             # Tint reserved for in-flight work, so a live run reads at a glance.
-            "--codee-running-background": rx.color_mode_cond("#effaf4", "#15271f"),
+            "--codee-running-background": rx.color_mode_cond("#eff4fd", "#14203a"),
             "--codee-running-glow": rx.color_mode_cond(
-                "rgba(22, 125, 90, 0.16)", "rgba(74, 189, 133, 0.18)"),
+                "rgba(47, 111, 214, 0.16)", "rgba(122, 169, 240, 0.18)"),
             "color_scheme": "light dark",
         },
     )
@@ -888,13 +897,13 @@ def skill_card(skill: SkillSummary) -> rx.Component:
     return rx.box(
         rx.vstack(
             rx.hstack(rx.heading(skill.name, size="4"), rx.spacer(),
-                      rx.badge(skill.type, color_scheme="green", variant="soft"), width="100%"),
+                      rx.badge(skill.type, color_scheme="blue", variant="soft"), width="100%"),
             rx.text(skill.description, color=MUTED, font_size="0.9rem", min_height="2.7rem",
                     overflow="hidden"),
             rx.cond(
                 skill.issue_status != "",
                 rx.hstack(
-                    rx.badge(skill.issue_type, color_scheme="green",
+                    rx.badge(skill.issue_type, color_scheme="blue",
                              variant="outline"),
                     rx.icon("circle-dot", size=14, color=SUBTLE_ICON),
                     rx.text(skill.issue_status, color=MUTED,
@@ -1193,8 +1202,12 @@ def memory_page() -> rx.Component:
                                 memory_row), spacing="3", width="100%"),
                       empty_state("notebook-text", "No memories yet."))
     return shell(rx.vstack(page_header("Memory", "Review and maintain durable project context."),
-                           rx.cond(AdminState.selected_memory ==
-                                   "", listing, memory_editor()),
+                           rx.cond(AdminState.coding_agent == "github_copilot",
+                                   empty_state(
+                                       "notebook-text",
+                                       "Github Copilot currently does not support local memory"),
+                                   rx.cond(AdminState.selected_memory ==
+                                           "", listing, memory_editor())),
                            align="start", width="100%"))
 
 
@@ -1239,7 +1252,7 @@ def workflow_warning(message: rx.Var) -> rx.Component:
     return rx.callout(
         message,
         icon="triangle-alert",
-        color_scheme="amber",
+        color_scheme="orange",
         width="100%",
     )
 
@@ -1393,7 +1406,7 @@ def sessions_page() -> rx.Component:
 
 def azure_step(number: int, title: str, detail: rx.Component | str) -> rx.Component:
     return rx.hstack(
-        rx.box(str(number), color="white", background=ACCENT, min_width="1.4rem",
+        rx.box(str(number), color="white", background=ACCENT_DEEP, min_width="1.4rem",
                height="1.4rem", display="grid", place_items="center",
                border_radius="50%", font_size="0.75rem", font_weight="700"),
         rx.vstack(rx.text(title, font_weight="600", font_size="0.9rem"),
@@ -1635,10 +1648,10 @@ app = rx.App(
             "width": "6px",
         },
         ".workflow-route-node--forward .react-flow__handle": {
-            "background": "#167d5a",
+            "background": "#2f6fd6",
         },
         ".workflow-route-node--return .react-flow__handle": {
-            "background": "#d97706",
+            "background": "#e26128",
         },
     },
     stylesheets=[

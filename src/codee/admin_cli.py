@@ -22,8 +22,8 @@ config = rx.Config(
     plugins=[
         rx.plugins.RadixThemesPlugin(
             theme=rx.theme(
-                accent_color="green",
-                gray_color="sage",
+                accent_color="indigo",
+                gray_color="slate",
                 radius="small",
                 appearance="inherit",
             )

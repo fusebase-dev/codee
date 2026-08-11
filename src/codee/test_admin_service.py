@@ -15,6 +15,25 @@ from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, save_settings)
 
 
+def _empty_workflow() -> dict:
+    return {issue_type: {"nodes": [], "edges": [], "warnings": []}
+            for issue_type in ("story", "task")}
+
+
+def _write_issue_skill(root: Path) -> Path:
+    """Create one issue-trigger skill, the input the workflow cache is keyed on."""
+    skills_dir = root / ".claude" / "skills"
+    skill_dir = skills_dir / "develop"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: develop\ndisable-model-invocation: true\n"
+        "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+        "x-codee-issue-type: story\n---\n"
+        "After implementation, move the issue to Review.\n"
+    )
+    return skills_dir
+
+
 class AdminServiceIssueTriggerTest(unittest.TestCase):
     def test_list_skills_includes_issue_status(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -227,6 +246,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(settings=Settings(
                 coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -315,6 +335,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -356,6 +377,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -406,6 +428,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -462,6 +485,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -501,6 +525,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
@@ -518,8 +543,10 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
 
     def test_generate_workflow_returns_empty_without_issue_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
             service = AdminService.__new__(AdminService)
-            service.skills_dir = Path(temporary_directory)
+            service.skills_dir = root
+            service.data_dir = root / ".codee"
 
             self.assertEqual(service.generate_workflow(), {
                 "story": {"nodes": [], "edges": [], "warnings": []},
@@ -527,15 +554,92 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             })
 
     def test_generate_workflow_is_cached_until_forced(self) -> None:
-        service = AdminService.__new__(AdminService)
-        generated = {"nodes": [], "edges": [], "warnings": []}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = root / ".claude" / "skills"
+            service.data_dir = root / ".codee"
+            generated = _empty_workflow()
 
-        with patch.object(service, "_generate_workflow", return_value=generated) as generate:
-            self.assertIs(service.generate_workflow(), generated)
-            self.assertIs(service.generate_workflow(), generated)
-            self.assertIs(service.generate_workflow(force=True), generated)
+            with patch.object(service, "_generate_workflow",
+                              return_value=generated) as generate:
+                self.assertIs(service.generate_workflow(), generated)
+                self.assertIs(service.generate_workflow(), generated)
+                self.assertIs(service.generate_workflow(force=True), generated)
 
-        self.assertEqual(generate.call_count, 2)
+            self.assertEqual(generate.call_count, 2)
+
+    def test_generate_workflow_reuses_graph_stored_by_an_earlier_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = _write_issue_skill(root)
+            generated = _empty_workflow()
+            generated["story"]["warnings"] = ["stored"]
+
+            first = AdminService.__new__(AdminService)
+            first.skills_dir = skills_dir
+            first.data_dir = root / ".codee"
+            with patch.object(first, "_generate_workflow", return_value=generated):
+                first.generate_workflow()
+
+            # A restart starts from an empty in-memory cache, so only the file
+            # written above can spare it another coding-agent run.
+            restarted = AdminService.__new__(AdminService)
+            restarted.skills_dir = skills_dir
+            restarted.data_dir = root / ".codee"
+            with patch.object(restarted, "_generate_workflow") as generate:
+                workflow = restarted.generate_workflow()
+
+            generate.assert_not_called()
+            self.assertEqual(workflow["story"]["warnings"], ["stored"])
+
+    def test_generate_workflow_ignores_stored_graph_after_a_skill_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = _write_issue_skill(root)
+
+            first = AdminService.__new__(AdminService)
+            first.skills_dir = skills_dir
+            first.data_dir = root / ".codee"
+            with patch.object(first, "_generate_workflow",
+                              return_value=_empty_workflow()):
+                first.generate_workflow()
+
+            (skills_dir / "develop" / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "After implementation, move the issue to Done.\n"
+            )
+            regenerated = _empty_workflow()
+            regenerated["story"]["warnings"] = ["regenerated"]
+            restarted = AdminService.__new__(AdminService)
+            restarted.skills_dir = skills_dir
+            restarted.data_dir = root / ".codee"
+            with patch.object(restarted, "_generate_workflow",
+                              return_value=regenerated) as generate:
+                workflow = restarted.generate_workflow()
+
+            generate.assert_called_once_with()
+            self.assertEqual(workflow["story"]["warnings"], ["regenerated"])
+
+    def test_generate_workflow_ignores_a_corrupt_stored_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = _write_issue_skill(root)
+            data_dir = root / ".codee"
+            data_dir.mkdir()
+            (data_dir / "workflow.json").write_text("{ not json")
+
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = skills_dir
+            service.data_dir = data_dir
+            generated = _empty_workflow()
+            with patch.object(service, "_generate_workflow",
+                              return_value=generated) as generate:
+                self.assertIs(service.generate_workflow(), generated)
+
+            generate.assert_called_once_with()
 
 
 class AdminServiceSkillModelTest(unittest.TestCase):
