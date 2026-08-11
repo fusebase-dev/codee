@@ -57,6 +57,20 @@ MANAGED = {
     "x-codee-aws-sqs-queue",
 }
 AGENTS_FILE = "AGENTS.md"
+# Layout the coding agents are told to expect (see the AGENTS.md template):
+# `repositories/<repo>/.bare` holds the bare clone, `repositories/<repo>/.git`
+# points git at it, and every branch is checked out as its own worktree
+# directory beside them.
+REPOSITORIES_DIR = "repositories"
+BARE_DIR = ".bare"
+# Cloning happens on a worker thread with nobody to answer a prompt, so git is
+# told to fail instead of blocking on an unknown host key or missing credentials.
+GIT_NON_INTERACTIVE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
+}
+GIT_TIMEOUT = 60
+GIT_NETWORK_TIMEOUT = 900
 SKILL_TYPES = [
     "knowledge",
     "slash command",
@@ -113,6 +127,22 @@ def parse_index(text: str) -> list[dict[str, Any]]:
 
 def slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", value.strip().lower()).strip("-")
+
+
+def repository_name(url: str) -> str:
+    """Directory a clone URL lands in: its last path segment, without `.git`.
+
+    Handles the scp-style SSH form (`git@host:org/repo.git`) too, which has no
+    scheme for ``urlparse`` to read.
+    """
+    text = url.strip().rstrip("/")
+    if not text:
+        return ""
+    path = urlparse(text).path if "://" in text else text.rsplit(":", 1)[-1]
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-.")
 
 
 def parse_skill(text: str) -> tuple[dict[str, Any], str]:
@@ -256,6 +286,7 @@ class AdminService:
         self.agents_file = self.root / AGENTS_FILE
         self.memory_dir = memory_dir(self.root)
         self.memory_index = self.memory_dir / "MEMORY.md"
+        self.repositories_dir = self.root / REPOSITORIES_DIR
         self.data_dir = data_dir(self.root)
         self.session_viewer = os.environ.get("CODEE_SESSION_VIEWER_URL", "")
         self.skills_dir.mkdir(parents=True, exist_ok=True)
@@ -946,6 +977,118 @@ class AdminService:
         if pushed:
             return True, True, f"Deleted {filename}"
         return True, False, f"Deleted {filename} locally, but Git push failed: {output}"
+
+    # --- Repositories -------------------------------------------------------
+
+    def _run_git(
+        self,
+        arguments: list[str],
+        cwd: Path,
+        timeout: int = GIT_TIMEOUT,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env={**os.environ, **GIT_NON_INTERACTIVE_ENV},
+        )
+
+    def _git_output(self, arguments: list[str], cwd: Path) -> str:
+        """One-line git output, or '' when the command fails. Never raises."""
+        try:
+            result = self._run_git(arguments, cwd)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def list_repositories(self) -> list[dict[str, Any]]:
+        """The repositories under `repositories/`, in name order.
+
+        Only directories carrying a bare clone are listed: `repositories/` is
+        the agents' working area, so anything else in it is scratch.
+        """
+        if not self.repositories_dir.is_dir():
+            return []
+        repositories = []
+        for directory in sorted(self.repositories_dir.iterdir()):
+            if not (directory / BARE_DIR).is_dir():
+                continue
+            repositories.append({
+                "name": directory.name,
+                "url": self._git_output(
+                    ["remote", "get-url", "origin"], directory),
+                "default_branch": self._git_output(
+                    ["symbolic-ref", "--short", "HEAD"], directory),
+            })
+        return repositories
+
+    def add_repository(self, url: str) -> tuple[bool, str, str]:
+        """Clone `url` into the bare-plus-worktree layout the agents expect.
+
+        Leaves behind `repositories/<name>/.bare`, a `.git` file pointing at it,
+        and a worktree for whichever branch the remote calls its default. A
+        failure anywhere removes the half-built directory so a retry is clean.
+        """
+        url = url.strip()
+        if not url:
+            return False, "Enter a repository URL", ""
+        name = repository_name(url)
+        if not name:
+            return False, f"Could not work out a folder name from {url}", ""
+        directory = self.repositories_dir / name
+        if directory.exists():
+            return False, f"{REPOSITORIES_DIR}/{name} already exists", name
+
+        directory.mkdir(parents=True)
+        try:
+            self._clone_repository(url, directory)
+            branch = self._git_output(
+                ["symbolic-ref", "--short", "HEAD"], directory)
+            if not branch:
+                raise RuntimeError(
+                    "Cloned, but the remote names no default branch")
+            self._check(
+                self._run_git(["worktree", "add", branch], directory),
+                f"Could not create the {branch} worktree",
+            )
+        except Exception as error:
+            shutil.rmtree(directory, ignore_errors=True)
+            return False, str(error), name
+        return True, f"Cloned {name} and checked out {branch}", name
+
+    def _clone_repository(self, url: str, directory: Path) -> None:
+        """Bare clone plus the wiring that makes the directory usable as a repo."""
+        self._check(
+            self._run_git(["clone", "--bare", url, BARE_DIR], directory,
+                          timeout=GIT_NETWORK_TIMEOUT),
+            f"Could not clone {url}",
+        )
+        # Makes git treat the repository directory itself as the repo, so the
+        # worktree commands in AGENTS.md run from there without pointing at
+        # `.bare` every time.
+        (directory / ".git").write_text(f"gitdir: ./{BARE_DIR}\n")
+        # A bare clone fetches straight into `refs/heads/*` and configures no
+        # remote-tracking refspec, so without this `origin/<branch>` never
+        # exists and later worktrees have nothing to branch off.
+        self._check(
+            self._run_git(["config", "remote.origin.fetch",
+                           "+refs/heads/*:refs/remotes/origin/*"], directory),
+            "Could not configure the origin refspec",
+        )
+        self._check(
+            self._run_git(["fetch", "origin"], directory,
+                          timeout=GIT_NETWORK_TIMEOUT),
+            "Could not fetch from origin",
+        )
+
+    @staticmethod
+    def _check(result: subprocess.CompletedProcess[str], message: str) -> None:
+        if result.returncode != 0:
+            detail = (result.stderr.strip() or result.stdout.strip()
+                      or f"git exited with {result.returncode}")
+            raise RuntimeError(f"{message}: {detail}")
 
     def dashboard(self) -> dict[str, Any]:
         return {

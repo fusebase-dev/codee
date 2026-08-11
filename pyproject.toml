@@ -1,6 +1,6 @@
 [project]
 name = "codee-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "A virtual co-worker that picks up Jira and Azure DevOps tasks and solves them with coding agents."
 readme = "README.md"
 license = "MIT"

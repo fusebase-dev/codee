@@ -48,6 +48,12 @@ class MemoryEntry(BaseModel):
     matched: bool
 
 
+class RepositorySummary(BaseModel):
+    name: str
+    url: str
+    default_branch: str
+
+
 class ActiveJob(BaseModel):
     message: str
     elapsed_label: str
@@ -94,6 +100,10 @@ class AdminState(rx.State):
     memories: list[MemoryEntry] = []
     selected_memory: str = ""
     memory_content: str = ""
+
+    repositories: list[RepositorySummary] = []
+    new_repository_url: str = ""
+    adding_repository: bool = False
 
     active_jobs: list[ActiveJob] = []
     total_runs: int = 0
@@ -325,6 +335,11 @@ class AdminState(rx.State):
         self.agents_content = SERVICE.load_agents()
         self.editing_agents = True
 
+    def open_agents_editor(self) -> Any:
+        """Open the AGENTS.md editor from a page that isn't Skills."""
+        self.edit_agents()
+        return rx.redirect("/skills")
+
     def set_agents_content(self, value: str) -> None:
         self.agents_content = value
 
@@ -335,7 +350,7 @@ class AdminState(rx.State):
         return _save_toast(*SERVICE.save_agents(self.agents_content))
 
     def load_memories(self) -> None:
-        self.coding_agent = SERVICE.load_settings().coding_agent.value
+        self.load_coding_agent()
         if self.coding_agent == "github_copilot":
             self.memories = []
             self.selected_memory = ""
@@ -366,6 +381,33 @@ class AdminState(rx.State):
             self.selected_memory = ""
         self.load_memories()
         return _save_toast(deleted, pushed, message)
+
+    def load_repositories(self) -> None:
+        self.repositories = [RepositorySummary(**repository)
+                             for repository in SERVICE.list_repositories()]
+
+    def set_new_repository_url(self, value: str) -> None:
+        self.new_repository_url = value
+
+    @rx.event(background=True)
+    async def add_repository(self) -> Any:
+        """Clone in the background: a first clone can take minutes."""
+        async with self:
+            if self.adding_repository:
+                return
+            url = self.new_repository_url.strip()
+            self.adding_repository = True
+        try:
+            added, message, _ = await asyncio.to_thread(
+                SERVICE.add_repository, url)
+        except Exception as error:
+            added, message = False, str(error)
+        async with self:
+            self.adding_repository = False
+            if added:
+                self.new_repository_url = ""
+                self.load_repositories()
+        yield rx.toast.success(message) if added else rx.toast.error(message)
 
     def _refresh_dashboard(self) -> None:
         dashboard = SERVICE.dashboard()
@@ -475,6 +517,14 @@ class AdminState(rx.State):
         self.load_skills()
         self.edit_skill(slug)
         return rx.redirect("/skills")
+
+    def load_coding_agent(self) -> None:
+        """Refresh the agent the sidebar keys off, on every page load.
+
+        Without this the default sticks until a page that reads settings is
+        opened, so the Sessions link shows for Github Copilot.
+        """
+        self.coding_agent = SERVICE.load_settings().coding_agent.value
 
     def load_settings(self) -> Any:
         settings = SERVICE.load_settings()
@@ -682,6 +732,8 @@ def shell(content: rx.Component) -> rx.Component:
                         nav_link("Skills", "blocks", "/skills"),
                         nav_link("Workflow", "git-branch", "/workflow"),
                         nav_link("Memory", "notebook-text", "/memory"),
+                        nav_link("Repositories", "folder-git-2",
+                                 "/repositories"),
                         nav_link("Runs", "history", "/runs"),
                         rx.cond(
                             AdminState.coding_agent == "claude_code",
@@ -762,7 +814,8 @@ def live_dot(size: str = "0.6rem") -> rx.Component:
     return rx.box(
         rx.box(position="absolute", inset="0", border_radius="50%", background=ACCENT,
                animation="codee-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite"),
-        rx.box(position="absolute", inset="0", border_radius="50%", background=ACCENT),
+        rx.box(position="absolute", inset="0",
+               border_radius="50%", background=ACCENT),
         class_name="codee-live-dot",
         position="relative",
         width=size,
@@ -774,7 +827,8 @@ def live_dot(size: str = "0.6rem") -> rx.Component:
 def elapsed_pill(label: rx.Var | str) -> rx.Component:
     return rx.hstack(
         rx.icon("timer", size=14, color=ACCENT),
-        rx.text(label, font_family=MONO, font_size="0.85rem", font_weight="500"),
+        rx.text(label, font_family=MONO,
+                font_size="0.85rem", font_weight="500"),
         spacing="2",
         align="center",
         flex_shrink="0",
@@ -1201,7 +1255,7 @@ def memory_page() -> rx.Component:
                       rx.vstack(rx.foreach(AdminState.memories,
                                 memory_row), spacing="3", width="100%"),
                       empty_state("notebook-text", "No memories yet."))
-    return shell(rx.vstack(page_header("Memory", "Review and maintain durable project context."),
+    return shell(rx.vstack(page_header("Memory", "Manage agent provider's memory."),
                            rx.cond(AdminState.coding_agent == "github_copilot",
                                    empty_state(
                                        "notebook-text",
@@ -1209,6 +1263,63 @@ def memory_page() -> rx.Component:
                                    rx.cond(AdminState.selected_memory ==
                                            "", listing, memory_editor())),
                            align="start", width="100%"))
+
+
+def repository_row(repository: RepositorySummary) -> rx.Component:
+    return rx.flex(
+        rx.icon("folder-git-2", size=18, color=SUBTLE_ICON),
+        rx.vstack(
+            rx.hstack(rx.text(repository.name, font_weight="600"),
+                      rx.cond(repository.default_branch != "",
+                              rx.badge(rx.icon("house", size=12),
+                                       repository.default_branch,
+                                       color_scheme="blue", variant="soft",
+                                       custom_attrs={"title": "Default branch"})),
+                      spacing="2", align="center"),
+            rx.cond(repository.url != "",
+                    rx.text(repository.url, color=MUTED, font_family=MONO,
+                            font_size="0.8rem")),
+            spacing="2", align="start", flex="1", min_width="0"),
+        gap="0.85rem", align="start", padding="1rem", background=SURFACE,
+        border=BORDER, width="100%")
+
+
+def repositories_page() -> rx.Component:
+    listing = rx.cond(
+        AdminState.repositories.length() > 0,
+        rx.vstack(rx.foreach(AdminState.repositories, repository_row),
+                  spacing="3", width="100%"),
+        empty_state("folder-git-2", "No repositories cloned yet."))
+    return shell(rx.vstack(
+        page_header("Repositories",
+                    "Repositories the coding agents work in."),
+        rx.box(
+            rx.flex(
+                rx.input(placeholder="git@github.com:org/repo.git",
+                         value=AdminState.new_repository_url,
+                         on_change=AdminState.set_new_repository_url,
+                         flex="1"),
+                rx.button(rx.icon("plus", size=16), "Add repository",
+                          loading=AdminState.adding_repository,
+                          on_click=AdminState.add_repository),
+                gap="0.75rem", width="100%"),
+            rx.text("Clones a bare repository into repositories/<name>/.bare "
+                    "and checks out its default branch as a worktree beside it. "
+                    "A first clone can take a few minutes.",
+                    color=MUTED, font_size="0.82rem", margin_top="0.75rem"),
+            padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
+        rx.callout(
+            rx.fragment(
+                "The agents work better when they know what each repository "
+                "is for: describe them in ",
+                rx.link(AGENTS_FILE, on_click=AdminState.open_agents_editor,
+                        color=ACCENT, cursor="pointer",
+                        text_decoration="underline"),
+                ".",
+            ),
+            icon="info", size="1", color_scheme="gray", width="100%"),
+        listing,
+        spacing="5", align="start", width="100%"))
 
 
 def run_row(run: RunRecord) -> rx.Component:
@@ -1529,7 +1640,7 @@ def settings_page() -> rx.Component:
         spacing="4", width="100%")
     return shell(rx.vstack(
         page_header(
-            "Settings", "Choose providers and control executor concurrency."),
+            "Settings", ""),
         rx.box(
             rx.heading("Coding agent", size="4", margin_bottom="1rem"),
             rx.grid(
@@ -1665,15 +1776,20 @@ app = rx.App(
     api_transformer=api_app,
 )
 app.add_page(dashboard_page, route="/", title="Dashboard | Codee",
-             on_load=AdminState.poll_dashboard)
+             on_load=[AdminState.load_coding_agent, AdminState.poll_dashboard])
 app.add_page(skills_page, route="/skills", title="Skills | Codee",
-             on_load=[AdminState.load_skills, AdminState.load_agent_models])
+             on_load=[AdminState.load_coding_agent, AdminState.load_skills,
+                      AdminState.load_agent_models])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",
-             on_load=AdminState.load_workflow)
+             on_load=[AdminState.load_coding_agent, AdminState.load_workflow])
 app.add_page(memory_page, route="/memory", title="Memory | Codee",
              on_load=AdminState.load_memories)
+app.add_page(repositories_page, route="/repositories",
+             title="Repositories | Codee",
+             on_load=[AdminState.load_coding_agent,
+                      AdminState.load_repositories])
 app.add_page(runs_page, route="/runs", title="Runs | Codee",
-             on_load=AdminState.load_runs)
+             on_load=[AdminState.load_coding_agent, AdminState.load_runs])
 app.add_page(sessions_page, route="/sessions",
              title="Sessions | Codee", on_load=AdminState.load_settings)
 app.add_page(settings_page, route="/settings",

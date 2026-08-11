@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -10,7 +11,8 @@ from codee_agent_abstract.provider import AgentModel
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
-from codee.admin_service import AdminService, azure_oauth, parse_skill
+from codee.admin_service import (
+    AdminService, azure_oauth, parse_skill, repository_name)
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, save_settings)
 
@@ -878,6 +880,120 @@ class AdminServiceAgentsFileTest(unittest.TestCase):
 
             self.assertNotIn(str(root / "AGENTS.md"), without_agents)
             self.assertIn(str(root / "AGENTS.md"), with_agents)
+
+
+class AdminServiceRepositoriesTest(unittest.TestCase):
+    """Clones run for real against a local source repo: no network needed."""
+
+    def _service(self, root: Path) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.root = root
+        service.repositories_dir = root / "repositories"
+        return service
+
+    def _source_repository(self, path: Path, branch: str) -> Path:
+        """A one-commit repository whose default branch is ``branch``."""
+        path.mkdir(parents=True)
+        self._git(path, "init", "-b", branch)
+        (path / "README.md").write_text("source\n")
+        self._git(path, "add", "README.md")
+        self._git(path, "-c", "user.email=codee@example.com",
+                  "-c", "user.name=Codee", "-c", "commit.gpgsign=false",
+                  "commit", "-m", "initial")
+        return path
+
+    def _git(self, cwd: Path, *arguments: str) -> str:
+        result = subprocess.run(["git", "-C", str(cwd), *arguments],
+                                capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+
+    def test_name_is_taken_from_every_url_form(self) -> None:
+        self.assertEqual(repository_name("git@github.com:org/codee.git"), "codee")
+        self.assertEqual(repository_name("ssh://git@github.com/org/codee.git"),
+                         "codee")
+        self.assertEqual(repository_name("https://github.com/org/codee/"), "codee")
+        self.assertEqual(repository_name("  "), "")
+
+    def test_add_builds_the_bare_and_worktree_layout(self) -> None:
+        for branch in ("main", "master"):
+            with self.subTest(branch=branch), \
+                    tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                source = self._source_repository(root / "source", branch)
+                service = self._service(root)
+
+                added, message, name = service.add_repository(str(source))
+
+                repository = root / "repositories" / "source"
+                self.assertTrue(added, message)
+                self.assertEqual(name, "source")
+                self.assertIn(branch, message)
+                self.assertTrue((repository / ".bare").is_dir())
+                self.assertEqual((repository / ".git").read_text(),
+                                 "gitdir: ./.bare\n")
+                # The branch is checked out beside `.bare`, as its own worktree.
+                self.assertTrue((repository / branch / "README.md").is_file())
+                self.assertEqual(
+                    self._git(repository / branch, "rev-parse",
+                              "--abbrev-ref", "HEAD"),
+                    branch)
+
+    def test_add_fetches_remote_tracking_refs_for_later_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._source_repository(root / "source", "main")
+            service = self._service(root)
+
+            service.add_repository(str(source))
+
+            repository = root / "repositories" / "source"
+            self.assertTrue(self._git(repository, "rev-parse", "origin/main"))
+
+    def test_add_refuses_a_repository_that_is_already_there(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "repositories" / "source").mkdir(parents=True)
+            service = self._service(root)
+
+            added, message, _ = service.add_repository(
+                "git@github.com:org/source.git")
+
+            self.assertFalse(added)
+            self.assertIn("already exists", message)
+
+    def test_a_failed_clone_leaves_no_directory_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            added, message, _ = service.add_repository(
+                str(root / "missing-repository.git"))
+
+            self.assertFalse(added)
+            self.assertIn("Could not clone", message)
+            self.assertFalse((root / "repositories" / "missing-repository")
+                             .exists())
+
+    def test_list_reports_the_clone_and_skips_everything_else(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._source_repository(root / "source", "main")
+            service = self._service(root)
+            service.add_repository(str(source))
+            (root / "repositories" / "scratch").mkdir()
+
+            repositories = service.list_repositories()
+
+            self.assertEqual([repository["name"] for repository in repositories],
+                             ["source"])
+            self.assertEqual(repositories[0]["url"], str(source))
+            self.assertEqual(repositories[0]["default_branch"], "main")
+
+    def test_list_is_empty_before_anything_is_cloned(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            self.assertEqual(service.list_repositories(), [])
 
 
 class AzureDevOpsOAuthTest(unittest.TestCase):
