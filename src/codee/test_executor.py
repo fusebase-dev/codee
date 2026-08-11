@@ -55,7 +55,6 @@ class RefreshConfigTest(unittest.TestCase):
             tasks_provider=TasksProvider.AZURE_DEVOPS,
             credentials={TasksProvider.AZURE_DEVOPS.value: {
                 "organization_url": "https://dev.azure.com/acme",
-                "project": "Core",
                 "tenant_id": "tenant-1",
                 "client_id": "client-1",
                 "client_secret": "secret-1",
@@ -104,7 +103,8 @@ class RefreshConfigTest(unittest.TestCase):
 
         self._save(
             tasks_provider=TasksProvider.AZURE_DEVOPS,
-            credentials={TasksProvider.AZURE_DEVOPS.value: {"project": "Core"}},
+            credentials={TasksProvider.AZURE_DEVOPS.value: {
+                "organization_url": "https://dev.azure.com/acme"}},
         )
         with patch.dict(executor._TASKS_PROVIDERS,
                         {TasksProvider.AZURE_DEVOPS: _Exploding}):

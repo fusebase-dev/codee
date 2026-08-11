@@ -126,7 +126,6 @@ class AdminState(rx.State):
     jira_api_token: str = ""
     jira_project: str = ""
     azure_organization_url: str = ""
-    azure_project: str = ""
     azure_tenant_id: str = ""
     azure_client_id: str = ""
     azure_client_secret: str = ""
@@ -484,7 +483,6 @@ class AdminState(rx.State):
         self.jira_api_token = jira.get("api_token", "")
         self.jira_project = jira.get("project", "")
         self.azure_organization_url = azure.get("organization_url", "")
-        self.azure_project = azure.get("project", "")
         self.azure_tenant_id = azure.get("tenant_id", "")
         self.azure_client_id = azure.get("client_id", "")
         self.azure_client_secret = azure.get("client_secret", "")
@@ -533,9 +531,6 @@ class AdminState(rx.State):
     def set_azure_organization_url(self, value: str) -> None:
         self.azure_organization_url = value
 
-    def set_azure_project(self, value: str) -> None:
-        self.azure_project = value
-
     def set_azure_tenant_id(self, value: str) -> None:
         self.azure_tenant_id = value
 
@@ -549,7 +544,7 @@ class AdminState(rx.State):
     def azure_can_connect(self) -> bool:
         """Everything the authorization request and the later queries need."""
         return all(value.strip() for value in (
-            self.azure_organization_url, self.azure_project,
+            self.azure_organization_url,
             self.azure_client_id, self.azure_client_secret))
 
     def connect_azure_devops(self) -> Any:
@@ -560,7 +555,7 @@ class AdminState(rx.State):
         """
         if not self.azure_can_connect:
             return rx.toast.error(
-                "Fill in organization URL, project, client ID and client secret first.")
+                "Fill in organization URL, client ID and client secret first.")
         error = self._persist_settings()
         if error:
             return rx.toast.error(error)
@@ -591,7 +586,6 @@ class AdminState(rx.State):
             if self.tasks_provider == "jira"
             else {
                 "organization_url": self.azure_organization_url,
-                "project": self.azure_project,
                 "tenant_id": self.azure_tenant_id,
                 "client_id": self.azure_client_id,
                 "client_secret": self.azure_client_secret,
@@ -1443,7 +1437,7 @@ def azure_instructions() -> rx.Component:
                            "→ user_impersonation → Add. Entra publishes no read-only scope "
                            "for Azure DevOps; Codee only ever issues read calls, and you can "
                            "narrow it further by connecting with an account that has Readers "
-                           "access to the project."),
+                           "access to only the projects it should see."),
                 azure_step(4, "Create a client secret",
                            "Certificates & secrets → New client secret. Copy the Value "
                            "column immediately — Azure hides it once you leave the page."),
@@ -1485,9 +1479,10 @@ def azure_fields() -> rx.Component:
         field("Organization URL", rx.input(value=AdminState.azure_organization_url,
                                            on_change=AdminState.set_azure_organization_url,
                                            placeholder="https://dev.azure.com/your-org",
-                                           width="100%")),
-        field("Project", rx.input(value=AdminState.azure_project,
-                                  on_change=AdminState.set_azure_project, width="100%")),
+                                           width="100%"),
+              hint=rx.text("Work items are picked up from every project in this "
+                           "organization the connected account can read.",
+                           color=MUTED, font_size="0.8rem")),
         field("Application (client) ID", rx.input(value=AdminState.azure_client_id,
                                                   on_change=AdminState.set_azure_client_id,
                                                   width="100%")),

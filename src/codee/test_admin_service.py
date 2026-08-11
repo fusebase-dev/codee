@@ -781,7 +781,6 @@ class AzureDevOpsOAuthTest(unittest.TestCase):
 
     AZURE_CREDENTIALS = {
         "organization_url": "https://dev.azure.com/acme",
-        "project": "Core",
         "tenant_id": "tenant-1",
         "client_id": "client-1",
         "client_secret": "secret-1",

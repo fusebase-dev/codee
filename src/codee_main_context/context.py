@@ -59,9 +59,10 @@ TASKS_PROVIDER_FIELDS: dict[TasksProvider, list[CredentialField]] = {
     # Azure DevOps authenticates through an Entra ID app registration, so the
     # stored credentials describe the app; the tokens it yields live in SQLite
     # (codee_database.oauth_tokens) rather than in settings.json.
+    # There is no project field: work items are queried across the whole
+    # organization, which is the scope the granted access has anyway.
     TasksProvider.AZURE_DEVOPS: [
         CredentialField("organization_url", "Organization URL"),
-        CredentialField("project", "Project"),
         CredentialField("tenant_id", "Directory (tenant) ID"),
         CredentialField("client_id", "Application (client) ID"),
         CredentialField("client_secret", "Client secret", secret=True),

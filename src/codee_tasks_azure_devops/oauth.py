@@ -64,10 +64,14 @@ class AzureDevOpsAuthError(RuntimeError):
 
 @dataclass(frozen=True)
 class OAuthConfig:
-    """The Entra app registration, as captured in settings.json."""
+    """The Entra app registration, as captured in settings.json.
+
+    There is no project here: queries run across the whole organization. A
+    project would only ever have been a filter — the access Entra grants covers
+    the organization however it is set.
+    """
 
     organization_url: str = ""
-    project: str = ""
     tenant_id: str = ""
     client_id: str = ""
     client_secret: str = ""
@@ -77,7 +81,6 @@ class OAuthConfig:
         creds = settings.credentials.get(PROVIDER, {})
         return cls(
             organization_url=(creds.get("organization_url") or "").strip().rstrip("/"),
-            project=(creds.get("project") or "").strip(),
             tenant_id=(creds.get("tenant_id") or "").strip(),
             client_id=(creds.get("client_id") or "").strip(),
             client_secret=(creds.get("client_secret") or "").strip(),
@@ -85,8 +88,8 @@ class OAuthConfig:
 
     def is_complete(self) -> bool:
         """Whether we have everything needed to run the flow and query tasks."""
-        return bool(self.organization_url and self.project
-                    and self.client_id and self.client_secret)
+        return bool(self.organization_url and self.client_id
+                    and self.client_secret)
 
     @property
     def tenant(self) -> str:

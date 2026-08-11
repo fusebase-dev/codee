@@ -18,7 +18,6 @@ from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
 def _config(**overrides) -> OAuthConfig:
     values = {
         "organization_url": "https://dev.azure.com/acme",
-        "project": "Core",
         "tenant_id": "tenant-1",
         "client_id": "client-1",
         "client_secret": "secret-1",
@@ -39,22 +38,32 @@ def _iso(offset: timedelta) -> str:
     return (datetime.now(timezone.utc) + offset).isoformat()
 
 
+def _settings(**credentials) -> Settings:
+    return Settings(tasks_provider=TasksProvider.AZURE_DEVOPS,
+                    credentials={"azure_devops": credentials})
+
+
 class OAuthConfigTest(unittest.TestCase):
     def test_from_settings_reads_provider_credentials(self) -> None:
-        settings = Settings(
-            tasks_provider=TasksProvider.AZURE_DEVOPS,
-            credentials={"azure_devops": {
-                "organization_url": "https://dev.azure.com/acme/",
-                "project": "Core",
-                "client_id": "client-1",
-                "client_secret": "secret-1",
-            }})
+        settings = _settings(organization_url="https://dev.azure.com/acme/",
+                             client_id="client-1",
+                             client_secret="secret-1")
 
         config = OAuthConfig.from_settings(settings)
 
         # The trailing slash would otherwise double up in every API URL.
         self.assertEqual(config.organization_url, "https://dev.azure.com/acme")
         self.assertTrue(config.is_complete())
+
+    def test_a_leftover_project_credential_is_ignored(self) -> None:
+        # Settings written when a project field still existed must not keep the
+        # queries narrowed to it; there is nothing left that reads the key.
+        config = OAuthConfig.from_settings(
+            _settings(organization_url="https://dev.azure.com/acme",
+                      project="Core", client_id="c", client_secret="s"))
+
+        self.assertTrue(config.is_complete())
+        self.assertNotIn("Core", str(config))
 
     def test_is_incomplete_without_a_secret(self) -> None:
         self.assertFalse(_config(client_secret="").is_complete())
@@ -299,15 +308,11 @@ class TasksProviderTest(unittest.TestCase):
         self._temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self._temporary.cleanup)
         self.context = CodeeMainContext(data_dir=Path(self._temporary.name))
-        settings = Settings(
-            tasks_provider=TasksProvider.AZURE_DEVOPS,
-            credentials={"azure_devops": {
-                "organization_url": "https://dev.azure.com/acme",
-                "project": "Core",
-                "client_id": "client-1",
-                "client_secret": "secret-1",
-            }})
-        self.provider = AzureDevOpsTasksProvider(settings, self.context)
+        self.provider = AzureDevOpsTasksProvider(
+            _settings(organization_url="https://dev.azure.com/acme",
+                      client_id="client-1",
+                      client_secret="secret-1"),
+            self.context)
 
     def _connect(self) -> None:
         oauth_tokens.save_tokens(
@@ -327,6 +332,25 @@ class TasksProviderTest(unittest.TestCase):
 
         self.assertIn(
             "[System.WorkItemType] IN ('Codee Task', 'Codee Story')", wiql)
+
+    def test_wiql_names_no_project_at_all(self) -> None:
+        wiql = self.provider._build_wiql(["Ready"])
+
+        self.assertNotIn("System.TeamProject", wiql)
+        # @project would need a project in the route, which there isn't.
+        self.assertNotIn("@project", wiql)
+
+    def test_the_query_is_organization_scoped(self) -> None:
+        self._connect()
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[_response({"workItems": []})]) as post:
+            self.provider.get_tasks(["Ready"])
+
+        self.assertEqual(post.call_args.args[0],
+                         "https://dev.azure.com/acme/_apis/wit/wiql")
+
+    def test_describe_says_the_query_covers_all_projects(self) -> None:
+        self.assertIn("all projects", self.provider.describe())
 
     def test_not_configured_until_oauth_completes(self) -> None:
         self.assertFalse(self.provider.is_configured())

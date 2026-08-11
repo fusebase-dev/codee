@@ -91,7 +91,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         connection = self._auth.connection() or {}
         account = connection.get("account") or "connected account"
         return (f"Azure DevOps {self._config.organization_url} "
-                f"(project {self._config.project}, assignee {account})")
+                f"(all projects, assignee {account})")
 
     def get_tasks(self, statuses: list[str]) -> list[Task]:
         """Fetch work items assigned to the connected account in the given states."""
@@ -120,8 +120,11 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
                 for item_id in ids if item_id in by_id]
 
     def _query_work_item_ids(self, token: str, statuses: list[str]) -> list[int]:
+        # Organization-scoped, like the batch fetch below: the endpoint's
+        # project segment is optional, and leaving it off is what lets one query
+        # span every project the connected account can read.
         response = requests.post(
-            f"{self._config.organization_url}/{self._config.project}/_apis/wit/wiql",
+            f"{self._config.organization_url}/_apis/wit/wiql",
             params={"api-version": API_VERSION, "$top": _MAX_TASKS},
             json={"query": self._build_wiql(statuses)},
             headers=self._headers(token),
@@ -132,7 +135,14 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return [item["id"] for item in work_items][:_BATCH_LIMIT]
 
     def _build_wiql(self, statuses: list[str]) -> str:
-        """WIQL for Codee work items owned by the connected account, highest priority first."""
+        """WIQL for Codee work items owned by the connected account, highest priority first.
+
+        Nothing here names a project, and no ``@project`` macro is used — that
+        is what keeps the query valid with no project in the route, so it spans
+        the organization. What comes back is still narrow: only the Codee work
+        item types, only the states asked for, and only what is assigned to the
+        connected account.
+        """
         quoted_statuses = ", ".join(_quote_wiql(status) for status in statuses)
         quoted_types = ", ".join(_quote_wiql(item_type)
                                  for item_type in _WORK_ITEM_TYPES)

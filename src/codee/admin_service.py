@@ -949,8 +949,8 @@ class AdminService:
         """
         config = azure_oauth.OAuthConfig.from_settings(self.load_settings())
         if not config.is_complete():
-            return False, ("Fill in organization URL, project, client ID and "
-                           "client secret before connecting.")
+            return False, ("Fill in organization URL, client ID and client "
+                           "secret before connecting.")
         state = azure_oauth.new_state()
         code_verifier = azure_oauth.new_code_verifier()
         redirect_uri = self.azure_redirect_uri()
