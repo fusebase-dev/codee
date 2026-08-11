@@ -1,9 +1,26 @@
 [project]
-name = "codee"
+name = "codee-agent"
 version = "0.1.0"
+description = "A virtual co-worker that picks up Jira and Azure DevOps tasks and solves them with coding agents."
+readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
+authors = [
+    { name = "Denis Kibalko", email = "denis.kibalko@nimbusweb.me" },
+]
+keywords = ["ai", "agent", "jira", "azure-devops", "claude-code", "github-copilot", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Bug Tracking",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "boto3 >= 1.35,<2",
     "requests >= 2.31,<3",
@@ -11,37 +28,39 @@ dependencies = [
     "pyyaml >= 6.0.3,<7",
     "cron-descriptor >= 2.1.0,<3",
     "python-dotenv >= 1.2.2,<2",
-    "codee-main-context",
-    "codee-database",
-    "codee-tasks-jira",
-    "codee-tasks-azure-devops",
-    "codee-agent-claude-code",
-    "codee-agent-github-copilot",
-    "reflex>=0.9.7",
+    "reflex >= 0.9.7",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest >= 8,<10",
+]
+
+[project.urls]
+Homepage = "https://github.com/fusebase-dev/codee"
+Repository = "https://github.com/fusebase-dev/codee"
+Issues = "https://github.com/fusebase-dev/codee/issues"
+
 [project.scripts]
-executor = "codee:executor.main"
-codee-admin = "codee:admin_cli.main"
-codee-init = "codee:init_cli.main"
-codee-start = "codee:start_cli.main"
+codee-start = "codee.start_cli:main"
+codee-init = "codee.init_cli:main"
+codee-admin = "codee.admin_cli:main"
+codee-executor = "codee.executor:main"
 
-[tool.setuptools.package-data]
-codee = ["templates/*.md", "templates/**/*.md"]
-
-[tool.uv.workspace]
-members = ["packages/*"]
-
-[tool.uv.sources]
-codee-main-context = { workspace = true }
-codee-database = { workspace = true }
-codee-tasks-jira = { workspace = true }
-codee-tasks-azure-devops = { workspace = true }
-codee-tasks-abstract = { workspace = true }
-codee-agent-claude-code = { workspace = true }
-codee-agent-github-copilot = { workspace = true }
-codee-agent-abstract = { workspace = true }
+[tool.uv.build-backend]
+module-name = [
+    "codee",
+    "codee_admin",
+    "codee_main_context",
+    "codee_database",
+    "codee_agent_abstract",
+    "codee_agent_claude_code",
+    "codee_agent_github_copilot",
+    "codee_tasks_abstract",
+    "codee_tasks_jira",
+    "codee_tasks_azure_devops",
+]
 
 [build-system]
-requires = ["uv_build >= 0.11.29,<0.12", "setuptools >= 83,<84"]
-build_backend = "uv_build"
+requires = ["uv_build >= 0.11.29,<0.12"]
+build-backend = "uv_build"
