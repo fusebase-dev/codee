@@ -59,3 +59,12 @@ Then click Connect to Azure DevOps. You will have to grant access for your app a
 Once every field of the selected provider is filled in (and, for Azure DevOps, the app is connected), a **Verify connection** button becomes available at the bottom of the Tasks provider section.
 
 Clicking it pulls tasks exactly the way Codee does when it polls: same account, same statuses your issue-triggered skills declare. It reports either the tasks it found or the reason the provider refused — a wrong project key, an expired token, an unreachable host. Nothing is saved by verifying, so you can check credentials before storing them.
+
+### Setting up MCP server for tasks provider
+
+When you have set up a task provider you will have button `Setup MCP Server` activated. In order to work for Codee you should also click
+this button. That will configure mcp server for the selected provider in `.mcp.json` file.
+
+### Verifiying tasks provider connection
+
+You can verify task provider / its MCP are working by clicking Verify connection button. It will try to fetch, create, update tasks.
