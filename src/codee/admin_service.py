@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,9 @@ from codee.lib.trigger_issue_skills import (
     ISSUE_TYPES,
     IssueTriggeredSkill,
     find_issue_triggered_skills,
+    issue_statuses,
 )
+from codee.tasks_providers import build_tasks_provider
 from codee_main_context.context import (
     CodeeMainContext,
     CodingAgent,
@@ -1124,6 +1127,39 @@ class AdminService:
             max_parallel_agents=max(1, max_parallel_agents),
         )
         save_settings(self.data_dir, self.context.settings)
+
+    def verify_tasks_connection(
+        self,
+        tasks_provider: str,
+        credentials: dict[str, str],
+    ) -> tuple[bool, str]:
+        """Pull tasks with the given credentials and report what happened.
+
+        Runs against the values sitting in the settings form rather than what
+        is on disk, so the check answers "do these credentials work?" without
+        first making the user save credentials that may be wrong. The statuses
+        are the ones the issue-triggered skills declare, which is exactly what
+        the executor polls for — a check that passes here is a poll that works.
+        """
+        try:
+            provider_key = TasksProvider(tasks_provider)
+        except ValueError:
+            return False, f"Unknown tasks provider: {tasks_provider}"
+        current = self.load_settings()
+        settings = replace(
+            current,
+            tasks_provider=provider_key,
+            credentials={**current.credentials, tasks_provider: credentials},
+        )
+        try:
+            provider = build_tasks_provider(settings)
+        except Exception as exc:
+            return False, str(exc)
+        if not provider.is_configured():
+            return False, ("Not configured yet — fill in every field above "
+                           "(and connect, where the provider needs it).")
+        return provider.verify_connection(
+            issue_statuses(find_issue_triggered_skills(self.skills_dir)))
 
     # --- Azure DevOps OAuth -------------------------------------------------
 

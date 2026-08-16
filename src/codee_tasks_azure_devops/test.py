@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
+
 from codee_database import oauth_tokens
 from codee_database.database import get_db_connection
 from codee_main_context.context import CodeeMainContext, Settings, TasksProvider
@@ -476,6 +478,55 @@ class TasksProviderTest(unittest.TestCase):
         with patch("codee_tasks_azure_devops.provider.requests.post") as post:
             self.assertEqual(self.provider.get_tasks(["Ready"]), [])
         post.assert_not_called()
+
+
+    # The settings page pulls for real and reports the failure instead of
+    # hiding it, which is what makes a "Verify connection" answer worth trusting.
+
+    def test_no_statuses_drops_the_state_clause_rather_than_emptying_it(self) -> None:
+        # `IN ()` is not valid WIQL, and a check run before any issue-triggered
+        # skill exists still has to reach Azure DevOps.
+        wiql = self.provider._build_wiql([])
+
+        self.assertNotIn("[System.State] IN", wiql)
+        self.assertIn("[System.AssignedTo] = @Me", wiql)
+
+    def test_a_successful_pull_names_the_work_items_it_found(self) -> None:
+        self._connect()
+        wiql = _response({"workItems": [{"id": 11}]})
+        items = _response({"value": [
+            {"id": 11, "fields": {"System.Title": "Fix the thing",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Codee Task"}},
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[wiql, items]):
+            verified, message = self.provider.verify_connection(["Ready"])
+
+        self.assertTrue(verified)
+        self.assertIn("11 Fix the thing", message)
+
+    def test_a_rejected_query_reports_what_azure_devops_said(self) -> None:
+        self._connect()
+        response = Mock(status_code=400, text="")
+        response.json.return_value = {"message": "TF51005: no such field."}
+        response.raise_for_status.side_effect = requests.HTTPError(
+            "400 Client Error", response=response)
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   return_value=response):
+            verified, message = self.provider.verify_connection(["Ready"])
+
+        self.assertFalse(verified)
+        self.assertIn("HTTP 400", message)
+        self.assertIn("TF51005", message)
+
+    def test_a_missing_authorization_is_reported_not_swallowed(self) -> None:
+        verified, message = self.provider.verify_connection(["Ready"])
+
+        self.assertFalse(verified)
+        self.assertIn("sign-in failed", message)
 
 
 def main():
