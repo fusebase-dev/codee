@@ -1112,5 +1112,91 @@ class AzureDevOpsOAuthTest(unittest.TestCase):
             self.assertFalse(service.azure_connection()["connected"])
 
 
+class VerifyTasksConnectionTest(unittest.TestCase):
+    """The settings page checks credentials by pulling tasks with them."""
+
+    JIRA_CREDENTIALS = {
+        "base_url": "https://acme.atlassian.net",
+        "account_email": "agent@acme.test",
+        "api_token": "token",
+        "project": "CORE",
+    }
+
+    def _service(self, root: Path) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.root = root
+        service.skills_dir = _write_issue_skill(root)
+        service.data_dir = root / ".codee"
+        service.data_dir.mkdir()
+        settings = Settings(credentials={"jira": {"base_url": "https://stale.test"}})
+        service.context = CodeeMainContext(
+            data_dir=service.data_dir, settings=settings)
+        save_settings(service.data_dir, settings)
+        return service
+
+    def test_the_form_credentials_are_used_not_the_saved_ones(self) -> None:
+        # The point of the check is to try credentials before committing them.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.return_value = {"issues": []}
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response) as get:
+                verified, message = service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS)
+
+            self.assertTrue(verified, message)
+            self.assertTrue(get.call_args.args[0].startswith(
+                "https://acme.atlassian.net"))
+
+    def test_it_polls_the_statuses_the_issue_skills_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.return_value = {"issues": []}
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response) as get:
+                service.verify_tasks_connection("jira", self.JIRA_CREDENTIALS)
+
+            self.assertIn('status in ("Ready")',
+                          get.call_args.kwargs["params"]["jql"])
+
+    def test_missing_credentials_are_refused_before_any_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            with patch("codee_tasks_jira.provider.requests.get") as get:
+                verified, message = service.verify_tasks_connection(
+                    "jira", {"base_url": "https://acme.atlassian.net"})
+
+            self.assertFalse(verified)
+            self.assertIn("Not configured", message)
+            get.assert_not_called()
+
+    def test_an_unknown_provider_is_reported_rather_than_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            verified, message = service.verify_tasks_connection("trello", {})
+
+            self.assertFalse(verified)
+            self.assertIn("trello", message)
+
+    def test_saved_settings_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.return_value = {"issues": []}
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response):
+                service.verify_tasks_connection("jira", self.JIRA_CREDENTIALS)
+
+            self.assertEqual(service.load_settings().credentials["jira"],
+                             {"base_url": "https://stale.test"})
+
+
 if __name__ == "__main__":
     unittest.main()

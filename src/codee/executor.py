@@ -11,12 +11,10 @@ from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
-    CodeeMainContext, CodingAgent, Settings, TasksProvider, data_dir,
+    CodeeMainContext, CodingAgent, Settings, data_dir,
     load_settings, project_root)
 from codee_main_context.logging import configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
-from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
-from codee_tasks_jira.provider import JiraTasksProvider
 
 from codee.lib import runs_db
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
@@ -24,18 +22,12 @@ from codee.lib.trigger_cron_skills import trigger_cron_skills
 from codee.lib.trigger_email_skills import trigger_email_skills
 from codee.lib.trigger_issue_skills import (
     find_issue_triggered_skills, issue_statuses, match_issue_skill)
+from codee.tasks_providers import build_tasks_provider
 
 log = get_logger(__name__)
 
 context = CodeeMainContext(data_dir=data_dir())
 context.settings = load_settings(context.data_dir)
-
-# Concrete tasks providers, keyed by the provider selected in settings. Each
-# provider initializes itself from the settings, so nothing here is provider-specific.
-_TASKS_PROVIDERS: dict[TasksProvider, type[AbstractTasksProvider]] = {
-    TasksProvider.JIRA: JiraTasksProvider,
-    TasksProvider.AZURE_DEVOPS: AzureDevOpsTasksProvider,
-}
 
 # Concrete coding agents, keyed by the agent selected in settings. Each agent
 # initializes itself from the settings, so nothing here is agent-specific.
@@ -88,14 +80,6 @@ def _get_or_create_session(sessions: dict[str, str], task_id: str) -> str:
     return sessions[task_id]
 
 
-def _build_tasks_provider(settings: Settings) -> AbstractTasksProvider:
-    provider = _TASKS_PROVIDERS.get(settings.tasks_provider)
-    if provider is None:
-        raise ValueError(
-            f"unsupported tasks provider: {settings.tasks_provider.value}")
-    return provider(settings)
-
-
 def _build_coding_agent(settings: Settings) -> AbstractCodingAgent:
     agent = _CODING_AGENTS.get(settings.coding_agent)
     if agent is None:
@@ -104,7 +88,7 @@ def _build_coding_agent(settings: Settings) -> AbstractCodingAgent:
     return agent(settings, REPO_ROOT)
 
 
-tasks_provider: AbstractTasksProvider = _build_tasks_provider(context.settings)
+tasks_provider: AbstractTasksProvider = build_tasks_provider(context.settings)
 
 coding_agent: AbstractCodingAgent = _build_coding_agent(context.settings)
 
@@ -130,7 +114,7 @@ def _refresh_config() -> None:
     if (settings.tasks_provider != previous.tasks_provider
             or settings.credentials != previous.credentials):
         try:
-            tasks_provider = _build_tasks_provider(settings)
+            tasks_provider = build_tasks_provider(settings)
         except Exception as exc:
             # Keep polling with the provider we have; the next edit gets another go.
             log.error("Failed to apply new tasks provider settings: %s", exc)

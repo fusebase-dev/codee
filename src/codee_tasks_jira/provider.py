@@ -3,7 +3,8 @@ from typing import Callable
 import requests
 
 from codee_main_context.context import Settings, TasksProvider
-from codee_tasks_abstract.provider import AbstractTasksProvider, Task
+from codee_tasks_abstract.provider import (
+    AbstractTasksProvider, Task, TasksProviderError)
 
 
 # The label that marks a JIRA story as Codee-owned. Children of such a story
@@ -14,6 +15,29 @@ CODEE_STORY_LABEL = "CodeeStory"
 def _quote_jql(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _describe_error(exc: requests.RequestException) -> str:
+    """Turn a failed request into something a user can act on.
+
+    JIRA answers a bad token, an unknown project or a malformed JQL with the
+    same 400/401 status and puts the actual reason in the body, so the status
+    alone would tell the settings page nothing.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        payload = response.json()
+    except ValueError:
+        detail = response.text.strip()
+    else:
+        messages = list(payload.get("errorMessages") or [])
+        messages += [f"{field}: {message}"
+                     for field, message in (payload.get("errors") or {}).items()]
+        detail = "; ".join(messages)
+    return f"JIRA returned HTTP {response.status_code}" + (
+        f": {detail[:300]}" if detail else "")
 
 
 class JiraTask(Task):
@@ -72,9 +96,13 @@ class JiraTasksProvider(AbstractTasksProvider):
         return (f"JIRA {self._base_url} "
                 f"(project {self._project}, assignee {self._assignee_email})")
 
-    def get_tasks(self, statuses: list[str]) -> list[Task]:
+    def get_tasks(self, statuses: list[str],
+                  raise_errors: bool = False) -> list[Task]:
         """Fetch tasks assigned to the target user in the configured states."""
-        if not statuses:
+        # Nothing is waiting on an issue, so there is no request worth making.
+        # The settings check passes no statuses too, but there the whole point
+        # is to reach JIRA, so it queries without a status filter.
+        if not statuses and not raise_errors:
             return []
         url = f"{self._base_url}/rest/api/3/search/jql"
         params = {
@@ -82,8 +110,6 @@ class JiraTasksProvider(AbstractTasksProvider):
             "fields": "key,summary,status,issuetype,parent,labels,priority",
             "maxResults": 50,
         }
-
-        print("PARAMS", params)
 
         try:
             resp = requests.get(
@@ -94,25 +120,31 @@ class JiraTasksProvider(AbstractTasksProvider):
                 timeout=30,
             )
             resp.raise_for_status()
-
-            print("RESP", resp)
-
             data = resp.json()
         except requests.RequestException as exc:
+            if raise_errors:
+                raise TasksProviderError(_describe_error(exc)) from exc
             print(f"JIRA API error: {exc}")
             return []
 
         return [self._to_task(issue) for issue in data.get("issues", [])]
 
     def _build_jql(self, statuses: list[str]) -> str:
-        """JQL for AI-owned issues, highest priority first, then oldest."""
-        quoted_statuses = ", ".join(
-            _quote_jql(status) for status in statuses
-        )
+        """JQL for AI-owned issues, highest priority first, then oldest.
+
+        With no statuses the clause is dropped rather than left empty: an
+        ``in ()`` is a JQL syntax error, and the only caller that asks for no
+        statuses is the connection check, which wants every assigned issue.
+        """
+        status_clause = ""
+        if statuses:
+            quoted_statuses = ", ".join(
+                _quote_jql(status) for status in statuses)
+            status_clause = f'AND status in ({quoted_statuses}) '
         return (
             f'project = {self._project} '
             f'AND assignee = "{self._assignee_email}" '
-            f'AND status in ({quoted_statuses}) '
+            f'{status_clause}'
             f'ORDER BY priority DESC, created ASC'
         )
 

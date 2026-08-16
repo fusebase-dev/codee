@@ -10,7 +10,7 @@ from codee_main_context.context import (
 from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
 from codee_tasks_jira.provider import JiraTasksProvider
 
-from codee import executor
+from codee import executor, tasks_providers
 from codee.lib import runs_db
 
 
@@ -43,7 +43,7 @@ class RefreshConfigTest(unittest.TestCase):
 
         executor.context.data_dir = self.data_dir
         executor.context.settings = Settings()
-        executor.tasks_provider = executor._build_tasks_provider(Settings())
+        executor.tasks_provider = executor.build_tasks_provider(Settings())
 
     def _save(self, **overrides) -> Settings:
         settings = Settings(**overrides)
@@ -106,7 +106,7 @@ class RefreshConfigTest(unittest.TestCase):
             credentials={TasksProvider.AZURE_DEVOPS.value: {
                 "organization_url": "https://dev.azure.com/acme"}},
         )
-        with patch.dict(executor._TASKS_PROVIDERS,
+        with patch.dict(tasks_providers.TASKS_PROVIDERS,
                         {TasksProvider.AZURE_DEVOPS: _Exploding}):
             executor._refresh_config()
 

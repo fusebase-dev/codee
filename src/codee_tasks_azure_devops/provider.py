@@ -6,7 +6,8 @@ but it is a query — nothing in this module creates or modifies a work item.
 """
 import requests
 from codee_main_context.context import CodeeMainContext, Settings, data_dir
-from codee_tasks_abstract.provider import AbstractTasksProvider, Task
+from codee_tasks_abstract.provider import (
+    AbstractTasksProvider, Task, TasksProviderError)
 
 from codee_tasks_azure_devops.oauth import (
     AzureDevOpsAuth, AzureDevOpsAuthError, OAuthConfig)
@@ -52,6 +53,24 @@ def _quote_wiql(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _describe_error(exc: requests.RequestException) -> str:
+    """Turn a failed request into something a user can act on.
+
+    Azure DevOps explains a rejected query — an unknown state name, a work item
+    type this organization doesn't define, an account with no access — in the
+    body's ``message``, so the status code alone would say nothing useful.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    try:
+        detail = (response.json().get("message") or "").strip()
+    except ValueError:
+        detail = response.text.strip()
+    return f"Azure DevOps returned HTTP {response.status_code}" + (
+        f": {detail[:300]}" if detail else "")
+
+
 class AzureDevOpsWorkItem(Task):
     """A Task that remembers the raw Azure DevOps work item type.
 
@@ -93,13 +112,20 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return (f"Azure DevOps {self._config.organization_url} "
                 f"(all projects, assignee {account})")
 
-    def get_tasks(self, statuses: list[str]) -> list[Task]:
+    def get_tasks(self, statuses: list[str],
+                  raise_errors: bool = False) -> list[Task]:
         """Fetch work items assigned to the connected account in the given states."""
-        if not statuses:
+        # Nothing is waiting on a work item, so there is no request worth
+        # making. The settings check passes no statuses too, but there the whole
+        # point is to reach Azure DevOps, so it queries without a state filter.
+        if not statuses and not raise_errors:
             return []
         try:
             token = self._auth.access_token()
         except AzureDevOpsAuthError as exc:
+            if raise_errors:
+                raise TasksProviderError(
+                    f"Azure DevOps sign-in failed: {exc}") from exc
             print(f"Azure DevOps auth error: {exc}")
             return []
 
@@ -110,6 +136,8 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             items = self._fetch_work_items(token, ids)
             parents = self._fetch_parents(token, items)
         except requests.RequestException as exc:
+            if raise_errors:
+                raise TasksProviderError(_describe_error(exc)) from exc
             print(f"Azure DevOps API error: {exc}")
             return []
 
@@ -134,6 +162,18 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         work_items = response.json().get("workItems") or []
         return [item["id"] for item in work_items][:_BATCH_LIMIT]
 
+    def _build_wiql_status_clause(self, statuses: list[str]) -> str:
+        """The state filter, dropped entirely when nothing was requested.
+
+        ``IN ()`` is not valid WIQL, and the only caller that passes no statuses
+        is the connection check — it wants every Codee work item assigned to the
+        account, whatever state it sits in.
+        """
+        if not statuses:
+            return ""
+        quoted = ", ".join(_quote_wiql(status) for status in statuses)
+        return f"AND [System.State] IN ({quoted}) "
+
     def _build_wiql(self, statuses: list[str]) -> str:
         """WIQL for Codee work items owned by the connected account, highest priority first.
 
@@ -143,14 +183,13 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         item types, only the states asked for, and only what is assigned to the
         connected account.
         """
-        quoted_statuses = ", ".join(_quote_wiql(status) for status in statuses)
         quoted_types = ", ".join(_quote_wiql(item_type)
                                  for item_type in _WORK_ITEM_TYPES)
         return (
             "SELECT [System.Id] FROM WorkItems "
             "WHERE [System.AssignedTo] = @Me "
             f"AND [System.WorkItemType] IN ({quoted_types}) "
-            f"AND [System.State] IN ({quoted_statuses}) "
+            f"{self._build_wiql_status_clause(statuses)}"
             "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, [System.CreatedDate] ASC"
         )
 

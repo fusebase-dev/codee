@@ -143,6 +143,9 @@ class AdminState(rx.State):
     azure_account: str = ""
     azure_expires_label: str = ""
     azure_redirect_uri: str = ""
+    tasks_verifying: bool = False
+    tasks_verify_ok: bool = False
+    tasks_verify_message: str = ""
 
     @rx.var
     def filtered_skills(self) -> list[SkillSummary]:
@@ -541,6 +544,7 @@ class AdminState(rx.State):
         self.azure_tenant_id = azure.get("tenant_id", "")
         self.azure_client_id = azure.get("client_id", "")
         self.azure_client_secret = azure.get("client_secret", "")
+        self._drop_verification()
         self.load_azure_connection()
         return self._azure_callback_toast()
 
@@ -562,8 +566,15 @@ class AdminState(rx.State):
             return rx.toast.success(message or "Connected to Azure DevOps")
         return rx.toast.error(message or "Could not connect to Azure DevOps")
 
+    def _drop_verification(self) -> None:
+        """Forget the last check: it spoke for credentials that just changed."""
+        self.tasks_verifying = False
+        self.tasks_verify_ok = False
+        self.tasks_verify_message = ""
+
     def set_tasks_provider(self, value: str) -> None:
         self.tasks_provider = value
+        self._drop_verification()
 
     def set_coding_agent(self, value: str) -> None:
         self.coding_agent = value
@@ -573,27 +584,35 @@ class AdminState(rx.State):
 
     def set_jira_base_url(self, value: str) -> None:
         self.jira_base_url = value
+        self._drop_verification()
 
     def set_jira_account_email(self, value: str) -> None:
         self.jira_account_email = value
+        self._drop_verification()
 
     def set_jira_api_token(self, value: str) -> None:
         self.jira_api_token = value
+        self._drop_verification()
 
     def set_jira_project(self, value: str) -> None:
         self.jira_project = value
+        self._drop_verification()
 
     def set_azure_organization_url(self, value: str) -> None:
         self.azure_organization_url = value
+        self._drop_verification()
 
     def set_azure_tenant_id(self, value: str) -> None:
         self.azure_tenant_id = value
+        self._drop_verification()
 
     def set_azure_client_id(self, value: str) -> None:
         self.azure_client_id = value
+        self._drop_verification()
 
     def set_azure_client_secret(self, value: str) -> None:
         self.azure_client_secret = value
+        self._drop_verification()
 
     @rx.var
     def azure_can_connect(self) -> bool:
@@ -601,6 +620,44 @@ class AdminState(rx.State):
         return all(value.strip() for value in (
             self.azure_organization_url,
             self.azure_client_id, self.azure_client_secret))
+
+    @rx.var
+    def tasks_can_verify(self) -> bool:
+        """Whether a real pull is worth attempting with what's on the form.
+
+        Every field the provider reads has to be filled in, and Azure DevOps
+        additionally needs the OAuth consent — without it the check could only
+        ever report "not connected", which the status line above already says.
+        """
+        if self.tasks_provider == "jira":
+            return all(value.strip() for value in (
+                self.jira_base_url, self.jira_account_email,
+                self.jira_api_token, self.jira_project))
+        return self.azure_can_connect and self.azure_connected
+
+    @rx.event(background=True)
+    async def verify_tasks_connection(self) -> Any:
+        """Pull tasks with the credentials on the form and show the outcome.
+
+        In the background because it is a live API call: the provider allows
+        itself 30s per request, and the page has to stay responsive for that
+        long. Nothing is saved — verifying credentials shouldn't commit them.
+        """
+        async with self:
+            if self.tasks_verifying or not self.tasks_can_verify:
+                return
+            self.tasks_verifying = True
+            self.tasks_verify_message = ""
+            provider, credentials = self.tasks_provider, self._credentials()
+        try:
+            verified, message = await asyncio.to_thread(
+                SERVICE.verify_tasks_connection, provider, credentials)
+        except Exception as error:
+            verified, message = False, str(error)
+        async with self:
+            self.tasks_verifying = False
+            self.tasks_verify_ok = verified
+            self.tasks_verify_message = message
 
     def connect_azure_devops(self) -> Any:
         """Save the app registration, then hand the browser to Entra ID for consent.
@@ -622,8 +679,25 @@ class AdminState(rx.State):
 
     def disconnect_azure_devops(self) -> Any:
         SERVICE.disconnect_azure()
+        self._drop_verification()
         self.load_azure_connection()
         return rx.toast.success("Disconnected from Azure DevOps")
+
+    def _credentials(self) -> dict[str, str]:
+        """The selected provider's credentials as they stand on the form."""
+        if self.tasks_provider == "jira":
+            return {
+                "base_url": self.jira_base_url,
+                "account_email": self.jira_account_email,
+                "api_token": self.jira_api_token,
+                "project": self.jira_project,
+            }
+        return {
+            "organization_url": self.azure_organization_url,
+            "tenant_id": self.azure_tenant_id,
+            "client_id": self.azure_client_id,
+            "client_secret": self.azure_client_secret,
+        }
 
     def _persist_settings(self) -> str:
         """Write the settings to disk. Returns an error message, or '' when saved."""
@@ -631,26 +705,11 @@ class AdminState(rx.State):
             parallel_agents = int(self.max_parallel_agents)
         except ValueError:
             return "Max parallel tasks must be a number"
-        credentials = (
-            {
-                "base_url": self.jira_base_url,
-                "account_email": self.jira_account_email,
-                "api_token": self.jira_api_token,
-                "project": self.jira_project,
-            }
-            if self.tasks_provider == "jira"
-            else {
-                "organization_url": self.azure_organization_url,
-                "tenant_id": self.azure_tenant_id,
-                "client_id": self.azure_client_id,
-                "client_secret": self.azure_client_secret,
-            }
-        )
         SERVICE.save_settings(
             self.tasks_provider,
             self.coding_agent,
             parallel_agents,
-            credentials,
+            self._credentials(),
         )
         return ""
 
@@ -1627,6 +1686,36 @@ def azure_fields() -> rx.Component:
         spacing="4", width="100%")
 
 
+def tasks_verification() -> rx.Component:
+    """Check the credentials by pulling tasks, and print what came back."""
+    return rx.vstack(
+        rx.hstack(
+            rx.button(
+                rx.cond(AdminState.tasks_verifying,
+                        rx.spinner(size="2"), rx.icon("plug-zap", size=16)),
+                rx.cond(AdminState.tasks_verifying,
+                        "Verifying…", "Verify connection"),
+                type="button", variant="outline",
+                disabled=AdminState.tasks_verifying | ~AdminState.tasks_can_verify,
+                on_click=AdminState.verify_tasks_connection),
+            rx.cond(
+                AdminState.tasks_can_verify,
+                rx.fragment(),
+                rx.text("Fill in every field above to check the connection.",
+                        color=MUTED, font_size="0.8rem")),
+            spacing="3", align="center", width="100%"),
+        rx.cond(
+            AdminState.tasks_verify_message != "",
+            rx.cond(
+                AdminState.tasks_verify_ok,
+                rx.callout(AdminState.tasks_verify_message, icon="circle-check",
+                           size="1", color_scheme="green", width="100%"),
+                rx.callout(AdminState.tasks_verify_message, icon="circle-alert",
+                           size="1", color_scheme="red", width="100%")),
+        ),
+        spacing="3", width="100%")
+
+
 def settings_page() -> rx.Component:
     jira_fields = rx.vstack(
         field("Base URL", rx.input(value=AdminState.jira_base_url,
@@ -1657,6 +1746,7 @@ def settings_page() -> rx.Component:
                                         on_change=AdminState.set_tasks_provider, width="100%")),
             rx.box(rx.cond(AdminState.tasks_provider == "jira",
                    jira_fields, azure_fields()), margin_top="1rem"),
+            rx.box(tasks_verification(), margin_top="1.25rem"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         rx.button(rx.icon("save", size=16), "Save settings",
                   on_click=AdminState.save_settings),
