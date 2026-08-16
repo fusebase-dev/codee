@@ -1,0 +1,61 @@
+---
+sidebar_position: 2
+---
+
+# Configuration
+
+Codee works with tasks providers to execute them. After you run `uv run codee-start` you need to open Codee UI and open `Settings`.
+
+## Coding agent configuration
+
+Codee supports Claude Code and Github Copilot coding agents. You need to select one of them.
+
+### Max parallel tasks
+
+Codee can execute multiple tasks in parallel. Specify number of parallel tasks here.
+
+## Tasks provider configuration
+
+Jira and Azure Dev Ops currently supported. Choose one of them.
+
+### Jira settings
+
+For Codee in Jira you need to create a separate user account. So it acts as a real user.
+
+#### Base URL
+
+Your Jira domain, e.g. `https://myjira.atlassian.net`.
+
+#### Account email
+
+Codee's user email in Jira.
+
+#### API token
+
+API token to access Jira. Create a separate API token in Codee account settings.
+
+#### Project key
+
+Your project key, it is used as tasks prefix, e.g. for task id `MYPRJ-4124` the project key is `MYPRJ`.
+
+### Azure DevOps
+
+For Azure DevOps you will need to create an App Registration,  you will see instruction on the Settings page on how to do that.
+
+#### Organization URL
+
+Specify your organiztion URL in Azure DevOps.
+
+After you specified Organization URL fill in fields based on app registration:
+
+- Application (client) ID
+- Client secret
+- Directory (tenant) ID (optional)
+
+Then click Connect to Azure DevOps. You will have to grant access for your app and after that the setup is done.
+
+### Verify connection
+
+Once every field of the selected provider is filled in (and, for Azure DevOps, the app is connected), a **Verify connection** button becomes available at the bottom of the Tasks provider section.
+
+Clicking it pulls tasks exactly the way Codee does when it polls: same account, same statuses your issue-triggered skills declare. It reports either the tasks it found or the reason the provider refused — a wrong project key, an expired token, an unreachable host. Nothing is saved by verifying, so you can check credentials before storing them.
