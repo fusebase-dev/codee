@@ -10,7 +10,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 import yaml
@@ -21,8 +21,10 @@ from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
+from codee_tasks_abstract.provider import AbstractTasksProvider
 from codee.lib import runs_db
 from codee.lib.cron_describe import describe_cron
+from codee.lib.mcp_config import find_mcp_server, write_mcp_server
 from codee.lib.trigger_cron_skills import trigger_cron_skills
 from codee.lib.trigger_issue_skills import (
     ISSUE_TYPES,
@@ -30,7 +32,7 @@ from codee.lib.trigger_issue_skills import (
     find_issue_triggered_skills,
     issue_statuses,
 )
-from codee.tasks_providers import build_tasks_provider
+from codee.tasks_providers import TASKS_PROVIDERS, build_tasks_provider
 from codee_main_context.context import (
     CodeeMainContext,
     CodingAgent,
@@ -96,10 +98,87 @@ WORKFLOW_NODE_CENTER_OFFSET = 110
 # data directory and reused by later admin processes.
 WORKFLOW_CACHE_FILE = "workflow.json"
 
+# The checks the settings page runs against the tasks provider, in the order it
+# shows them: the second is only worth attempting once the first passes.
+TASKS_CHECK = "Tasks can be pulled"
+MCP_CHECK = "The coding agent can work through the MCP server"
+# The plan, for a caller that wants to show the checks before it has results.
+TASKS_CHECKS = (TASKS_CHECK, MCP_CHECK)
+# Title the check's throwaway task carries, so it is recognizable in the backend
+# afterwards. The agent closes it as part of the check.
+MCP_CHECK_SUMMARY = "Codee MCP connection check"
+
 # Port the admin UI listens on unless ``codee-admin --port`` says otherwise.
 # The OAuth redirect URI is built from it, and Entra ID matches redirect URIs
 # exactly — including the port — so both have to agree on one value.
 DEFAULT_ADMIN_PORT = 8501
+
+
+def _check(name: str, ok: bool, message: str) -> dict[str, Any]:
+    """One line of the settings page's check list."""
+    return {"name": name, "ok": ok, "message": message}
+
+
+def _strip_code_fence(text: str) -> str:
+    """Unwrap a ```-fenced block, for agents that answer JSON inside one."""
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```"):
+        return re.sub(r"^```(?:json)?\s*|\s*```$", "", stripped,
+                      flags=re.IGNORECASE)
+    return stripped
+
+
+def _mcp_check_prompt(server_name: str, steps: list[str]) -> str:
+    """Ask the agent to carry out the provider's steps through MCP and nothing else.
+
+    The restriction is the point of the check: a coding agent handed JIRA
+    credentials can reach the REST API by writing a script, and would then
+    report success for a setup the executor's agents can't actually use. So the
+    prompt closes every other route and tells it to fail loudly instead.
+    """
+    numbered = "\n".join(f"{number}. {step}"
+                         for number, step in enumerate(steps, start=1))
+    return (
+        f"You are verifying that the `{server_name}` MCP server works from this "
+        "project. Carry out every step below using only that MCP server's "
+        "tools. No other way is allowed: no REST or HTTP calls, no curl, no "
+        "CLI, no browser, and no script you write yourself. If the MCP server "
+        "is not available to you, or one of its tools is missing or fails, stop "
+        "and report that failure rather than reaching for another route.\n\n"
+        f"{numbered}\n\n"
+        "Then reply with one JSON object and no other text. On success:\n"
+        '{"ok": true, "task": "<identifier of the task you created>", '
+        '"status": "<the status you left it in>"}\n'
+        "If any step did not complete:\n"
+        '{"ok": false, "error": "<one sentence naming the step that failed '
+        'and why>"}'
+    )
+
+
+def _mcp_check_result(server_name: str, response: str) -> dict[str, Any]:
+    """Read the agent's verdict out of its reply.
+
+    That reply is the only evidence there is — nothing else watched the agent
+    do the work — so a reply that isn't the JSON object it was asked for counts
+    as a failure rather than a pass: an agent that ignored the format can't be
+    taken at its word on the part that matters either.
+    """
+    try:
+        payload = json.loads(_strip_code_fence(response))
+        if not isinstance(payload, dict):
+            raise ValueError
+    except ValueError:
+        return _check(MCP_CHECK, False, "The agent did not report a result: "
+                      f"{response.strip()[:300] or 'it said nothing'}")
+    if not payload.get("ok"):
+        return _check(MCP_CHECK, False,
+                      str(payload.get("error")
+                          or "The agent reported a failure."))
+    task = str(payload.get("task") or "a task").strip()
+    status = str(payload.get("status") or "a closed status").strip()
+    return _check(MCP_CHECK, True,
+                  f"The agent created {task} through {server_name} and moved "
+                  f"it to {status}.")
 
 
 def parse_index(text: str) -> list[dict[str, Any]]:
@@ -519,12 +598,7 @@ class AdminService:
             "or handoff to a human. Do not include prose or non-status process steps.\n\n"
             + "\n\n".join(documents)
         )
-        agent_type = _CODING_AGENTS.get(self.context.settings.coding_agent)
-        if agent_type is None:
-            raise RuntimeError(
-                f"Coding agent '{self.context.settings.coding_agent.value}' is not available"
-            )
-        agent = agent_type(self.context.settings, self.root)
+        agent = self._build_coding_agent()
         validation_error = ""
         for attempt in range(2):
             request = prompt
@@ -534,12 +608,7 @@ class AdminService:
                     f"{validation_error}. Return corrected JSON only."
                 )
             response = agent.run(request, str(uuid.uuid4()))
-            payload_text = response.strip()
-            if payload_text.startswith("```") and payload_text.endswith("```"):
-                payload_text = re.sub(
-                    r"^```(?:json)?\s*|\s*```$", "", payload_text,
-                    flags=re.IGNORECASE,
-                )
+            payload_text = _strip_code_fence(response)
             try:
                 payload = json.loads(payload_text)
                 if not isinstance(payload, dict):
@@ -1132,34 +1201,148 @@ class AdminService:
         self,
         tasks_provider: str,
         credentials: dict[str, str],
-    ) -> tuple[bool, str]:
-        """Pull tasks with the given credentials and report what happened.
+    ) -> Iterator[dict[str, Any]]:
+        """Yield each check the settings page reports on, as it finishes.
 
-        Runs against the values sitting in the settings form rather than what
-        is on disk, so the check answers "do these credentials work?" without
-        first making the user save credentials that may be wrong. The statuses
-        are the ones the issue-triggered skills declare, which is exactly what
-        the executor polls for — a check that passes here is a poll that works.
+        Each answers for one thing the executor depends on: that tasks can be
+        pulled with these credentials, and that the coding agent can act on one
+        through the provider's MCP server. They arrive one at a time rather than
+        as a verdict, because the second runs a whole coding agent — the caller
+        can put the first result on screen and a spinner on the second instead
+        of holding a blank page until both are done.
+
+        Runs against the values sitting in the settings form rather than what is
+        on disk, so the checks answer "do these credentials work?" without first
+        making the user save credentials that may be wrong.
+        """
+        try:
+            provider = self._provider_from_form(tasks_provider, credentials)
+        except Exception as exc:
+            yield _check(TASKS_CHECK, False, str(exc))
+            return
+        if not provider.is_configured():
+            yield _check(TASKS_CHECK, False,
+                         "Not configured yet — fill in every field above "
+                         "(and connect, where the provider needs it).")
+            return
+        # The statuses are the ones the issue-triggered skills declare, which is
+        # exactly what the executor polls for — a check that passes here is a
+        # poll that works.
+        pulled, message = provider.verify_connection(
+            issue_statuses(find_issue_triggered_skills(self.skills_dir)))
+        yield _check(TASKS_CHECK, pulled, message)
+        yield self._check_tasks_mcp(tasks_provider, provider, blocked=not pulled)
+
+    def _check_tasks_mcp(
+        self,
+        tasks_provider: str,
+        provider: AbstractTasksProvider,
+        blocked: bool,
+    ) -> dict[str, Any]:
+        """Have the coding agent drive the provider's backend through MCP alone.
+
+        This one costs a real agent run and leaves a real, closed task behind, so
+        the cheap reasons not to attempt it are all taken first: no server in
+        ``.mcp.json``, or credentials the pull above already rejected.
+        """
+        server_name = type(provider).MCP_SERVER_NAME
+        if not self.tasks_mcp_configured(tasks_provider):
+            return _check(MCP_CHECK, False,
+                          "MCP server is not configured, click Setup MCP "
+                          "server above")
+        if blocked:
+            return _check(MCP_CHECK, False,
+                          "Not attempted: the check above has to pass first.")
+
+        session_id = str(uuid.uuid4())
+        # The id makes the task recognizable afterwards, and keeps two checks
+        # run back to back from looking like the same leftover.
+        steps = provider.mcp_check_steps(
+            f"{MCP_CHECK_SUMMARY} {session_id[:8]}")
+        if steps is None:
+            return _check(MCP_CHECK, False,
+                          f"{tasks_provider} cannot describe an MCP check; "
+                          "fill in every field above.")
+        try:
+            agent = self._build_coding_agent()
+            response = agent.run(_mcp_check_prompt(server_name, steps), session_id)
+        except Exception as exc:
+            return _check(MCP_CHECK, False, f"The coding agent failed: {exc}")
+        return _mcp_check_result(server_name, response)
+
+    def _build_coding_agent(self) -> AbstractCodingAgent:
+        """The configured coding agent, pointed at the project root."""
+        agent_type = _CODING_AGENTS.get(self.context.settings.coding_agent)
+        if agent_type is None:
+            raise RuntimeError(
+                f"Coding agent '{self.context.settings.coding_agent.value}' "
+                "is not available")
+        return agent_type(self.context.settings, self.root)
+
+    def setup_tasks_mcp(
+        self,
+        tasks_provider: str,
+        credentials: dict[str, str],
+    ) -> tuple[bool, str]:
+        """Write the provider's MCP server into the project's ``.mcp.json``.
+
+        Gives the coding agent a way to read and update the task it was handed,
+        at the source. The provider says which server that is and what it needs;
+        the file it goes into, and the two shapes it has to be written in for
+        Claude Code and GitHub Copilot both, are decided here.
+        """
+        try:
+            provider = self._provider_from_form(tasks_provider, credentials)
+            server = provider.mcp_server()
+        except Exception as exc:
+            return False, str(exc)
+        if server is None:
+            return False, (f"{tasks_provider} has no MCP server to set up, or "
+                           "the fields it would need aren't filled in yet.")
+        try:
+            path = write_mcp_server(self.root, server)
+        except (OSError, ValueError) as exc:
+            return False, str(exc)
+        return True, (f"{server.name} is configured in {path} for Claude Code "
+                      f"and GitHub Copilot. {server.requires}".rstrip())
+
+    def tasks_mcp_configured(self, tasks_provider: str) -> bool:
+        """Whether this provider's MCP server is already in the project's ``.mcp.json``.
+
+        Asked of the file rather than of the credentials, because that is the
+        question the settings page is answering: the server may have been set up
+        in an earlier session, or by hand. Whether the credentials in it are
+        still the right ones is what running the setup again is for.
+        """
+        try:
+            provider_class = TASKS_PROVIDERS[TasksProvider(tasks_provider)]
+        except (KeyError, ValueError):
+            return False
+        name = provider_class.MCP_SERVER_NAME
+        return bool(name) and find_mcp_server(self.root, name) is not None
+
+    def _provider_from_form(
+        self,
+        tasks_provider: str,
+        credentials: dict[str, str],
+    ) -> AbstractTasksProvider:
+        """Build a provider from the credentials as they stand on the settings form.
+
+        The form rather than the disk, so the settings page can act on what the
+        user is looking at without first making them save credentials that may
+        be wrong. Nothing here is persisted.
         """
         try:
             provider_key = TasksProvider(tasks_provider)
         except ValueError:
-            return False, f"Unknown tasks provider: {tasks_provider}"
+            raise ValueError(f"Unknown tasks provider: {tasks_provider}")
         current = self.load_settings()
         settings = replace(
             current,
             tasks_provider=provider_key,
             credentials={**current.credentials, tasks_provider: credentials},
         )
-        try:
-            provider = build_tasks_provider(settings)
-        except Exception as exc:
-            return False, str(exc)
-        if not provider.is_configured():
-            return False, ("Not configured yet — fill in every field above "
-                           "(and connect, where the provider needs it).")
-        return provider.verify_connection(
-            issue_statuses(find_issue_triggered_skills(self.skills_dir)))
+        return build_tasks_provider(settings)
 
     # --- Azure DevOps OAuth -------------------------------------------------
 

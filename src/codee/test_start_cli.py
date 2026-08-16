@@ -57,7 +57,8 @@ class StartCliTest(unittest.TestCase):
                 self.assertTrue(Path("temp").is_dir())
                 self.assertTrue(Path("memory").is_dir())
                 self.assertEqual(
-                    Path(".gitignore").read_text(), "/repositories\n/temp\n")
+                    Path(".gitignore").read_text(),
+                    "/repositories\n/temp\n.mcp.json\n")
             finally:
                 os.chdir(original_directory)
 

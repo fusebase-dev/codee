@@ -41,6 +41,28 @@ class Task:
         return False
 
 
+@dataclass(frozen=True)
+class McpServer:
+    """A stdio MCP server that lets a coding agent talk to a provider's backend.
+
+    Described in the shape every MCP client agrees on — a command, its arguments
+    and the environment it needs — and nothing more. Which config file this ends
+    up in, and under which key, differs per coding agent; that translation is the
+    caller's business, so a provider only has to know its own server.
+
+    ``requires`` is the one thing the config file can't express: what has to be
+    present on the machine for that command to start at all — a toolchain, a
+    signed-in CLI. Writing the config is not the same as being able to run it,
+    and the user is the only one who can close that gap.
+    """
+
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    requires: str = ""
+
+
 class AbstractTasksProvider(ABC):
     """Base class every tasks provider (e.g. JIRA) inherits from.
 
@@ -48,6 +70,12 @@ class AbstractTasksProvider(ABC):
     from its own stored credentials, so the executor never has to know which
     provider it's talking to or what configuration that provider needs.
     """
+
+    # Key ``mcp_server`` writes its server under, empty for a provider that has
+    # none. A constant on the class rather than a field on the server, so a
+    # provider missing its credentials can still be asked whether the server it
+    # would describe is already installed.
+    MCP_SERVER_NAME = ""
 
     def __init__(self, settings: Settings):
         """Initialize the provider from the stored settings."""
@@ -93,6 +121,30 @@ class AbstractTasksProvider(ABC):
         more = f", +{len(tasks) - 3} more" if len(tasks) > 3 else ""
         return (f"Connected to {self.describe()}. "
                 f"Pulled {len(tasks)} task(s): {preview}{more}")
+
+    def mcp_server(self) -> McpServer | None:
+        """The MCP server a coding agent needs to reach this provider's backend.
+
+        Lets the agent working a task read and update it at the source instead of
+        being handed a summary of it. ``None`` means there is nothing to offer:
+        either the provider has no such server, or the stored credentials don't
+        describe one yet.
+        """
+        return None
+
+    def mcp_check_steps(self, summary: str) -> list[str] | None:
+        """Ordered instructions that prove an agent can drive this backend.
+
+        Written in the provider's own vocabulary — its project, its statuses —
+        and ending with the item that was created closed again, so a check
+        leaves nothing open behind it. ``summary`` is the title the caller wants
+        that item to carry, which is how it stays recognizable afterwards.
+
+        ``None`` when the provider can't describe such a round trip. How the
+        steps reach an agent, and what it must answer with, is the caller's
+        business — the same split as ``mcp_server``.
+        """
+        return None
 
     def describe(self) -> str:
         """Human-readable one-liner about this provider's config, for logs."""

@@ -7,7 +7,7 @@ but it is a query — nothing in this module creates or modifies a work item.
 import requests
 from codee_main_context.context import CodeeMainContext, Settings, data_dir
 from codee_tasks_abstract.provider import (
-    AbstractTasksProvider, Task, TasksProviderError)
+    AbstractTasksProvider, McpServer, Task, TasksProviderError)
 
 from codee_tasks_azure_devops.oauth import (
     AzureDevOpsAuth, AzureDevOpsAuthError, OAuthConfig)
@@ -38,6 +38,10 @@ CODEE_STORY_WORK_ITEM_TYPE = "Codee Story"
 # Azure DevOps priority is 1-4 with 1 highest; the executor logs this next to
 # JIRA-style names, so translate rather than print a bare digit.
 _PRIORITY_NAMES = {1: "Highest", 2: "High", 3: "Medium", 4: "Low"}
+
+# Microsoft's own Azure DevOps MCP server, run from npm through `npx` so
+# nothing has to be installed alongside it.
+MCP_SERVER_PACKAGE = "@azure-devops/mcp"
 
 # Ceiling the WIQL query is capped at, matching the JIRA provider's page size.
 _MAX_TASKS = 50
@@ -95,6 +99,8 @@ class AzureDevOpsWorkItem(Task):
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
     """Fetches work items assigned to the connected account as provider-agnostic Tasks."""
 
+    MCP_SERVER_NAME = "ado"
+
     def __init__(self, settings: Settings, main_context: CodeeMainContext | None = None):
         self._config = OAuthConfig.from_settings(settings)
         # The executor constructs providers with settings alone, so fall back to
@@ -111,6 +117,51 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         account = connection.get("account") or "connected account"
         return (f"Azure DevOps {self._config.organization_url} "
                 f"(all projects, assignee {account})")
+
+    def mcp_server(self) -> McpServer | None:
+        """Microsoft's Azure DevOps MCP server, addressed at this organization.
+
+        It signs the agent in through the Azure CLI rather than through the app
+        registration above. That is deliberate on both sides: the tokens this
+        package stores are delegated read-only ones (see the module docstring in
+        ``oauth``), and an agent working a task has to write. So the changes it
+        makes are attributed to whoever ran ``az login`` where the agent runs,
+        and that machine needs the Azure CLI signed in for the server to start.
+        """
+        organization = self._config.organization
+        if not organization:
+            return None
+        return McpServer(
+            name=self.MCP_SERVER_NAME,
+            command="npx",
+            args=["-y", MCP_SERVER_PACKAGE, organization,
+                  "--authentication", "azcli"],
+            requires="It runs through `npx`, so Node.js has to be installed "
+                     "wherever the coding agent runs, with the Azure CLI "
+                     "signed in there (`az login`) — that account is who its "
+                     "changes are made as.",
+        )
+
+    def mcp_check_steps(self, summary: str) -> list[str] | None:
+        """Create a work item of the type the executor polls, then close it again.
+
+        The type is named explicitly because it is custom: an organization that
+        never defined "Codee Task" is one the executor can never pick anything
+        up from, and this is where that shows up. No project is named — there is
+        no project setting, queries span the organization — so the agent picks
+        one it can write to.
+        """
+        account = (self._auth.connection() or {}).get("account")
+        organization = self._config.organization
+        if not (organization and account):
+            return None
+        return [
+            f'Create a new "Codee Task" work item in the {organization} '
+            "organization, in any project you can create work items in, with "
+            f'the title "{summary}", assigned to {account}.',
+            "Move that work item to a Done, Closed or Removed state — "
+            "whichever its board offers — so it does not stay open.",
+        ]
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
