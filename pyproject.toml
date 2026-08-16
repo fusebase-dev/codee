@@ -47,6 +47,12 @@ codee-init = "codee.init_cli:main"
 codee-admin = "codee.admin_cli:main"
 codee-executor = "codee.executor:main"
 
+[tool.pytest.ini_options]
+# The provider and agent packages keep their suites in `test.py`, which pytest's
+# default `test_*.py` pattern skips — without this, `pytest src` silently ran
+# 61 fewer tests than the repo has.
+python_files = ["test_*.py", "test.py"]
+
 [tool.uv.build-backend]
 module-name = [
     "codee",

@@ -8,7 +8,8 @@ import reflex as rx
 from pydantic import BaseModel
 
 from codee.admin_api import api_app
-from codee.admin_service import AGENTS_FILE, AdminService, ISSUE_TYPES, SKILL_TYPES
+from codee.admin_service import (
+    AGENTS_FILE, TASKS_CHECKS, AdminService, ISSUE_TYPES, SKILL_TYPES)
 from codee.workflow_graph import workflow_graph
 
 SERVICE = AdminService()
@@ -58,6 +59,35 @@ class ActiveJob(BaseModel):
     message: str
     elapsed_label: str
     viewer_url: str
+
+
+class CheckResult(BaseModel):
+    """One line of the tasks-provider check list on the settings page.
+
+    ``status`` is where it is rather than how it went: a check has to be on
+    screen before it has an answer, so "waiting" and "running" are states of the
+    same row that later becomes ``ok`` or ``failed``.
+    """
+
+    name: str
+    status: str
+    message: str = ""
+
+
+def pending_checks(done: list[CheckResult]) -> list[CheckResult]:
+    """The finished checks, then the running one, then the ones still to come."""
+    rows = list(done)
+    for position, name in enumerate(TASKS_CHECKS[len(done):], start=len(done)):
+        rows.append(CheckResult(
+            name=name,
+            status="running" if position == len(done) else "waiting"))
+    return rows
+
+
+def check_result(check: dict[str, Any]) -> CheckResult:
+    return CheckResult(name=check["name"],
+                       status="ok" if check["ok"] else "failed",
+                       message=check["message"])
 
 
 class RunRecord(BaseModel):
@@ -144,8 +174,10 @@ class AdminState(rx.State):
     azure_expires_label: str = ""
     azure_redirect_uri: str = ""
     tasks_verifying: bool = False
-    tasks_verify_ok: bool = False
-    tasks_verify_message: str = ""
+    tasks_checks: list[CheckResult] = []
+    mcp_setup_ok: bool = False
+    mcp_setup_message: str = ""
+    mcp_configured: bool = False
 
     @rx.var
     def filtered_skills(self) -> list[SkillSummary]:
@@ -544,9 +576,14 @@ class AdminState(rx.State):
         self.azure_tenant_id = azure.get("tenant_id", "")
         self.azure_client_id = azure.get("client_id", "")
         self.azure_client_secret = azure.get("client_secret", "")
-        self._drop_verification()
+        self._drop_provider_results()
+        self.load_mcp_status()
         self.load_azure_connection()
         return self._azure_callback_toast()
+
+    def load_mcp_status(self) -> None:
+        """Read back whether the selected provider's MCP server is already installed."""
+        self.mcp_configured = SERVICE.tasks_mcp_configured(self.tasks_provider)
 
     def load_azure_connection(self) -> None:
         connection = SERVICE.azure_connection()
@@ -566,15 +603,17 @@ class AdminState(rx.State):
             return rx.toast.success(message or "Connected to Azure DevOps")
         return rx.toast.error(message or "Could not connect to Azure DevOps")
 
-    def _drop_verification(self) -> None:
-        """Forget the last check: it spoke for credentials that just changed."""
+    def _drop_provider_results(self) -> None:
+        """Forget the last checks and MCP setup: they spoke for credentials that just changed."""
         self.tasks_verifying = False
-        self.tasks_verify_ok = False
-        self.tasks_verify_message = ""
+        self.tasks_checks = []
+        self.mcp_setup_ok = False
+        self.mcp_setup_message = ""
 
     def set_tasks_provider(self, value: str) -> None:
         self.tasks_provider = value
-        self._drop_verification()
+        self._drop_provider_results()
+        self.load_mcp_status()
 
     def set_coding_agent(self, value: str) -> None:
         self.coding_agent = value
@@ -584,35 +623,35 @@ class AdminState(rx.State):
 
     def set_jira_base_url(self, value: str) -> None:
         self.jira_base_url = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_jira_account_email(self, value: str) -> None:
         self.jira_account_email = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_jira_api_token(self, value: str) -> None:
         self.jira_api_token = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_jira_project(self, value: str) -> None:
         self.jira_project = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_azure_organization_url(self, value: str) -> None:
         self.azure_organization_url = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_azure_tenant_id(self, value: str) -> None:
         self.azure_tenant_id = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_azure_client_id(self, value: str) -> None:
         self.azure_client_id = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     def set_azure_client_secret(self, value: str) -> None:
         self.azure_client_secret = value
-        self._drop_verification()
+        self._drop_provider_results()
 
     @rx.var
     def azure_can_connect(self) -> bool:
@@ -635,29 +674,86 @@ class AdminState(rx.State):
                 self.jira_api_token, self.jira_project))
         return self.azure_can_connect and self.azure_connected
 
+    @rx.var
+    def mcp_can_setup(self) -> bool:
+        """Whether the selected provider can describe its MCP server yet.
+
+        Less than the pull needs in both cases. mcp-atlassian doesn't take a
+        project key — the agent searches and updates issues wherever they live
+        rather than polling one project — and the Azure DevOps server takes only
+        the organization, since it signs in through the Azure CLI rather than
+        through the app registration.
+        """
+        if self.tasks_provider == "jira":
+            return all(value.strip() for value in (
+                self.jira_base_url, self.jira_account_email,
+                self.jira_api_token))
+        return bool(self.azure_organization_url.strip())
+
+    @rx.var
+    def mcp_provider_label(self) -> str:
+        return ("Azure DevOps" if self.tasks_provider == "azure_devops"
+                else "Jira")
+
+    @rx.var
+    def mcp_button_label(self) -> str:
+        """Re-running is how stale credentials in the file get replaced."""
+        return (f"Setup {self.mcp_provider_label} MCP again"
+                if self.mcp_configured
+                else f"Setup {self.mcp_provider_label} MCP")
+
+    @rx.var
+    def mcp_missing_hint(self) -> str:
+        if self.tasks_provider == "jira":
+            return "Fill in base URL, account email and API token first."
+        return "Fill in the organization URL first."
+
+    def setup_tasks_mcp(self) -> None:
+        """Write the provider's MCP server into the project's .mcp.json.
+
+        Synchronous, unlike the connection check: this only touches a local file,
+        and the result should be on screen by the time the click lands.
+        """
+        self.mcp_setup_ok, self.mcp_setup_message = SERVICE.setup_tasks_mcp(
+            self.tasks_provider, self._credentials())
+        self.load_mcp_status()
+
     @rx.event(background=True)
     async def verify_tasks_connection(self) -> Any:
-        """Pull tasks with the credentials on the form and show the outcome.
+        """Run the provider checks with the credentials on the form.
 
-        In the background because it is a live API call: the provider allows
-        itself 30s per request, and the page has to stay responsive for that
-        long. Nothing is saved — verifying credentials shouldn't commit them.
+        In the background because none of it is quick: the provider allows
+        itself 30s per request, and the MCP check runs a whole coding agent. The
+        whole list goes up at once and each row is filled in as its check
+        finishes, so the wait is spent looking at what is still running rather
+        than at nothing. Nothing is saved — verifying shouldn't commit anything.
         """
         async with self:
             if self.tasks_verifying or not self.tasks_can_verify:
                 return
             self.tasks_verifying = True
-            self.tasks_verify_message = ""
+            self.tasks_checks = pending_checks([])
             provider, credentials = self.tasks_provider, self._credentials()
+
+        # A generator, so nothing has run yet: each next() is one check, and the
+        # thread keeps the page responsive while it does.
+        checks = SERVICE.verify_tasks_connection(provider, credentials)
+        done: list[CheckResult] = []
+        failure = ""
         try:
-            verified, message = await asyncio.to_thread(
-                SERVICE.verify_tasks_connection, provider, credentials)
+            while (result := await asyncio.to_thread(next, checks, None)) is not None:
+                done.append(check_result(result))
+                async with self:
+                    self.tasks_checks = pending_checks(done)
         except Exception as error:
-            verified, message = False, str(error)
+            failure = str(error)
         async with self:
             self.tasks_verifying = False
-            self.tasks_verify_ok = verified
-            self.tasks_verify_message = message
+            # Whatever the generator stopped short of is dropped rather than
+            # left spinning: a run that yielded one check has only one to show.
+            self.tasks_checks = done + ([CheckResult(
+                name="Verification failed", status="failed", message=failure)]
+                if failure else [])
 
     def connect_azure_devops(self) -> Any:
         """Save the app registration, then hand the browser to Entra ID for consent.
@@ -679,7 +775,7 @@ class AdminState(rx.State):
 
     def disconnect_azure_devops(self) -> Any:
         SERVICE.disconnect_azure()
-        self._drop_verification()
+        self._drop_provider_results()
         self.load_azure_connection()
         return rx.toast.success("Disconnected from Azure DevOps")
 
@@ -1686,8 +1782,75 @@ def azure_fields() -> rx.Component:
         spacing="4", width="100%")
 
 
+def mcp_setup_button() -> rx.Component:
+    """The setup button, built fresh per branch so each can sit in its own row."""
+    return rx.button(
+        rx.icon("file-cog", size=16), AdminState.mcp_button_label,
+        type="button", variant="outline",
+        disabled=~AdminState.mcp_can_setup,
+        on_click=AdminState.setup_tasks_mcp)
+
+
+def tasks_mcp_setup() -> rx.Component:
+    """Hand the provider's credentials to the coding agent as an MCP server."""
+    return rx.vstack(
+        rx.cond(
+            AdminState.mcp_configured,
+            # Already installed: the state is the sentence, and the button that
+            # rewrites it with whatever the fields now say sits beside it.
+            rx.hstack(
+                rx.icon("circle-check", size=16, color="var(--green-9)"),
+                rx.text("MCP config already set up.", font_size="0.85rem"),
+                mcp_setup_button(),
+                spacing="3", align="center", width="100%"),
+            rx.hstack(
+                mcp_setup_button(),
+                rx.cond(
+                    AdminState.mcp_can_setup,
+                    rx.text("Writes .mcp.json so the coding agent can read and "
+                            "update tasks itself.",
+                            color=MUTED, font_size="0.8rem"),
+                    rx.text(AdminState.mcp_missing_hint,
+                            color=MUTED, font_size="0.8rem")),
+                spacing="3", align="center", width="100%")),
+        rx.cond(
+            AdminState.mcp_setup_message != "",
+            rx.cond(
+                AdminState.mcp_setup_ok,
+                rx.callout(AdminState.mcp_setup_message, icon="circle-check",
+                           size="1", color_scheme="green", width="100%"),
+                rx.callout(AdminState.mcp_setup_message, icon="circle-alert",
+                           size="1", color_scheme="red", width="100%")),
+        ),
+        spacing="3", width="100%")
+
+
+def tasks_check_row(check: CheckResult) -> rx.Component:
+    """One check: where it stands as an icon, its name, and what it found."""
+    marker = {"flex_shrink": "0", "margin_top": "0.15rem"}
+    return rx.hstack(
+        rx.match(
+            check.status,
+            ("running", rx.spinner(size="2", **marker)),
+            ("ok", rx.icon("circle-check", size=16,
+                           color="var(--green-9)", **marker)),
+            ("failed", rx.icon("circle-alert", size=16,
+                               color="var(--red-9)", **marker)),
+            # Still queued: named so the list is complete from the first frame,
+            # but visibly not its turn yet.
+            rx.icon("circle-dashed", size=16, color=MUTED, **marker)),
+        rx.vstack(
+            rx.text(check.name, font_size="0.85rem", weight="medium",
+                    color=rx.cond(check.status == "waiting", MUTED, TEXT)),
+            rx.cond(
+                check.message != "",
+                rx.text(check.message, color=MUTED, font_size="0.8rem")),
+            spacing="1", align="start", width="100%"),
+        spacing="2", align="start", width="100%")
+
+
 def tasks_verification() -> rx.Component:
-    """Check the credentials by pulling tasks, and print what came back."""
+    """Run the provider checks and print what each one found."""
     return rx.vstack(
         rx.hstack(
             rx.button(
@@ -1700,18 +1863,20 @@ def tasks_verification() -> rx.Component:
                 on_click=AdminState.verify_tasks_connection),
             rx.cond(
                 AdminState.tasks_can_verify,
-                rx.fragment(),
+                # Worth saying up front: the second check spends a coding-agent
+                # run and leaves a closed task behind in the real backend.
+                rx.text("Pulls tasks, then has the coding agent create and "
+                        "close one task through MCP. Takes a minute.",
+                        color=MUTED, font_size="0.8rem"),
                 rx.text("Fill in every field above to check the connection.",
                         color=MUTED, font_size="0.8rem")),
             spacing="3", align="center", width="100%"),
         rx.cond(
-            AdminState.tasks_verify_message != "",
-            rx.cond(
-                AdminState.tasks_verify_ok,
-                rx.callout(AdminState.tasks_verify_message, icon="circle-check",
-                           size="1", color_scheme="green", width="100%"),
-                rx.callout(AdminState.tasks_verify_message, icon="circle-alert",
-                           size="1", color_scheme="red", width="100%")),
+            AdminState.tasks_checks,
+            rx.vstack(rx.foreach(AdminState.tasks_checks, tasks_check_row),
+                      spacing="3", width="100%",
+                      padding="0.85rem", border=BORDER,
+                      background=PAGE_BACKGROUND),
         ),
         spacing="3", width="100%")
 
@@ -1746,6 +1911,7 @@ def settings_page() -> rx.Component:
                                         on_change=AdminState.set_tasks_provider, width="100%")),
             rx.box(rx.cond(AdminState.tasks_provider == "jira",
                    jira_fields, azure_fields()), margin_top="1rem"),
+            rx.box(tasks_mcp_setup(), margin_top="1.25rem"),
             rx.box(tasks_verification(), margin_top="1.25rem"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         rx.button(rx.icon("save", size=16), "Save settings",

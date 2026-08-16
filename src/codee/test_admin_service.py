@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -12,7 +13,8 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    AdminService, azure_oauth, parse_skill, repository_name)
+    MCP_CHECK, TASKS_CHECK, AdminService, azure_oauth, parse_skill,
+    repository_name)
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, save_settings)
 
@@ -1134,6 +1136,10 @@ class VerifyTasksConnectionTest(unittest.TestCase):
         save_settings(service.data_dir, settings)
         return service
 
+    def _tasks_check(self, checks: list[dict]) -> dict:
+        self.assertEqual(checks[0]["name"], TASKS_CHECK)
+        return checks[0]
+
     def test_the_form_credentials_are_used_not_the_saved_ones(self) -> None:
         # The point of the check is to try credentials before committing them.
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1143,10 +1149,11 @@ class VerifyTasksConnectionTest(unittest.TestCase):
 
             with patch("codee_tasks_jira.provider.requests.get",
                        return_value=response) as get:
-                verified, message = service.verify_tasks_connection(
-                    "jira", self.JIRA_CREDENTIALS)
+                checks = list(service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS))
 
-            self.assertTrue(verified, message)
+            check = self._tasks_check(checks)
+            self.assertTrue(check["ok"], check["message"])
             self.assertTrue(get.call_args.args[0].startswith(
                 "https://acme.atlassian.net"))
 
@@ -1158,7 +1165,8 @@ class VerifyTasksConnectionTest(unittest.TestCase):
 
             with patch("codee_tasks_jira.provider.requests.get",
                        return_value=response) as get:
-                service.verify_tasks_connection("jira", self.JIRA_CREDENTIALS)
+                list(service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS))
 
             self.assertIn('status in ("Ready")',
                           get.call_args.kwargs["params"]["jql"])
@@ -1168,21 +1176,23 @@ class VerifyTasksConnectionTest(unittest.TestCase):
             service = self._service(Path(temporary_directory))
 
             with patch("codee_tasks_jira.provider.requests.get") as get:
-                verified, message = service.verify_tasks_connection(
-                    "jira", {"base_url": "https://acme.atlassian.net"})
+                checks = list(service.verify_tasks_connection(
+                    "jira", {"base_url": "https://acme.atlassian.net"}))
 
-            self.assertFalse(verified)
-            self.assertIn("Not configured", message)
+            # Nothing to say about MCP when the credentials aren't there yet.
+            self.assertEqual(len(checks), 1)
+            self.assertFalse(checks[0]["ok"])
+            self.assertIn("Not configured", checks[0]["message"])
             get.assert_not_called()
 
     def test_an_unknown_provider_is_reported_rather_than_raised(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             service = self._service(Path(temporary_directory))
 
-            verified, message = service.verify_tasks_connection("trello", {})
+            checks = list(service.verify_tasks_connection("trello", {}))
 
-            self.assertFalse(verified)
-            self.assertIn("trello", message)
+            self.assertFalse(checks[0]["ok"])
+            self.assertIn("trello", checks[0]["message"])
 
     def test_saved_settings_are_left_alone(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1192,10 +1202,295 @@ class VerifyTasksConnectionTest(unittest.TestCase):
 
             with patch("codee_tasks_jira.provider.requests.get",
                        return_value=response):
-                service.verify_tasks_connection("jira", self.JIRA_CREDENTIALS)
+                list(service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS))
 
             self.assertEqual(service.load_settings().credentials["jira"],
                              {"base_url": "https://stale.test"})
+
+
+class VerifyTasksMcpCheckTest(unittest.TestCase):
+    """The second check drives the backend through MCP with a coding agent."""
+
+    JIRA_CREDENTIALS = VerifyTasksConnectionTest.JIRA_CREDENTIALS
+
+    def _service(self, root: Path, with_mcp: bool = True) -> AdminService:
+        service = VerifyTasksConnectionTest._service(self, root)
+        if with_mcp:
+            service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+        return service
+
+    def _run(self, service: AdminService, agent_reply: str | Exception,
+             issues: list | None = None) -> dict:
+        """Run both checks with the pull stubbed, and return the MCP one."""
+        response = Mock(status_code=200)
+        response.json.return_value = {"issues": issues or []}
+        agent = Mock()
+        if isinstance(agent_reply, Exception):
+            agent.run.side_effect = agent_reply
+        else:
+            agent.run.return_value = agent_reply
+        with patch("codee_tasks_jira.provider.requests.get",
+                   return_value=response), \
+                patch.object(AdminService, "_build_coding_agent",
+                             return_value=agent):
+            # Drained inside the patches: the checks are a generator, so leaving
+            # this block first would run them for real against JIRA.
+            checks = list(service.verify_tasks_connection(
+                "jira", self.JIRA_CREDENTIALS))
+        self.assertEqual([check["name"] for check in checks],
+                         [TASKS_CHECK, MCP_CHECK])
+        self.prompt = agent.run.call_args.args[0] if agent.run.called else ""
+        return checks[1]
+
+    def test_an_unconfigured_server_fails_the_check_without_an_agent_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), with_mcp=False)
+
+            check = self._run(service, '{"ok": true}')
+
+            self.assertFalse(check["ok"])
+            self.assertEqual(check["message"],
+                             "MCP server is not configured, click Setup MCP "
+                             "server above")
+            self.assertEqual(self.prompt, "")
+
+    def test_a_reported_success_names_the_task_the_agent_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            check = self._run(service, json.dumps(
+                {"ok": True, "task": "CORE-42", "status": "Done"}))
+
+            self.assertTrue(check["ok"], check["message"])
+            self.assertIn("CORE-42", check["message"])
+            self.assertIn("Done", check["message"])
+
+    def test_the_prompt_forbids_every_route_other_than_mcp(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            self._run(service, '{"ok": true, "task": "CORE-1"}')
+
+            self.assertIn("mcp-atlassian", self.prompt)
+            self.assertIn("No other way is allowed", self.prompt)
+            # Both provider steps, in order.
+            self.assertIn("1. Create a new Task in JIRA project CORE",
+                          self.prompt)
+            self.assertIn("assigned to agent@acme.test", self.prompt)
+            self.assertIn("2. Move that issue to a Done or Cancelled status",
+                          self.prompt)
+
+    def test_a_fenced_reply_is_still_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            check = self._run(
+                service, '```json\n{"ok": true, "task": "CORE-7"}\n```')
+
+            self.assertTrue(check["ok"], check["message"])
+
+    def test_a_reported_failure_is_passed_through(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            check = self._run(service, json.dumps(
+                {"ok": False, "error": "No create-issue tool was offered."}))
+
+            self.assertFalse(check["ok"])
+            self.assertEqual(check["message"],
+                             "No create-issue tool was offered.")
+
+    def test_an_answer_that_is_not_the_asked_for_json_fails_the_check(self) -> None:
+        # An agent that ignored the format can't be believed about the rest.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            check = self._run(service, "Sure! I created and closed the task.")
+
+            self.assertFalse(check["ok"])
+            self.assertIn("did not report a result", check["message"])
+
+    def test_an_agent_that_blows_up_is_reported_rather_than_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            check = self._run(service, RuntimeError("claude CLI exited 1"))
+
+            self.assertFalse(check["ok"])
+            self.assertIn("claude CLI exited 1", check["message"])
+
+    def test_nothing_runs_until_the_next_check_is_asked_for(self) -> None:
+        # What lets the page show the pull's verdict while MCP is still going.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.return_value = {"issues": []}
+            agent = Mock(**{"run.return_value": '{"ok": true, "task": "C-1"}'})
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response) as get, \
+                    patch.object(AdminService, "_build_coding_agent",
+                                 return_value=agent):
+                checks = service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS)
+                get.assert_not_called()
+
+                self.assertEqual(next(checks)["name"], TASKS_CHECK)
+                get.assert_called_once()
+                agent.run.assert_not_called()
+
+                self.assertEqual(next(checks)["name"], MCP_CHECK)
+                agent.run.assert_called_once()
+                self.assertIsNone(next(checks, None))
+
+    def test_a_failed_pull_skips_the_agent_run(self) -> None:
+        # No point spending an agent on credentials JIRA just refused.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.side_effect = ValueError("boom")
+            agent = Mock()
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response), \
+                    patch.object(AdminService, "_build_coding_agent",
+                                 return_value=agent):
+                checks = list(service.verify_tasks_connection(
+                    "jira", self.JIRA_CREDENTIALS))
+
+            self.assertFalse(checks[0]["ok"])
+            self.assertFalse(checks[1]["ok"])
+            self.assertIn("Not attempted", checks[1]["message"])
+            agent.run.assert_not_called()
+
+
+class SetupTasksMcpTest(unittest.TestCase):
+    """The settings page hands the provider's MCP server to the coding agent."""
+
+    JIRA_CREDENTIALS = VerifyTasksConnectionTest.JIRA_CREDENTIALS
+
+    def _service(self, root: Path) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.root = root
+        service.data_dir = root / ".codee"
+        service.data_dir.mkdir()
+        settings = Settings(credentials={"jira": {"base_url": "https://stale.test"}})
+        service.context = CodeeMainContext(
+            data_dir=service.data_dir, settings=settings)
+        save_settings(service.data_dir, settings)
+        return service
+
+    def _config(self, root: Path) -> dict:
+        return json.loads((root / ".mcp.json").read_text())
+
+    def test_it_writes_the_form_credentials_into_the_project_mcp_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            done, message = service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            self.assertTrue(done, message)
+            config = self._config(root)
+            self.assertEqual(
+                config["mcpServers"]["mcp-atlassian"]["env"]["JIRA_URL"],
+                "https://acme.atlassian.net")
+            self.assertIn("mcp-atlassian", config["servers"])
+
+    def test_saved_settings_are_left_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            self.assertEqual(service.load_settings().credentials["jira"],
+                             {"base_url": "https://stale.test"})
+
+    def test_incomplete_credentials_write_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            done, message = service.setup_tasks_mcp(
+                "jira", {"base_url": "https://acme.atlassian.net"})
+
+            self.assertFalse(done)
+            self.assertIn("aren't filled in", message)
+            self.assertFalse((root / ".mcp.json").exists())
+
+    def test_a_provider_that_cannot_describe_a_server_yet_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            done, message = service.setup_tasks_mcp("azure_devops", {})
+
+            self.assertFalse(done)
+            self.assertIn("azure_devops", message)
+            self.assertFalse((root / ".mcp.json").exists())
+
+    def test_azure_devops_writes_its_own_server_alongside_jiras(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+            service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            done, message = service.setup_tasks_mcp(
+                "azure_devops",
+                {"organization_url": "https://dev.azure.com/acme"})
+
+            self.assertTrue(done, message)
+            config = self._config(root)
+            self.assertEqual(config["mcpServers"]["ado"], {
+                "command": "npx",
+                "args": ["-y", "@azure-devops/mcp", "acme",
+                         "--authentication", "azcli"],
+            })
+            self.assertEqual(config["servers"]["ado"]["type"], "stdio")
+            # Switching provider doesn't cost you the other one's server.
+            self.assertIn("mcp-atlassian", config["mcpServers"])
+            self.assertTrue(service.tasks_mcp_configured("azure_devops"))
+
+    def test_an_unknown_provider_is_reported_rather_than_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            done, message = service.setup_tasks_mcp("trello", {})
+
+            self.assertFalse(done)
+            self.assertIn("trello", message)
+
+    def test_it_reports_configured_only_once_the_server_is_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            self.assertFalse(service.tasks_mcp_configured("jira"))
+            service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            self.assertTrue(service.tasks_mcp_configured("jira"))
+
+    def test_a_provider_without_an_mcp_server_is_never_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+            service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            self.assertFalse(service.tasks_mcp_configured("azure_devops"))
+            self.assertFalse(service.tasks_mcp_configured("trello"))
+
+    def test_a_broken_mcp_json_is_reported_rather_than_raised(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+            (root / ".mcp.json").write_text("{not json")
+
+            done, message = service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+
+            self.assertFalse(done)
+            self.assertIn("not valid JSON", message)
 
 
 if __name__ == "__main__":

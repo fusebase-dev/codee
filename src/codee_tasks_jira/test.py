@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from codee_main_context.context import Settings
 from codee_tasks_jira.provider import JiraTasksProvider
 
 
@@ -149,6 +150,59 @@ class JiraVerifyConnectionTest(unittest.TestCase):
         with patch("codee_tasks_jira.provider.requests.get",
                    side_effect=requests.ConnectionError("boom")):
             self.assertEqual(self.provider.get_tasks(["Ready"]), [])
+
+
+class JiraMcpServerTest(unittest.TestCase):
+    CREDENTIALS = {
+        "base_url": "https://acme.atlassian.net",
+        "account_email": "agent@example.com",
+        "api_token": "token",
+        "project": "CORE",
+    }
+
+    def _server(self, **overrides):
+        credentials = {**self.CREDENTIALS, **overrides}
+        settings = Settings(credentials={"jira": credentials})
+        return JiraTasksProvider(settings).mcp_server()
+
+    def test_it_describes_mcp_atlassian_with_the_stored_credentials(self) -> None:
+        server = self._server()
+
+        self.assertEqual(server.command, "uvx")
+        self.assertEqual(server.args, ["mcp-atlassian"])
+        self.assertEqual(server.env, {
+            "JIRA_URL": "https://acme.atlassian.net",
+            "JIRA_USERNAME": "agent@example.com",
+            "JIRA_API_TOKEN": "token",
+        })
+
+    def test_a_missing_base_url_yields_no_server(self) -> None:
+        # The server is a separate process: it can't be asked for the URL later.
+        self.assertIsNone(self._server(base_url=""))
+
+    def test_a_missing_token_yields_no_server(self) -> None:
+        self.assertIsNone(self._server(api_token=""))
+
+    def test_the_project_key_is_not_required(self) -> None:
+        # The agent searches and updates issues, rather than polling one project.
+        self.assertIsNotNone(self._server(project=""))
+
+    def test_the_check_steps_create_an_issue_and_close_it_again(self) -> None:
+        settings = Settings(credentials={"jira": self.CREDENTIALS})
+
+        steps = JiraTasksProvider(settings).mcp_check_steps("Codee check 1234")
+
+        self.assertEqual(len(steps), 2)
+        self.assertIn('project CORE with the summary "Codee check 1234"',
+                      steps[0])
+        self.assertIn("assigned to agent@example.com", steps[0])
+        self.assertIn("Done or Cancelled", steps[1])
+
+    def test_no_check_steps_without_a_project_to_create_the_issue_in(self) -> None:
+        settings = Settings(
+            credentials={"jira": {**self.CREDENTIALS, "project": ""}})
+
+        self.assertIsNone(JiraTasksProvider(settings).mcp_check_steps("x"))
 
 
 def main():

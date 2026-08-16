@@ -4,12 +4,17 @@ import requests
 
 from codee_main_context.context import Settings, TasksProvider
 from codee_tasks_abstract.provider import (
-    AbstractTasksProvider, Task, TasksProviderError)
+    AbstractTasksProvider, McpServer, Task, TasksProviderError)
 
 
 # The label that marks a JIRA story as Codee-owned. Children of such a story
 # are driven by the story's own agent run, so the executor leaves them alone.
 CODEE_STORY_LABEL = "CodeeStory"
+
+# Atlassian's own MCP server, run straight from PyPI through `uvx` so the only
+# thing that has to exist on the machine is uv — no install step to keep in sync
+# with the credentials below.
+MCP_SERVER_PACKAGE = "mcp-atlassian"
 
 
 def _quote_jql(value: str) -> str:
@@ -80,6 +85,8 @@ class JiraTask(Task):
 class JiraTasksProvider(AbstractTasksProvider):
     """Fetches AI-owned issues from JIRA and maps them to provider-agnostic Tasks."""
 
+    MCP_SERVER_NAME = "mcp-atlassian"
+
     def __init__(self, settings: Settings):
         creds = settings.credentials.get(TasksProvider.JIRA.value, {})
         self._base_url = creds.get("base_url")
@@ -95,6 +102,46 @@ class JiraTasksProvider(AbstractTasksProvider):
     def describe(self) -> str:
         return (f"JIRA {self._base_url} "
                 f"(project {self._project}, assignee {self._assignee_email})")
+
+    def mcp_server(self) -> McpServer | None:
+        """mcp-atlassian, wired to the same account the executor polls with.
+
+        The base URL matters here in a way it doesn't for ``is_configured``: the
+        server is a separate process that gets no chance to ask for it later, so
+        an incomplete set of credentials yields no server at all rather than one
+        that fails on first use.
+        """
+        if not (self._base_url and self._user_email and self._api_token):
+            return None
+        return McpServer(
+            name=self.MCP_SERVER_NAME,
+            command="uvx",
+            args=[MCP_SERVER_PACKAGE],
+            env={
+                "JIRA_URL": self._base_url,
+                "JIRA_USERNAME": self._user_email,
+                "JIRA_API_TOKEN": self._api_token,
+            },
+            requires="It runs through `uvx`, so uv has to be installed "
+                     "wherever the coding agent runs.",
+        )
+
+    def mcp_check_steps(self, summary: str) -> list[str] | None:
+        """Create an issue assigned to the polled account, then close it again.
+
+        Between them the two steps cover everything the executor asks of JIRA:
+        it reads issues assigned to this account and moves them along their
+        workflow. Which resolution the project calls "closed" varies, so the
+        step names both rather than a status that may not exist here.
+        """
+        if not (self._project and self._assignee_email):
+            return None
+        return [
+            f'Create a new Task in JIRA project {self._project} with the '
+            f'summary "{summary}", assigned to {self._assignee_email}.',
+            "Move that issue to a Done or Cancelled status — whichever its "
+            "workflow offers — so it does not stay open.",
+        ]
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:

@@ -74,6 +74,18 @@ class OAuthConfigTest(unittest.TestCase):
         config = _config(tenant_id="")
         self.assertIn("/organizations/", config.authorize_endpoint)
 
+    def test_the_organization_name_comes_out_of_either_url_form(self) -> None:
+        # Both name `acme`; which one the user typed shouldn't matter.
+        self.assertEqual(
+            _config(organization_url="https://dev.azure.com/acme").organization,
+            "acme")
+        self.assertEqual(
+            _config(organization_url="https://acme.visualstudio.com").organization,
+            "acme")
+
+    def test_no_organization_url_names_no_organization(self) -> None:
+        self.assertEqual(_config(organization_url="").organization, "")
+
 
 class AuthorizationUrlTest(unittest.TestCase):
     def test_url_carries_pkce_challenge_and_read_scope(self) -> None:
@@ -527,6 +539,54 @@ class TasksProviderTest(unittest.TestCase):
 
         self.assertFalse(verified)
         self.assertIn("sign-in failed", message)
+
+
+class AzureDevOpsMcpTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.context = CodeeMainContext(data_dir=Path(self._temporary.name))
+
+    def _provider(self, **credentials) -> AzureDevOpsTasksProvider:
+        values = {"organization_url": "https://dev.azure.com/acme",
+                  "client_id": "client-1", "client_secret": "secret-1"}
+        values.update(credentials)
+        return AzureDevOpsTasksProvider(_settings(**values), self.context)
+
+    def _connect(self) -> None:
+        oauth_tokens.save_tokens(
+            oauth.PROVIDER, access_token="at", refresh_token="rt",
+            expires_at=_iso(timedelta(hours=1)), account="dev@acme.com",
+            main_context=self.context)
+
+    def test_the_server_addresses_the_organization_through_the_azure_cli(self) -> None:
+        server = self._provider().mcp_server()
+
+        self.assertEqual(server.name, "ado")
+        self.assertEqual(server.command, "npx")
+        self.assertEqual(server.args, ["-y", "@azure-devops/mcp", "acme",
+                                       "--authentication", "azcli"])
+        # It signs in through `az login`, so it carries no credentials of ours.
+        self.assertEqual(server.env, {})
+
+    def test_no_organization_url_yields_no_server(self) -> None:
+        self.assertIsNone(self._provider(organization_url="").mcp_server())
+
+    def test_the_check_creates_the_work_item_type_the_executor_polls(self) -> None:
+        self._connect()
+
+        steps = self._provider().mcp_check_steps("Codee check 1234")
+
+        self.assertEqual(len(steps), 2)
+        self.assertIn('"Codee Task" work item', steps[0])
+        self.assertIn("acme organization", steps[0])
+        self.assertIn('title "Codee check 1234"', steps[0])
+        self.assertIn("assigned to dev@acme.com", steps[0])
+        self.assertIn("Done, Closed or Removed", steps[1])
+
+    def test_no_check_steps_before_the_account_is_known(self) -> None:
+        # Nothing to assign the work item to until the OAuth consent is done.
+        self.assertIsNone(self._provider().mcp_check_steps("x"))
 
 
 def main():

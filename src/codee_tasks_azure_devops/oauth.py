@@ -19,7 +19,7 @@ import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 from codee_database import oauth_tokens
@@ -90,6 +90,22 @@ class OAuthConfig:
         """Whether we have everything needed to run the flow and query tasks."""
         return bool(self.organization_url and self.client_id
                     and self.client_secret)
+
+    @property
+    def organization(self) -> str:
+        """The organization's bare name, as the Azure DevOps tooling takes it.
+
+        ``https://dev.azure.com/contoso`` and the legacy
+        ``https://contoso.visualstudio.com`` both name ``contoso``. Which form
+        the user configured is their business, so a caller that needs the name
+        rather than the URL doesn't have to care which one it got.
+        """
+        parsed = urlparse(self.organization_url)
+        path = parsed.path.strip("/")
+        if path:
+            return path.split("/")[0]
+        # No path: an ``<org>.visualstudio.com`` host, or one typed bare.
+        return (parsed.netloc or parsed.path).split(".")[0]
 
     @property
     def tenant(self) -> str:

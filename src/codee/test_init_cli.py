@@ -59,8 +59,10 @@ class InitCliTest(unittest.TestCase):
                 self.assertTrue(Path("temp").is_dir())
                 self.assertTrue(Path("memory").is_dir())
                 # memory/ stays tracked: the admin UI commits memory edits.
+                # .mcp.json is not: the MCP setup writes an API token into it.
                 self.assertEqual(
-                    Path(".gitignore").read_text(), "/repositories\n/temp\n")
+                    Path(".gitignore").read_text(),
+                    "/repositories\n/temp\n.mcp.json\n")
             finally:
                 os.chdir(original_directory)
 
@@ -74,7 +76,7 @@ class InitCliTest(unittest.TestCase):
                 self.assertEqual(main(), 0)
                 self.assertEqual(
                     Path(".gitignore").read_text(),
-                    "*.log\nrepositories/\n/temp\n",
+                    "*.log\nrepositories/\n/temp\n.mcp.json\n",
                 )
             finally:
                 os.chdir(original_directory)
@@ -84,10 +86,10 @@ class InitCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             os.chdir(temporary_directory)
             try:
-                Path(".gitignore").write_text("/repositories\n/temp\n")
+                covered = "/repositories\n/temp\n.mcp.json\n"
+                Path(".gitignore").write_text(covered)
                 self.assertEqual(main(), 0)
-                self.assertEqual(
-                    Path(".gitignore").read_text(), "/repositories\n/temp\n")
+                self.assertEqual(Path(".gitignore").read_text(), covered)
             finally:
                 os.chdir(original_directory)
 

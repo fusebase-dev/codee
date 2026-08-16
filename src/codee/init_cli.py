@@ -14,9 +14,11 @@ CONFLICT_PATHS = (Path(".claude"), Path("AGENTS.md"), Path("CLAUDE.md"))
 # Directories the agents write into: cloned repositories, scratch files, and
 # long-term memory.
 WORKING_DIRECTORIES = (Path("repositories"), Path("temp"), Path("memory"))
-# Of those, only the per-checkout state is kept out of git. `memory/` is tracked
-# on purpose: the admin UI commits and pushes memory edits (see AdminService).
-GITIGNORE_ENTRIES = ("/repositories", "/temp")
+# Of those directories, only the per-checkout state is kept out of git;
+# `memory/` is tracked on purpose, since the admin UI commits and pushes memory
+# edits (see AdminService). `.mcp.json` joins them because the settings page
+# writes provider API tokens into it (see codee.lib.mcp_config).
+GITIGNORE_ENTRIES = ("/repositories", "/temp", ".mcp.json")
 
 
 def _ignored_patterns(gitignore: Path) -> set[str]:
