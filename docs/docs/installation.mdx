@@ -1,0 +1,33 @@
+---
+sidebar_position: 1
+slug: /
+---
+
+# Installation
+
+Codee is a pypi package which is installed as dependency for you custom-built virtual employee project.
+
+We recommend using [uv](https://docs.astral.sh/uv/) for managing you python project.
+
+First init a new project:
+
+```
+uv init
+```
+
+Install codee-agent dependency:
+
+```
+uv add codee-agent
+```
+
+Start codee, this command will run:
+
+- Codee UI - you will see the url in the command output
+- Codee executor - the process that drives the agent
+
+```
+uv run codee-start
+```
+
+Done. You are ready to [configure](./configuration) Codee now.
