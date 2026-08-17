@@ -5,22 +5,23 @@ slug: /
 
 # Overview
 
-Codee is an AI employee that works where you work. You don't need to adapt for (just a little) and it will work with the tools and you already use.
+Codee is an AI employee that works on tasks in your issue tracker.
 
-Codee is based on AI Agents such as Claude Code and Github Copilot. It does not try to reinvent what they already do best: working with code, context managing, MCP and other things. In the heart Codee has [skills](https://agentskills.io) system.
+Codee uses AI agents such as Claude Code and GitHub Copilot. It does not try to reinvent what they already do best: working with code, context management, MCP and other things. At its core, Codee has a [skills](https://agentskills.io) system.
+
+## How it works
+
+Codee polls your issue tracker as its own user. When a work item's type and status match a skill's triggers, Codee runs that skill with your chosen AI agent to work on the task. For development tasks, that ends in a merge request.
 
 ## Issue Trackers
 
 Jira and Azure DevOps are now supported. Codee will pick up tasks from them and work on them.
 
-Each work item status represents different skill. Codee runs skill for a specfic task like this `/story-developer TSK-4192`.
-
 ## Skills
 
-Codee is based on skills. Some skills can be just an informative guidelines, while the others contain explicit intrstructions and commands on how to accomplish something ("actionable" skills).
-Codee can be attached to a specific work item statuses and trigger specific "actionable" skills.
+Codee is based on skills. Some skills can be just informative guidelines, while others contain explicit instructions and commands on how to accomplish something.
 
-Codee extends common Agent Skills spec with itsown `x-codee-` prefixed fields in frontmatter.
+Codee extends the Agent Skills spec with its own `x-codee-`-prefixed fields in the frontmatter.
 
 For example:
 
@@ -36,4 +37,6 @@ argument-hint: <STORY_ID>
 
 This means that this skill will be triggered on a work item with type `story` (`x-codee-issue-type`) in statuses `[AI] Ready for development` and `[AI] In Progress` (`x-codee-issue-status`).
 
-Skills are located in the folder `.claude/skills` and can be checked in in your repo. They can be created/modified either as files with your favorite editor or in Codee UI.
+Codee will run this skill for a specific task like this: `/story-developer TSK-4192`.
+
+Skills live in the `.claude/skills` folder and can be checked into your repo. They can be created/modified either as files in your favorite editor or in the Codee UI.
