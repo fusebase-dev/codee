@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from codee.admin_service import DEFAULT_ADMIN_PORT
+from codee.admin_service import DEFAULT_ADMIN_PORT, public_base_url
 from codee_main_context.context import data_dir, project_root
 from codee_main_context.logging import (
     configure_logging, enable_debug, get_logger, verbose_debug_enabled)
@@ -34,6 +34,16 @@ config = rx.Config(
 """
 
 
+def _api_url(port: int) -> str:
+    """Origin the browser uses for the backend websocket and uploads.
+
+    Reflex bakes this into the compiled frontend, so behind a reverse proxy it
+    has to be the public origin rather than the loopback address the server
+    binds to -- otherwise the page loads and then fails to open its socket.
+    """
+    return public_base_url() or f"http://127.0.0.1:{port}"
+
+
 def _runtime_directory(root: Path) -> Path:
     runtime = data_dir(root) / "reflex"
     runtime.mkdir(parents=True, exist_ok=True)
@@ -59,7 +69,7 @@ def main() -> int:
     codee_data = data_dir(root).resolve()
     os.environ["CODEE_PROJECT_ROOT"] = str(root)
     os.environ["CODEE_DATA_DIR"] = str(codee_data)
-    os.environ["REFLEX_API_URL"] = f"http://127.0.0.1:{arguments.port}"
+    os.environ["REFLEX_API_URL"] = _api_url(arguments.port)
     os.chdir(_runtime_directory(root))
 
     from reflex.reflex import cli

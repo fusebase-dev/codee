@@ -114,6 +114,16 @@ MCP_CHECK_SUMMARY = "Codee MCP connection check"
 DEFAULT_ADMIN_PORT = 8501
 
 
+def public_base_url() -> str:
+    """Public origin the admin UI is reached on, or "" when it is localhost.
+
+    Set ``CODEE_ADMIN_BASE_URL`` when the UI sits behind a reverse proxy on a
+    custom domain. Both the launcher and the OAuth redirect URI read it from
+    here, so a single value covers the whole deployment.
+    """
+    return os.environ.get("CODEE_ADMIN_BASE_URL", "").strip().rstrip("/")
+
+
 def _check(name: str, ok: bool, message: str) -> dict[str, Any]:
     """One line of the settings page's check list."""
     return {"name": name, "ok": ok, "message": message}
@@ -1353,9 +1363,9 @@ class AdminService:
         redirect URI follows ``codee-admin --port``. Set ``CODEE_ADMIN_BASE_URL``
         when the UI is reached through some other host or scheme.
         """
-        override = os.environ.get("CODEE_ADMIN_BASE_URL", "").strip()
+        override = public_base_url()
         if override:
-            return override.rstrip("/")
+            return override
         port = urlparse(os.environ.get(
             "REFLEX_API_URL", "")).port or DEFAULT_ADMIN_PORT
         return f"http://localhost:{port}"
