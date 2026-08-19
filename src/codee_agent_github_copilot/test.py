@@ -1,11 +1,13 @@
 import json
+import os
 import queue
 import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codee_agent_github_copilot.provider import GitHubCopilotAgent, _await_result
+from codee_agent_github_copilot.provider import (
+    MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent, _await_result)
 from codee_main_context.context import Settings
 
 SESSION = "82232f47-df60-4cb3-8c3a-de12074c9205"
@@ -121,6 +123,36 @@ class CopilotRunTest(unittest.TestCase):
                    side_effect=subprocess.TimeoutExpired(cmd="copilot", timeout=7200)):
             with self.assertRaises(RuntimeError):
                 self.agent.run("/do-it CORE-1", SESSION)
+
+
+class CopilotCreditCapTest(unittest.TestCase):
+    def _credits(self, value: str | None) -> str:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+        with patch.dict(os.environ, {}, clear=False):
+            if value is None:
+                os.environ.pop(MAX_AI_CREDITS_ENV_VAR, None)
+            else:
+                os.environ[MAX_AI_CREDITS_ENV_VAR] = value
+            with patch("subprocess.run", return_value=_completed(stdout)) as run:
+                GitHubCopilotAgent(Settings(), Path("/repo")).run("/do-it", SESSION)
+        cmd = run.call_args.args[0]
+        return cmd[cmd.index("--max-ai-credits") + 1]
+
+    def test_an_unset_env_var_keeps_the_default_cap(self) -> None:
+        self.assertEqual(self._credits(None), "1000")
+
+    def test_the_env_var_sets_the_cap(self) -> None:
+        self.assertEqual(self._credits("250"), "250")
+
+    def test_a_blank_env_var_keeps_the_default_cap(self) -> None:
+        self.assertEqual(self._credits("  "), "1000")
+
+    def test_a_cap_under_the_cli_minimum_is_raised_to_it(self) -> None:
+        self.assertEqual(self._credits("5"), "30")
+
+    def test_a_non_numeric_cap_falls_back_to_the_default(self) -> None:
+        self.assertEqual(self._credits("lots"), "1000")
 
 
 class CopilotModelCatalogTest(unittest.TestCase):

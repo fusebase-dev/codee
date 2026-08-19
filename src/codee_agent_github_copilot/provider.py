@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import subprocess
 import threading
@@ -25,13 +26,31 @@ ACP_TIMEOUT_SECONDS = 60
 _INITIALIZE_ID = 1
 _SESSION_NEW_ID = 2
 
+# Ceiling on what one run may spend. AI credits bill at $0.04 each, so the
+# default is the same $20 cap the Claude Code agent puts on a run.
+MAX_AI_CREDITS_ENV_VAR = "CODEE_COPILOT_MAX_AI_CREDITS"
+DEFAULT_MAX_AI_CREDITS = 1000
+# The CLI rejects anything lower outright, which reads as a broken agent rather
+# than a misconfigured cap, so a smaller override is raised to it instead.
+MIN_AI_CREDITS = 30
+
+
+def _max_ai_credits() -> str:
+    """The per-run credit cap, read fresh so a changed env applies to the next run."""
+    raw = os.environ.get(MAX_AI_CREDITS_ENV_VAR, "").strip()
+    if not raw:
+        return str(DEFAULT_MAX_AI_CREDITS)
+    try:
+        return str(max(MIN_AI_CREDITS, int(raw)))
+    except ValueError:
+        log.warning("%s=%r is not a number, using %d",
+                    MAX_AI_CREDITS_ENV_VAR, raw, DEFAULT_MAX_AI_CREDITS)
+        return str(DEFAULT_MAX_AI_CREDITS)
+
 
 class GitHubCopilotAgent(AbstractCodingAgent):
     """Runs the ``copilot`` CLI in a fresh session, under the id the caller supplies."""
 
-    # Ceiling on what one run may spend. AI credits bill at $0.04 each, so this
-    # is the same $20 cap the Claude Code agent puts on a run. Minimum is 30.
-    MAX_AI_CREDITS = "1000"
     TIMEOUT_SECONDS = 7200  # 2 hours
 
     def __init__(self, settings: Settings, cwd: Path):
@@ -52,7 +71,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             "copilot",
             "-p", user_message,
             "--session-id", session_id,
-            "--max-ai-credits", self.MAX_AI_CREDITS,
+            "--max-ai-credits", _max_ai_credits(),
             "--output-format", "json",
             # Tools, paths and URLs: the equivalent of claude's bypassPermissions.
             "--allow-all",
