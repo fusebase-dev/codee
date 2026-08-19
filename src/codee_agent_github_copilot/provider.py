@@ -31,7 +31,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
 
     # Ceiling on what one run may spend. AI credits bill at $0.04 each, so this
     # is the same $20 cap the Claude Code agent puts on a run. Minimum is 30.
-    MAX_AI_CREDITS = "500"
+    MAX_AI_CREDITS = "1000"
     TIMEOUT_SECONDS = 7200  # 2 hours
 
     def __init__(self, settings: Settings, cwd: Path):
@@ -95,7 +95,8 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         if outcome is None:
             # Not the JSONL we know how to read — hand back whatever it printed
             # rather than failing a run that the CLI itself called successful.
-            log.warning("copilot produced no result event; returning raw output")
+            log.warning(
+                "copilot produced no result event; returning raw output")
             return result.stdout
         if outcome.get("exitCode"):
             raise RuntimeError(
@@ -240,7 +241,8 @@ def _parse_events(stdout: str) -> tuple[str, dict | None, list[str]]:
                 reply = content.strip()
         elif kind == SESSION_ERROR:
             data = event.get("data") or {}
-            message = data.get("message") or data.get("errorType") or "unknown error"
+            message = data.get("message") or data.get(
+                "errorType") or "unknown error"
             errors.append(str(message))
         elif kind == RESULT:
             outcome = event
