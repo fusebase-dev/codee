@@ -54,7 +54,28 @@ const config: Config = {
     ],
   ],
 
+  markdown: {
+    mermaid: true,
+  },
+
+  themes: ['@docusaurus/theme-mermaid'],
+
   themeConfig: {
+    mermaid: {
+      // `base` keeps mermaid's own palette out of the way; colours come from
+      // the CSS variables in src/css/custom.css so they follow light/dark mode.
+      theme: {light: 'base', dark: 'base'},
+      options: {
+        fontFamily: 'var(--ifm-font-family-base)',
+        flowchart: {
+          curve: 'basis',
+          padding: 14,
+          nodeSpacing: 44,
+          rankSpacing: 52,
+          useMaxWidth: true,
+        },
+      },
+    },
     // Replace with your project's social card
     image: 'img/docusaurus-social-card.jpg',
     colorMode: {

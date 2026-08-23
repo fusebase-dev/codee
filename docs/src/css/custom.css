@@ -28,3 +28,107 @@
   --ifm-color-primary-lightest: #4fddbf;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
 }
+
+
+/* ---------------------------------------------------------------------------
+   Mermaid diagrams
+   Mermaid uses the `base` theme (see docusaurus.config.ts) so that every colour
+   comes from here and follows the site's light/dark mode.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --codee-diagram-human-bg: #eef3ff;
+  --codee-diagram-human-border: #4a7dff;
+  --codee-diagram-codee-bg: #e9f7ef;
+  --codee-diagram-codee-border: var(--ifm-color-primary);
+  --codee-diagram-text: #1c1e21;
+  --codee-diagram-line: #b3b8c2;
+  --codee-diagram-label: #5c6370;
+  --codee-diagram-surface: #ffffff;
+}
+
+[data-theme='dark'] {
+  --codee-diagram-human-bg: #1a2748;
+  --codee-diagram-human-border: #6b93ff;
+  --codee-diagram-codee-bg: #14312a;
+  --codee-diagram-codee-border: var(--ifm-color-primary);
+  --codee-diagram-text: #e6e8eb;
+  --codee-diagram-line: #838b99;
+  --codee-diagram-label: #a6adba;
+  --codee-diagram-surface: var(--ifm-background-color);
+}
+
+.docusaurus-mermaid-container {
+  display: flex;
+  justify-content: center;
+  margin: 2rem 0 2.5rem;
+  overflow-x: auto;
+}
+
+/* Rounded, soft node boxes. */
+.docusaurus-mermaid-container svg .node rect,
+.docusaurus-mermaid-container svg .node polygon {
+  rx: 10;
+  ry: 10;
+  stroke-width: 1.5px;
+}
+
+/* The .mdx files tag nodes with `class ... codee` / `class ... human` but define no
+   `classDef` on purpose: mermaid writes classDef styles inline with !important, which
+   no stylesheet can override. Keeping the colours here lets them follow light/dark. */
+.docusaurus-mermaid-container svg .node.codee .label-container,
+.docusaurus-mermaid-container svg .node.codee .label-container path,
+.docusaurus-mermaid-container svg .node.codee > rect {
+  fill: var(--codee-diagram-codee-bg) !important;
+  stroke: var(--codee-diagram-codee-border) !important;
+}
+
+.docusaurus-mermaid-container svg .node.human .label-container,
+.docusaurus-mermaid-container svg .node.human .label-container path,
+.docusaurus-mermaid-container svg .node.human > rect {
+  fill: var(--codee-diagram-human-bg) !important;
+  stroke: var(--codee-diagram-human-border) !important;
+}
+
+.docusaurus-mermaid-container svg .nodeLabel,
+.docusaurus-mermaid-container svg .nodeLabel p {
+  color: var(--codee-diagram-text) !important;
+  font-weight: 500;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+/* Connectors. `!important` is needed because mermaid emits its own edge colours
+   under an `#mermaid-svg-… ` ID selector, which outranks a plain class rule. */
+.docusaurus-mermaid-container svg .flowchart-link,
+.docusaurus-mermaid-container svg .edgePath .path {
+  stroke: var(--codee-diagram-line) !important;
+  stroke-width: 1.5px !important;
+}
+
+.docusaurus-mermaid-container svg marker path,
+.docusaurus-mermaid-container svg .marker {
+  fill: var(--codee-diagram-line) !important;
+  stroke: var(--codee-diagram-line) !important;
+}
+
+/* Return paths: dashed and quieter than the happy path. */
+.docusaurus-mermaid-container svg .flowchart-link.rework {
+  stroke-dasharray: 5 4;
+  opacity: 0.8;
+}
+
+/* Edge labels: no grey chip, just quiet text on the page background. */
+.docusaurus-mermaid-container svg .edgeLabel,
+.docusaurus-mermaid-container svg .edgeLabel p,
+.docusaurus-mermaid-container svg .edgeLabel rect {
+  background-color: var(--codee-diagram-surface) !important;
+  fill: var(--codee-diagram-surface) !important;
+  color: var(--codee-diagram-label) !important;
+}
+
+.docusaurus-mermaid-container svg .edgeLabel p {
+  padding: 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+}

@@ -11,7 +11,7 @@ Codee uses AI agents such as Claude Code and GitHub Copilot. It does not try to 
 
 ## How it works
 
-Codee polls your issue tracker as its own user. When a work item's type and status match a skill's triggers, Codee runs that skill with your chosen AI agent to work on the task. For development tasks, that ends in a merge request.
+Codee polls your issue tracker as its own user. When a work item's type and status match a skill's triggers, Codee runs that skill with your chosen AI agent to work on the task. For development tasks, that ends in a pull request.
 
 ## Issue Trackers
 
@@ -27,15 +27,15 @@ For example:
 
 ```yaml
 name: story-developer
-description: Implement one subtask from an Issue Tracker story and submit a merge request.
+description: Implement one subtask from an Issue Tracker story and submit a pull request.
 disable-model-invocation: true
 x-codee-trigger: issue
-x-codee-issue-status: ['[AI] Ready for development', '[AI] In Progress']
+x-codee-issue-status: ['AI Ready for development', 'AI In Progress']
 x-codee-issue-type: story
 argument-hint: <STORY_ID>
 ```
 
-This means that this skill will be triggered on a work item with type `story` (`x-codee-issue-type`) in statuses `[AI] Ready for development` and `[AI] In Progress` (`x-codee-issue-status`).
+This means that this skill will be triggered on a work item with type `story` (`x-codee-issue-type`) in statuses `AI Ready for development` and `AI In Progress` (`x-codee-issue-status`).
 
 Codee will run this skill for a specific task like this: `/story-developer TSK-4192`.
 

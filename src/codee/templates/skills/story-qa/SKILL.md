@@ -3,19 +3,19 @@ name: story-qa
 description: Validate one subtask from an Issue Tracker story against its acceptance criteria.
 disable-model-invocation: true
 x-codee-trigger: issue
-x-codee-issue-status: ['[AI] Ready for QA']
+x-codee-issue-status: ['AI Ready for QA']
 x-codee-issue-type: story
 argument-hint: <STORY_ID>
 ---
 
 # Story QA
 
-Validate one subtask per invocation. QA is read-only: do not modify the implementation or merge its merge request.
+Validate one subtask per invocation. QA is read-only: do not modify the implementation or merge its pull request.
 
 ## Workflow
 
 1. Read the story, acceptance criteria, attachments, comments, subtasks, and `story-spec/{STORY_ID}/README.md` when present.
-2. Select one delivered subtask that needs verification and locate its merge request and test environment.
+2. Select one delivered subtask that needs verification and locate its pull request and test environment.
 3. Read project instructions and relevant implementation details.
 4. Create a QA plan mapping every applicable acceptance criterion to a scenario, environment, method, and expected result.
 5. Execute each scenario and record the actual result.
