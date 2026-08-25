@@ -617,7 +617,8 @@ class AdminService:
                     "\n\nYour previous response was invalid: "
                     f"{validation_error}. Return corrected JSON only."
                 )
-            response = agent.run(request, str(uuid.uuid4()))
+            response = agent.run(
+                request, str(uuid.uuid4()), agent.best_model())
             payload_text = _strip_code_fence(response)
             try:
                 payload = json.loads(payload_text)

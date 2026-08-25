@@ -42,6 +42,18 @@ class AbstractCodingAgent(ABC):
         ...
 
     @classmethod
+    def best_model(cls) -> str:
+        """The id to pass for "the most capable model", for callers with no skill.
+
+        Skill-triggered runs take their model from frontmatter, but internal
+        prompts (workflow inference, setup checks) have no frontmatter to read
+        and must not silently land on whichever default the CLI happens to
+        resolve. Agents that offer a version-free alias return that alias so the
+        choice tracks the newest release without an edit here.
+        """
+        return ""
+
+    @classmethod
     def list_models(cls) -> list[AgentModel]:
         """Models this agent offers, best-effort, for the admin UI's picker.
 

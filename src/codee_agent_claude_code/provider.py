@@ -32,17 +32,22 @@ class ClaudeCodeAgent(AbstractCodingAgent):
 
     MAX_BUDGET_USD = "20.00"
     TIMEOUT_SECONDS = 7200  # 2 hours
+    # `--model` takes an alias for the latest model of a tier, so asking for the
+    # best one needs no version here and survives the next Opus release.
+    BEST_MODEL = "opus"
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
+
+    @classmethod
+    def best_model(cls) -> str:
+        return cls.BEST_MODEL
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:
         return list(MODELS)
 
     def run(self, user_message: str, session_id: str, model: str = "") -> str:
-        # `model` is deliberately not forwarded as --model: Claude Code reads the
-        # skill's `model:` frontmatter itself.
         cmd = [
             "claude",
             "-p", user_message,
@@ -51,6 +56,11 @@ class ClaudeCodeAgent(AbstractCodingAgent):
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
         ]
+        # Skill triggers pass no model: Claude Code reads the skill's `model:`
+        # frontmatter itself, and a flag here would override it. Only a caller
+        # with no frontmatter to read (workflow inference) names one explicitly.
+        if model:
+            cmd += ["--model", model]
 
         log.info("Running claude with message: %s", user_message)
         log.debug("cwd=%s cmd=%s", self._cwd, " ".join(cmd))

@@ -52,9 +52,17 @@ class GitHubCopilotAgent(AbstractCodingAgent):
     """Runs the ``copilot`` CLI in a fresh session, under the id the caller supplies."""
 
     TIMEOUT_SECONDS = 7200  # 2 hours
+    # Copilot's catalog carries only versioned ids -- its one version-free value
+    # is `auto`, which picks for cost rather than capability -- so the best model
+    # has to be named outright and bumped when a newer Opus lands in the catalog.
+    BEST_MODEL = "claude-opus-5"
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
+
+    @classmethod
+    def best_model(cls) -> str:
+        return cls.BEST_MODEL
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:

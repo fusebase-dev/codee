@@ -89,6 +89,11 @@ class CopilotRunTest(unittest.TestCase):
 
         self.assertNotIn("--model", self.captured.call_args.args[0])
 
+    def test_the_best_model_is_an_anthropic_catalog_id(self) -> None:
+        # Copilot has no latest-tier alias, so this id is pinned by hand and only
+        # a real catalog id will be accepted by the CLI.
+        self.assertEqual(GitHubCopilotAgent.best_model(), "claude-opus-5")
+
     def test_a_non_zero_exit_raises_with_the_stderr_reason(self) -> None:
         completed = _completed(
             stderr='Error: Model "nope" from --model flag is not available.',

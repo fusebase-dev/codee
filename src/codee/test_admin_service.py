@@ -202,6 +202,42 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertEqual(service.resolve_skill_slug("missing"), "")
             self.assertEqual(service.resolve_skill_slug(""), "")
 
+    def test_generate_workflow_asks_the_agent_for_its_best_model(self) -> None:
+        # Inference has no skill frontmatter behind it, so without an explicit
+        # model it would land on whatever default the CLI happens to resolve.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "After implementation, move the issue to Review.\n"
+            )
+            agent = Mock()
+            agent.best_model.return_value = "claude-opus-5"
+            agent.run.return_value = (
+                '{"statuses":["Ready","Review"],"transitions":['
+                '{"source":"Ready","target":"Review","label":"develop",'
+                '"evidence":"After implementation, move the issue to Review."}],'
+                '"final_statuses":["Review"]}'
+            )
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(settings=Settings(
+                coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service._CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow()
+
+            self.assertEqual(agent.run.call_args.args[2], "claude-opus-5")
+
     def test_generate_workflow_builds_react_flow_graph_from_issue_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
