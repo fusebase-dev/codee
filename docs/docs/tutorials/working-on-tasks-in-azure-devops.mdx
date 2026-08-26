@@ -398,9 +398,7 @@ children per run. For that child it:
 
 Codee then runs again for the next open child. There is one pull request per repository: the
 next child in the same repository adds commits to it, and a child in a different repository
-gets its own. This works against Azure Repos and against GitHub or GitLab repositories
-attached to the same project - the pull request lives wherever the code does, not
-necessarily in Azure DevOps.
+gets its own.
 
 ### 4. Review, security review and QA
 
@@ -427,6 +425,11 @@ When all three passes are clean, the work item lands in `AI Human review`.
 Read the pull request, the review comments and the QA evidence, then merge. Reassign the
 work item to yourself when you pick it up, so it leaves Codee's queue and the board shows
 who owns it.
+
+The pull request is reviewed where the code lives, which does not have to be Azure DevOps.
+The code can sit in any Git host: Azure Repos, GitHub, Bitbucket, GitLab. One story can even
+span repositories on different hosts, as long as the machine the Codee worker runs on has
+pull and push access to each of them.
 
 ## Task flow
 
