@@ -28,7 +28,7 @@ statuses its skills trigger on.
 
 Codee keeps itself as the assignee while it works, so after you assign a story or task at
 the start, you usually do not touch the assignee again until it reaches
-`AI Human review`.
+`AI Ready for Human review`.
 
 :::tip[Label the story `CodeeStory`]
 
@@ -112,7 +112,7 @@ all. The `Assignee` column says who acts next.
 | `AI Ready for CR` | Codee | Codee | Codee reviews the pull request |
 | `AI Ready for security review` | Codee | Codee | Codee runs a security review |
 | `AI Ready for QA` | Codee | Codee | Codee checks it against the acceptance criteria |
-| `AI Human review` | Codee | Codee, until a person takes it | Human does the final check and merges |
+| `AI Ready for Human review` | Codee | Codee, until a person takes it | Human does the final check and merges |
 
 #### `AI Decomposition needed`
 
@@ -198,7 +198,7 @@ issue back to `AI Ready for development`.
 what the work item asked for?". These are different questions, and code review often
 passes changes that fail the second one.
 
-#### `AI Human review`
+#### `AI Ready for Human review`
 
 The last status of the automated pipeline. Everything is implemented, reviewed,
 security-checked and tested, and now a person makes the final call and merges.
@@ -264,7 +264,7 @@ flowchart TD
     dev -->|story-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
     sec --> qa[AI Ready for QA]
-    qa -->|story-qa| done([AI Human review])
+    qa -->|story-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev
     qa -.-> dev
@@ -345,7 +345,7 @@ Any stage that finds a blocking problem sends the issue back to
 and where. Unrelated problems Codee finds along the way become their own Jira issues
 instead of growing the current one.
 
-When all three passes are clean, the issue lands in `AI Human review`.
+When all three passes are clean, the issue lands in `AI Ready for Human review`.
 
 ### 5. Human review
 
@@ -364,7 +364,7 @@ flowchart TD
     dev -->|task-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
     sec --> qa[AI Ready for QA]
-    qa -->|task-qa| done([AI Human review])
+    qa -->|task-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev
     qa -.-> dev

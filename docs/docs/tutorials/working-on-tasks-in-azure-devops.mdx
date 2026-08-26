@@ -134,7 +134,7 @@ all. The `Assignee` column says who acts next.
 | `AI Ready for CR` | In Progress | Codee | Codee | Codee reviews the pull request |
 | `AI Ready for security review` | In Progress | Codee | Codee | Codee runs a security review |
 | `AI Ready for QA` | Resolved | Codee | Codee | Codee checks it against the acceptance criteria |
-| `AI Human review` | Resolved | Codee | Codee, until a person takes it | Human does the final check and merges |
+| `AI Ready for Human review` | Resolved | Codee | Codee, until a person takes it | Human does the final check and merges |
 
 Keep at least one `Completed` state (the stock `Closed` or `Done`) and the `Removed`
 category state on each type. Codee's own connection check closes the work item it creates,
@@ -223,10 +223,13 @@ work item back to `AI Ready for development`.
 the work item asked for?". These are different questions, and code review often passes
 changes that fail the second one.
 
-#### `AI Human review`
+#### `AI Ready for Human review`
 
 The last state of the automated pipeline. Everything is implemented, reviewed,
 security-checked and tested, and now a person makes the final call and merges.
+
+If you want changes instead, comment on the pull request and move the work item back to
+`AI Ready for development`. Codee reads the new comments on its next run and addresses them.
 
 Reassign the work item to yourself when you pick it up. That shows who owns it and takes it
 out of Codee's queue for good.
@@ -342,7 +345,7 @@ flowchart TD
     dev -->|story-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
     sec --> qa[AI Ready for QA]
-    qa -->|story-qa| done([AI Human review])
+    qa -->|story-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev
     qa -.-> dev
@@ -390,6 +393,8 @@ children per run. For that child it:
 
 - Reads the story, the child work item, `story-spec/{STORY_ID}/README.md` and the project
   instructions.
+- Inspects the branches and pull requests that already exist for that child, including any
+  unresolved review comments, and addresses the feedback.
 - For bugs, reproduces the problem and finds the root cause before editing anything.
 - Creates a dedicated worktree and branch.
 - Pushes to the story's pull request for that repository, opening it if this is the first
@@ -399,6 +404,9 @@ children per run. For that child it:
 Codee then runs again for the next open child. There is one pull request per repository: the
 next child in the same repository adds commits to it, and a child in a different repository
 gets its own.
+
+This is also how change requests are handled after review: Codee re-reads the feedback and
+folds it into the same pull request. See [Human review](#5-human-review).
 
 ### 4. Review, security review and QA
 
@@ -418,7 +426,7 @@ Any stage that finds a blocking problem sends the work item back to
 where. Unrelated problems Codee finds along the way become their own work items instead of
 growing the current one.
 
-When all three passes are clean, the work item lands in `AI Human review`.
+When all three passes are clean, the work item lands in `AI Ready for Human review`.
 
 ### 5. Human review
 
@@ -431,6 +439,25 @@ The code can sit in any Git host: Azure Repos, GitHub, Bitbucket, GitLab. One st
 span repositories on different hosts, as long as the machine the Codee worker runs on has
 pull and push access to each of them.
 
+#### Requesting changes
+
+Leave the pull request unmerged. Comment on it, or on the child work item itself, then move
+both the story and that child back to `AI Ready for development`. Codee reads both places on
+its next poll and works the feedback into the same pull request.
+
+:::warning[Move the story to the stage you want run]
+
+The story's state picks the stage, and Codee needs at least one child sitting in that state
+to work on. With one child in `AI Ready for development` and the rest in `AI Ready for QA`,
+move the story to `AI Ready for development` to get that one implemented.
+
+You can also do it like this: create a new child, put it in `AI Ready for QA`, move the story there, and
+Codee runs QA on it.
+
+If nothing sits in the state you moved the story to, Codee has no
+child to work on and just moves the story on to the next stage.
+:::
+
 ## Task flow
 
 A task is standalone work that does not need decomposition: a bug fix, a small change, a
@@ -442,7 +469,7 @@ flowchart TD
     dev -->|task-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
     sec --> qa[AI Ready for QA]
-    qa -->|task-qa| done([AI Human review])
+    qa -->|task-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev
     qa -.-> dev
