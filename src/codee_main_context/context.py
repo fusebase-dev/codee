@@ -109,6 +109,12 @@ class Settings:
     # Read it through :func:`work_item_types`, never directly — what is stored
     # here may predate a Codee work item that has since become mandatory.
     work_item_types: dict[str, dict[str, str]] = field(default_factory=dict)
+    # An extra clause every task query is narrowed by, keyed by provider value.
+    # Written in the provider's own query language — JQL for JIRA, WIQL for
+    # Azure DevOps — so it is kept per provider like the credentials are, and
+    # empty by default: nothing is added to the query until the user asks for
+    # it. Read it through :func:`task_filter`, which normalizes what was typed.
+    task_filters: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -133,6 +139,7 @@ def load_settings(data_dir: Path) -> Settings:
                     data.get("coding_agent", CodingAgent.CLAUDE_CODE.value)),
                 credentials=data.get("credentials", {}),
                 work_item_types=data.get("work_item_types", {}),
+                task_filters=data.get("task_filters", {}),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
         except (json.JSONDecodeError, OSError, KeyError, ValueError):
             pass
@@ -152,6 +159,7 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "coding_agent": settings.coding_agent.value,
         "credentials": settings.credentials,
         "work_item_types": settings.work_item_types,
+        "task_filters": settings.task_filters,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"
     temp = path.with_name(path.name + ".tmp")
@@ -185,6 +193,27 @@ def work_item_types(settings: Settings,
         if name and backend_type:
             resolved[name] = backend_type
     return resolved
+
+
+def task_filter(settings: Settings,
+                provider: TasksProvider | None = None) -> str:
+    """The extra query clause one provider narrows its task query with.
+
+    Empty unless the user configured one, which is what keeps the query the
+    executor polls with unchanged for everyone who never opens this setting.
+    What comes back is a bare condition, ready to be joined onto the clauses
+    the provider builds itself — the provider decides where it goes and how it
+    is bracketed, since only it knows its own query language.
+
+    A leading ``AND`` is dropped: writing the clause the way it will be joined
+    is the obvious thing to do, and the doubled keyword would come back as a
+    syntax error naming neither this setting nor the word it objects to.
+    """
+    provider = provider or settings.tasks_provider
+    value = str(settings.task_filters.get(provider.value, "") or "").strip()
+    if value[:4].casefold() == "and ":
+        value = value[4:].strip()
+    return value
 
 
 def codee_issue_types(settings: Settings) -> tuple[str, ...]:

@@ -184,6 +184,11 @@ class AdminState(rx.State):
     jira_account_email: str = ""
     jira_api_token: str = ""
     jira_project: str = ""
+    # The extra query clause each provider's poll is narrowed by, kept in a
+    # field of its own per provider like the credentials are: it is written in
+    # that provider's query language, so switching provider has to swap it.
+    jira_task_filter: str = ""
+    azure_task_filter: str = ""
     azure_organization_url: str = ""
     azure_tenant_id: str = ""
     azure_client_id: str = ""
@@ -609,6 +614,8 @@ class AdminState(rx.State):
         self.jira_account_email = jira.get("account_email", "")
         self.jira_api_token = jira.get("api_token", "")
         self.jira_project = jira.get("project", "")
+        self.jira_task_filter = settings.task_filters.get("jira", "")
+        self.azure_task_filter = settings.task_filters.get("azure_devops", "")
         self.azure_organization_url = azure.get("organization_url", "")
         self.azure_tenant_id = azure.get("tenant_id", "")
         self.azure_client_id = azure.get("client_id", "")
@@ -672,12 +679,16 @@ class AdminState(rx.State):
             return rx.toast.success(message or "Connected to Azure DevOps")
         return rx.toast.error(message or "Could not connect to Azure DevOps")
 
-    def _drop_provider_results(self) -> None:
-        """Forget the last checks and MCP setup: they spoke for credentials that just changed."""
+    def _drop_check_results(self) -> None:
+        """Forget the last checks and MCP setup: they spoke for a form that just changed."""
         self.tasks_verifying = False
         self.tasks_checks = []
         self.mcp_setup_ok = False
         self.mcp_setup_message = ""
+
+    def _drop_provider_results(self) -> None:
+        """Everything on screen that was answered by the credentials just edited."""
+        self._drop_check_results()
         # The fetched work item types came from the same backend the changed
         # credentials address, so they are no more current than the checks are.
         # The mapping rows themselves stay: they are the user's edit, not a
@@ -813,6 +824,16 @@ class AdminState(rx.State):
         self.jira_project = value
         self._drop_provider_results()
 
+    def set_jira_task_filter(self, value: str) -> None:
+        self.jira_task_filter = value
+        # Only the checks: the filter narrows the query, it does not change
+        # which backend answers it, so the fetched work item types still stand.
+        self._drop_check_results()
+
+    def set_azure_task_filter(self, value: str) -> None:
+        self.azure_task_filter = value
+        self._drop_check_results()
+
     def set_azure_organization_url(self, value: str) -> None:
         self.azure_organization_url = value
         self._drop_provider_results()
@@ -881,6 +902,12 @@ class AdminState(rx.State):
         return bool(self.azure_organization_url.strip())
 
     @rx.var
+    def task_filter_label(self) -> str:
+        """Named after the language it has to be written in, not after Codee."""
+        return ("Custom WIQL" if self.tasks_provider == "azure_devops"
+                else "Custom JQL")
+
+    @rx.var
     def mcp_provider_label(self) -> str:
         return ("Azure DevOps" if self.tasks_provider == "azure_devops"
                 else "Jira")
@@ -924,10 +951,14 @@ class AdminState(rx.State):
             self.tasks_verifying = True
             self.tasks_checks = pending_checks([])
             provider, credentials = self.tasks_provider, self._credentials()
+            # Verified as it stands on the form, so a filter the backend
+            # refuses is caught here rather than by the first silent poll.
+            task_filter = self._task_filter()
 
         # A generator, so nothing has run yet: each next() is one check, and the
         # thread keeps the page responsive while it does.
-        checks = SERVICE.verify_tasks_connection(provider, credentials)
+        checks = SERVICE.verify_tasks_connection(
+            provider, credentials, task_filter)
         done: list[CheckResult] = []
         failure = ""
         try:
@@ -985,6 +1016,12 @@ class AdminState(rx.State):
             "client_secret": self.azure_client_secret,
         }
 
+    def _task_filter(self) -> str:
+        """The selected provider's custom query clause as it stands on the form."""
+        if self.tasks_provider == "jira":
+            return self.jira_task_filter
+        return self.azure_task_filter
+
     def _persist_settings(self) -> str:
         """Write the settings to disk. Returns an error message, or '' when saved."""
         try:
@@ -1001,6 +1038,7 @@ class AdminState(rx.State):
             parallel_agents,
             self._credentials(),
             work_items,
+            self._task_filter(),
         )
         return ""
 
@@ -2123,6 +2161,34 @@ def work_items_setting() -> rx.Component:
         spacing="3", width="100%")
 
 
+def task_filter_setting() -> rx.Component:
+    """One more condition every poll is narrowed by, in the provider's own language.
+
+    Sits under the work items because it answers the same question they do —
+    what Codee picks up — and is empty out of the box, which is what keeps the
+    query unchanged for everyone who never opens this. Nothing here is
+    validated: the backend is the only thing that can say whether a clause
+    parses, and **Verify connection** below is how it gets asked.
+    """
+    return field(
+        AdminState.task_filter_label,
+        rx.cond(
+            AdminState.tasks_provider == "jira",
+            rx.text_area(value=AdminState.jira_task_filter,
+                         on_change=AdminState.set_jira_task_filter,
+                         placeholder='labels = "codee" AND '
+                                     'component != "legacy"',
+                         rows="2", width="100%"),
+            rx.text_area(value=AdminState.azure_task_filter,
+                         on_change=AdminState.set_azure_task_filter,
+                         placeholder="[System.Tags] CONTAINS 'codee'",
+                         rows="2", width="100%")),
+        hint=rx.text("Optional. Added to every task query as one more AND "
+                     "condition, on top of the work items above. Leave it "
+                     "empty to pick up everything they match.",
+                     color=MUTED, font_size="0.8rem"))
+
+
 def tasks_check_row(check: CheckResult) -> rx.Component:
     """One check: where it stands as an icon, its name, and what it found."""
     marker = {"flex_shrink": "0", "margin_top": "0.15rem"}
@@ -2215,6 +2281,7 @@ def settings_page() -> rx.Component:
             rx.box(rx.cond(AdminState.tasks_provider == "jira",
                    jira_fields, azure_fields()), margin_top="1rem"),
             rx.box(work_items_setting(), margin_top="1.25rem"),
+            rx.box(task_filter_setting(), margin_top="1.25rem"),
             rx.box(tasks_mcp_setup(), margin_top="1.25rem"),
             rx.box(tasks_verification(), margin_top="1.25rem"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),

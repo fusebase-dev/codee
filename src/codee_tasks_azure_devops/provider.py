@@ -9,7 +9,7 @@ from urllib.parse import quote
 import requests
 from codee_main_context.context import (
     CodeeMainContext, STORY_ISSUE_TYPE, Settings, TASK_ISSUE_TYPE,
-    TasksProvider, data_dir,
+    TasksProvider, data_dir, task_filter,
     work_item_types)
 from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
@@ -143,6 +143,10 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
                              in self._work_item_types.items()}
         self._story_work_item_type = self._work_item_types.get(
             STORY_ISSUE_TYPE, "")
+        # An extra WIQL condition the user narrowed the poll with, empty unless
+        # one was configured. Kept as written: it is theirs to get right, and
+        # Azure DevOps explains a rejected query better than a parser here could.
+        self._task_filter = task_filter(settings, TasksProvider.AZURE_DEVOPS)
 
     def is_configured(self) -> bool:
         """Configured means the app details are filled in *and* OAuth completed."""
@@ -152,8 +156,11 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         connection = self._auth.connection() or {}
         account = connection.get("account") or "connected account"
         types = ", ".join(self._work_item_types.values()) or "no work item types"
+        # The filter only gets a mention when there is one: it is off for most
+        # installations, and "filter none" reads like a setting gone wrong.
+        extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"Azure DevOps {self._config.organization_url} "
-                f"(all projects, assignee {account}, types {types})")
+                f"(all projects, assignee {account}, types {types}{extra})")
 
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
@@ -315,8 +322,9 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         # span every project the connected account can read.
         query = self._build_wiql(statuses)
         # Logged verbatim: "Codee isn't picking up my work item" is answered by
-        # reading the types the work item mapping resolved to and the states
-        # the skills asked for, both of which are in this one string.
+        # reading the types the work item mapping resolved to, the states the
+        # skills asked for and the custom filter from Settings, all of which
+        # are in this one string.
         log.debug("WIQL: %s", query)
         response = requests.post(
             f"{self._config.organization_url}/_apis/wit/wiql",
@@ -355,8 +363,20 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             "WHERE [System.AssignedTo] = @Me "
             f"{self._build_wiql_type_clause()}"
             f"{self._build_wiql_status_clause(statuses)}"
+            f"{self._build_wiql_filter_clause()}"
             "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, [System.CreatedDate] ASC"
         )
+
+    def _build_wiql_filter_clause(self) -> str:
+        """The custom WIQL from Settings, ANDed onto the clauses above.
+
+        Bracketed, because a filter is a whole condition rather than a single
+        term: an unparenthesized ``... OR ...`` would bind its OR across the
+        assignee and type clauses and hand back items Codee does not own.
+        """
+        if not self._task_filter:
+            return ""
+        return f"AND ({self._task_filter}) "
 
     def _build_wiql_type_clause(self) -> str:
         """The work item type filter, from the work items configured in Settings.

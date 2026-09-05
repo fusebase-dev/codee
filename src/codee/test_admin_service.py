@@ -102,6 +102,33 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
             self.assertEqual(stored["azure_devops"],
                              {"story": "User Story", "task": "Task"})
 
+    def test_saving_keeps_the_other_provider_s_task_filter(self) -> None:
+        # A JQL clause means nothing to Azure DevOps, so each provider keeps
+        # its own and switching between them loses neither.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {}, None,
+                                  'labels = "codee"')
+            service.save_settings("azure_devops", "claude_code", 3, {}, None,
+                                  "[System.Tags] CONTAINS 'codee'")
+
+            stored = load_settings(directory).task_filters
+            self.assertEqual(stored["jira"], 'labels = "codee"')
+            self.assertEqual(stored["azure_devops"],
+                             "[System.Tags] CONTAINS 'codee'")
+
+    def test_an_unset_task_filter_saves_as_no_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {},
+                                  {"story": "Story", "task": "Task"})
+
+            self.assertEqual(load_settings(directory).task_filters["jira"], "")
+
     def test_the_saved_work_items_are_what_skills_may_declare(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

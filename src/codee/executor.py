@@ -98,7 +98,8 @@ def _refresh_config() -> None:
 
     Providers capture their credentials at construction, so without this a
     settings edit (new Azure DevOps app, rotated JIRA token, switched provider,
-    remapped work item) only took effect after restarting the executor.
+    remapped work item, edited task filter) only took effect after restarting
+    the executor.
     Rebuilds are conditional so a poll that changes nothing keeps the live
     provider — and with it the Azure DevOps refresh lock — untouched.
     """
@@ -113,7 +114,8 @@ def _refresh_config() -> None:
 
     if (settings.tasks_provider != previous.tasks_provider
             or settings.credentials != previous.credentials
-            or settings.work_item_types != previous.work_item_types):
+            or settings.work_item_types != previous.work_item_types
+            or settings.task_filters != previous.task_filters):
         try:
             tasks_provider = build_tasks_provider(settings)
         except Exception as exc:

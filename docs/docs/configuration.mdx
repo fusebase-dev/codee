@@ -85,6 +85,28 @@ page gets its own graph for it.
 Anything assigned to Codee whose type is not listed here is left alone, whatever state it
 is in.
 
+### Custom JQL / WIQL
+
+An optional extra condition every task query is narrowed by, written in the selected
+provider's own query language — JQL for Jira, WIQL for Azure DevOps. It is empty out of
+the box, and while it stays empty the poll is exactly the one described above.
+
+When you fill it in, it is added to every fetch as one more `AND` condition on top of the
+work items and the statuses your skills trigger on — it can only narrow what Codee picks
+up, never widen it. Write the condition alone; a leading `AND` is dropped for you, and the
+whole clause is bracketed before it is joined, so an `OR` inside it stays inside it.
+
+| Provider | Example |
+| --- | --- |
+| Jira | `labels = "codee" AND component != "legacy"` |
+| Azure DevOps | `[System.Tags] CONTAINS 'codee'` |
+
+Each provider keeps its own filter, so switching provider and back does not lose it.
+Nothing is validated as you type: the backend is the only thing that can say whether a
+clause parses, so use **Verify connection** below to have it checked — an invalid filter
+fails there with the message the provider returned, rather than silently returning no
+tasks on every poll.
+
 ### Verify connection
 
 Once every field of the selected provider is filled in (and, for Azure DevOps, the app is connected), a **Verify connection** button becomes available at the bottom of the Tasks provider section.

@@ -2,7 +2,8 @@ from typing import Callable
 
 import requests
 
-from codee_main_context.context import Settings, TasksProvider, work_item_types
+from codee_main_context.context import (
+    Settings, TasksProvider, task_filter, work_item_types)
 from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, McpServer, Task, TasksProviderError)
@@ -112,14 +113,21 @@ class JiraTasksProvider(AbstractTasksProvider):
         self._codee_types = {issue_type.casefold(): codee_type
                              for codee_type, issue_type
                              in self._work_item_types.items()}
+        # An extra JQL condition the user narrowed the poll with, empty unless
+        # one was configured. Kept as written: it is theirs to get right, and
+        # JIRA says what is wrong with it far better than a parser here could.
+        self._task_filter = task_filter(settings, TasksProvider.JIRA)
 
     def is_configured(self) -> bool:
         return bool(self._user_email and self._api_token)
 
     def describe(self) -> str:
         types = ", ".join(self._work_item_types.values()) or "no issue types"
+        # The filter only gets a mention when there is one: it is off for most
+        # installations, and "filter none" reads like a setting gone wrong.
+        extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"JIRA {self._base_url} "
-                f"(project {self._project}, types {types})")
+                f"(project {self._project}, types {types}{extra})")
 
     def mcp_server(self) -> McpServer | None:
         """mcp-atlassian, wired to the same account the executor polls with.
@@ -179,8 +187,8 @@ class JiraTasksProvider(AbstractTasksProvider):
         }
         # The query verbatim, because "Codee isn't picking up my issue" is
         # answered by reading it: the project, the issue types the work item
-        # mapping resolved to, and the statuses the skills asked for are all in
-        # this one string.
+        # mapping resolved to, the statuses the skills asked for and the custom
+        # filter from Settings are all in this one string.
         log.debug("JQL: %s", params["jql"])
 
         try:
@@ -227,8 +235,20 @@ class JiraTasksProvider(AbstractTasksProvider):
             f'project = {self._project} '
             f'{self._build_type_clause()}'
             f'{status_clause}'
+            f'{self._build_filter_clause()}'
             f'ORDER BY priority DESC, created ASC'
         )
+
+    def _build_filter_clause(self) -> str:
+        """The custom JQL from Settings, ANDed onto the clauses above.
+
+        Bracketed, because a filter is a whole condition rather than a single
+        term: an unparenthesized ``a = 1 OR b = 2`` would bind its OR across
+        the project and type clauses and hand back issues Codee does not own.
+        """
+        if not self._task_filter:
+            return ""
+        return f'AND ({self._task_filter}) '
 
     def _build_type_clause(self) -> str:
         """The issue-type filter, from the work items configured in Settings.

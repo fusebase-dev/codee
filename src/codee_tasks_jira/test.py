@@ -15,6 +15,7 @@ def _configure(provider: JiraTasksProvider,
     provider._work_item_types = mapping
     provider._codee_types = {issue_type.casefold(): codee_type
                              for codee_type, issue_type in mapping.items()}
+    provider._task_filter = ""
     return provider
 
 
@@ -114,6 +115,30 @@ class JiraTasksProviderTest(unittest.TestCase):
         jql = self.provider._build_jql(["Ready"])
 
         self.assertIn('issuetype in ("Story", "Task")', jql)
+
+    def test_no_custom_filter_leaves_the_query_as_it_was(self) -> None:
+        # The setting is empty for everyone who never opened it, and their
+        # query has to be the one they had before it existed.
+        jql = self.provider._build_jql(["Ready"])
+
+        self.assertNotIn("AND (", jql)
+
+    def test_the_custom_filter_is_anded_in_before_the_ordering(self) -> None:
+        self.provider._task_filter = 'labels = "codee"'
+
+        jql = self.provider._build_jql(["Ready"])
+
+        self.assertIn('AND (labels = "codee") ORDER BY', jql)
+
+    def test_the_custom_filter_is_bracketed(self) -> None:
+        # Unbracketed, an OR inside it would bind across the project and type
+        # clauses and hand back issues Codee does not own.
+        self.provider._task_filter = 'labels = "a" OR labels = "b"'
+
+        jql = self.provider._build_jql(["Ready"])
+
+        self.assertIn('AND (labels = "a" OR labels = "b") ', jql)
+        self.assertIn("project = CORE", jql)
 
     def test_a_remapped_work_item_changes_the_type_clause(self) -> None:
         provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),

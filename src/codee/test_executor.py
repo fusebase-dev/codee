@@ -82,6 +82,21 @@ class RefreshConfigTest(unittest.TestCase):
         self.assertTrue(provider.is_configured())
         self.assertIn("NIM", provider.describe())
 
+    def test_a_new_task_filter_reaches_the_provider(self) -> None:
+        # The filter is captured at construction like the credentials are, so
+        # without a rebuild the poll keeps running the query it started with.
+        self._save(credentials={TasksProvider.JIRA.value: {
+            "base_url": "https://acme.atlassian.net",
+            "account_email": "bot@acme.test",
+            "api_token": "token",
+            "project": "NIM",
+        }}, task_filters={TasksProvider.JIRA.value: 'labels = "codee"'})
+
+        executor._refresh_config()
+
+        self.assertIn('AND (labels = "codee") ',
+                      executor.tasks_provider._build_jql(["Ready"]))
+
     def test_unchanged_settings_keep_the_live_provider(self) -> None:
         self._save()
         executor._refresh_config()

@@ -362,6 +362,24 @@ class TasksProviderTest(unittest.TestCase):
         self.assertIn("[System.WorkItemType] IN "
                       "('Product Backlog Item', 'Task', 'Bug')", wiql)
 
+    def test_no_custom_filter_leaves_the_query_as_it_was(self) -> None:
+        # The setting is empty for everyone who never opened it, and their
+        # query has to be the one they had before it existed.
+        wiql = self.provider._build_wiql(["Ready"])
+
+        self.assertNotIn("AND (", wiql)
+
+    def test_the_custom_filter_is_anded_in_before_the_ordering(self) -> None:
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.task_filters = {
+            "azure_devops": "[System.Tags] CONTAINS 'codee'"}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        wiql = provider._build_wiql(["Ready"])
+
+        self.assertIn("AND ([System.Tags] CONTAINS 'codee') ORDER BY", wiql)
+
     def test_wiql_names_no_project_at_all(self) -> None:
         wiql = self.provider._build_wiql(["Ready"])
 

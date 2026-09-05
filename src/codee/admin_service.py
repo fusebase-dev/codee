@@ -1285,6 +1285,7 @@ class AdminService:
         max_parallel_agents: int,
         credentials: dict[str, str],
         work_items: dict[str, str] | None = None,
+        task_filter: str = "",
     ) -> None:
         current = self.context.settings
         all_credentials = dict(current.credentials)
@@ -1295,11 +1296,16 @@ class AdminService:
         all_work_items = dict(current.work_item_types)
         if work_items is not None:
             all_work_items[tasks_provider] = work_items
+        # Same again for the custom query clause, which is written in the
+        # selected provider's own query language and means nothing to the other.
+        all_task_filters = dict(current.task_filters)
+        all_task_filters[tasks_provider] = task_filter.strip()
         self.context.settings = Settings(
             tasks_provider=TasksProvider(tasks_provider),
             coding_agent=CodingAgent(coding_agent),
             credentials=all_credentials,
             work_item_types=all_work_items,
+            task_filters=all_task_filters,
             max_parallel_agents=max(1, max_parallel_agents),
         )
         save_settings(self.data_dir, self.context.settings)
@@ -1308,6 +1314,7 @@ class AdminService:
         self,
         tasks_provider: str,
         credentials: dict[str, str],
+        task_filter: str = "",
     ) -> Iterator[dict[str, Any]]:
         """Yield each check the settings page reports on, as it finishes.
 
@@ -1320,10 +1327,14 @@ class AdminService:
 
         Runs against the values sitting in the settings form rather than what is
         on disk, so the checks answer "do these credentials work?" without first
-        making the user save credentials that may be wrong.
+        making the user save credentials that may be wrong. The custom query
+        clause comes from the form too: a filter the backend rejects is exactly
+        what this check exists to catch, and catching it after saving would mean
+        every poll failing until someone reads the log.
         """
         try:
-            provider = self._provider_from_form(tasks_provider, credentials)
+            provider = self._provider_from_form(
+                tasks_provider, credentials, task_filter)
         except Exception as exc:
             yield _check(TASKS_CHECK, False, str(exc))
             return
@@ -1433,12 +1444,18 @@ class AdminService:
         self,
         tasks_provider: str,
         credentials: dict[str, str],
+        task_filter: str = "",
     ) -> AbstractTasksProvider:
         """Build a provider from the credentials as they stand on the settings form.
 
         The form rather than the disk, so the settings page can act on what the
         user is looking at without first making them save credentials that may
         be wrong. Nothing here is persisted.
+
+        The custom query clause defaults to none rather than to what is stored,
+        because the callers that don't pass one aren't querying tasks — listing
+        work item types and writing the MCP config are both unaffected by it,
+        and a saved filter that no longer parses would break them for no reason.
         """
         try:
             provider_key = TasksProvider(tasks_provider)
@@ -1449,6 +1466,8 @@ class AdminService:
             current,
             tasks_provider=provider_key,
             credentials={**current.credentials, tasks_provider: credentials},
+            task_filters={**current.task_filters,
+                          tasks_provider: task_filter},
         )
         return build_tasks_provider(settings)
 
