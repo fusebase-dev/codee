@@ -125,7 +125,7 @@ def start_job(session_id, message, started_at=None, *,
         return None
 
 
-def finish_job(job_id, main_context: CodeeMainContext) -> None:
+def finish_job(job_id, *, main_context: CodeeMainContext) -> None:
     """Remove an in-flight job row once its subprocess returns. No-op on None."""
     if job_id is None:
         return

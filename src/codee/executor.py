@@ -209,7 +209,13 @@ def _run_agent(user_message: str, session_id: str, model: str = "") -> str:
         return coding_agent.run(user_message, session_id, model)
     finally:
         log.debug("job %s finished", job_id)
-        runs_db.finish_job(job_id, main_context=context)
+        try:
+            runs_db.finish_job(job_id, main_context=context)
+        except Exception as exc:  # ponytail: clearing the in-flight row must never
+            # replace the agent's outcome (FR-009). Raising here would discard a
+            # completed run's reply and leave the cron slot un-advanced, so the
+            # trigger re-runs the finished job every tick for the catch-up window.
+            log.warning("failed to clear in-flight job %s: %s", job_id, exc)
 
 
 def _run_task(task_id: str, message: str, session_id: str, skill_name: str,

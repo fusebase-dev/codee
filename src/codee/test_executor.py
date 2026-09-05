@@ -172,6 +172,16 @@ class RunTaskLoggingTest(unittest.TestCase):
         self.assertEqual(run["status"], "failed")
         self.assertIn("over limit", run["error"])
 
+    def test_bookkeeping_failure_does_not_sink_a_finished_run(self) -> None:
+        # finish_job runs in _run_agent's finally; if it raises (a stale call
+        # signature, an unwritable db) it must not replace the agent's reply,
+        # which would mark a completed run "failed" and leave the cron slot due.
+        with patch.object(executor.coding_agent, "run", return_value="done"), \
+                patch.object(runs_db, "finish_job",
+                             side_effect=TypeError("missing 1 required positional argument")):
+            self.assertEqual(executor._run_agent("/story-developer NIM-4", "sid-4"),
+                             "done")
+
     def test_counts_include_issue_runs(self) -> None:
         with patch.object(executor, "_run_agent", return_value="done"):
             executor._run_task("NIM-3", "/story-developer NIM-3",

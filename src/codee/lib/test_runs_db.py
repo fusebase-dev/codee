@@ -66,7 +66,8 @@ def test_main_context_is_required():
     # loudly at the call site instead of being swallowed as a logging miss.
     for call in (lambda: runs_db.record_run("s", "cron", "sid", "succeeded"),
                  lambda: runs_db.recent_runs(),
-                 lambda: runs_db.start_job("sid", "m")):
+                 lambda: runs_db.start_job("sid", "m"),
+                 lambda: runs_db.finish_job(1)):
         try:
             call()
         except TypeError:
