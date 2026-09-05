@@ -14,6 +14,7 @@ from codee_main_context.context import CodeeMainContext, Settings, TasksProvider
 from codee_tasks_azure_devops import oauth
 from codee_tasks_azure_devops.oauth import (
     AzureDevOpsAuth, AzureDevOpsAuthError, OAuthConfig, is_expired)
+from codee_tasks_abstract.provider import TasksProviderError
 from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
 
 
@@ -341,11 +342,25 @@ class TasksProviderTest(unittest.TestCase):
         self.assertIn("[System.AssignedTo] = @Me", wiql)
         self.assertIn("ORDER BY [Microsoft.VSTS.Common.Priority] ASC", wiql)
 
-    def test_wiql_only_asks_for_codee_work_item_types(self) -> None:
+    def test_wiql_only_asks_for_the_mapped_work_item_types(self) -> None:
         wiql = self.provider._build_wiql(["Ready"])
 
         self.assertIn(
-            "[System.WorkItemType] IN ('Codee Task', 'Codee Story')", wiql)
+            "[System.WorkItemType] IN ('User Story', 'Task')", wiql)
+
+    def test_wiql_follows_a_remapped_work_item(self) -> None:
+        # An organization on the Scrum process calls its backlog something
+        # else, and the query has to follow rather than come back empty.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_types = {"azure_devops": {
+            "story": "Product Backlog Item", "task": "Task", "bug": "Bug"}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        wiql = provider._build_wiql(["Ready"])
+
+        self.assertIn("[System.WorkItemType] IN "
+                      "('Product Backlog Item', 'Task', 'Bug')", wiql)
 
     def test_wiql_names_no_project_at_all(self) -> None:
         wiql = self.provider._build_wiql(["Ready"])
@@ -384,19 +399,19 @@ class TasksProviderTest(unittest.TestCase):
         items = _response({"value": [
             {"id": 12, "fields": {"System.Title": "Second",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Task",
+                                  "System.WorkItemType": "Task",
                                   "Microsoft.VSTS.Common.Priority": 2,
                                   "System.Tags": "ai; backend"}},
             {"id": 11, "fields": {"System.Title": "First",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Task",
+                                  "System.WorkItemType": "Task",
                                   "Microsoft.VSTS.Common.Priority": 1,
                                   "System.Parent": 9}},
         ]})
         parents = _response({"value": [
             {"id": 9, "fields": {"System.Title": "Story",
                                  "System.State": "Active",
-                                 "System.WorkItemType": "User Story",
+                                 "System.WorkItemType": "Epic",
                                  "System.Tags": "epic"}},
         ]})
 
@@ -407,39 +422,39 @@ class TasksProviderTest(unittest.TestCase):
         self.assertEqual([task.key for task in tasks], ["11", "12"])
         self.assertEqual(tasks[0].summary, "First")
         self.assertEqual(tasks[0].priority, "Highest")
-        self.assertEqual(tasks[0].issue_type, "Task")
+        self.assertEqual(tasks[0].issue_type, "task")
         self.assertEqual(tasks[0].parent.key, "9")
         self.assertEqual(tasks[0].parent.labels, ["epic"])
-        # A parent outside the Codee types keeps whatever Azure DevOps calls it.
-        self.assertEqual(tasks[0].parent.issue_type, "User Story")
+        # A parent outside the mapped types keeps whatever Azure DevOps calls it.
+        self.assertEqual(tasks[0].parent.issue_type, "Epic")
         self.assertEqual(tasks[1].labels, ["ai", "backend"])
         self.assertEqual(tasks[1].priority, "High")
 
-    def test_codee_story_maps_to_the_story_issue_type(self) -> None:
+    def test_the_mapped_story_type_arrives_as_the_story_work_item(self) -> None:
         self._connect()
         wiql = _response({"workItems": [{"id": 21}]})
         items = _response({"value": [
             {"id": 21, "fields": {"System.Title": "A story",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Story"}},
+                                  "System.WorkItemType": "User Story"}},
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
                    side_effect=[wiql, items]):
             tasks = self.provider.get_tasks(["Ready"])
 
-        self.assertEqual(tasks[0].issue_type, "Story")
+        self.assertEqual(tasks[0].issue_type, "story")
 
     def test_a_child_of_a_codee_story_is_flagged(self) -> None:
         self._connect()
-        tasks = self._tasks_with_parent_type("Codee Story")
+        tasks = self._tasks_with_parent_type("User Story")
 
         self.assertTrue(tasks[0].is_parent_codee_story)
 
-    def test_a_child_of_a_plain_story_is_not_flagged(self) -> None:
+    def test_a_child_of_an_unmapped_story_type_is_not_flagged(self) -> None:
         self._connect()
-        # Both types map to the "Story" issue type, so only the raw work item
-        # type separates a Codee story from a story a human owns.
+        # "Story" is not the type this installation mapped its story to, and
+        # the accidental collision with the Codee name must not read as one.
         tasks = self._tasks_with_parent_type("Story")
 
         self.assertEqual(tasks[0].parent.issue_type, "Story")
@@ -451,7 +466,7 @@ class TasksProviderTest(unittest.TestCase):
         items = _response({"value": [
             {"id": 31, "fields": {"System.Title": "Orphan",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Task"}},
+                                  "System.WorkItemType": "Task"}},
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
@@ -465,7 +480,7 @@ class TasksProviderTest(unittest.TestCase):
         items = _response({"value": [
             {"id": 31, "fields": {"System.Title": "A child",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Task",
+                                  "System.WorkItemType": "Task",
                                   "System.Parent": 30}},
         ]})
         parents = _response({"value": [
@@ -509,7 +524,7 @@ class TasksProviderTest(unittest.TestCase):
         items = _response({"value": [
             {"id": 11, "fields": {"System.Title": "Fix the thing",
                                   "System.State": "Ready",
-                                  "System.WorkItemType": "Codee Task"}},
+                                  "System.WorkItemType": "Task"}},
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
@@ -578,7 +593,7 @@ class AzureDevOpsMcpTest(unittest.TestCase):
         steps = self._provider().mcp_check_steps("Codee check 1234")
 
         self.assertEqual(len(steps), 2)
-        self.assertIn('"Codee Task" work item', steps[0])
+        self.assertIn('"Task" work item', steps[0])
         self.assertIn("acme organization", steps[0])
         self.assertIn('title "Codee check 1234"', steps[0])
         self.assertIn("assigned to dev@acme.com", steps[0])
@@ -587,6 +602,134 @@ class AzureDevOpsMcpTest(unittest.TestCase):
     def test_no_check_steps_before_the_account_is_known(self) -> None:
         # Nothing to assign the work item to until the OAuth consent is done.
         self.assertIsNone(self._provider().mcp_check_steps("x"))
+
+
+class AzureDevOpsDebugLoggingTest(unittest.TestCase):
+    """What `codee-start --debug` prints when a poll comes back empty."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.context = CodeeMainContext(data_dir=Path(self._temporary.name))
+        self.provider = AzureDevOpsTasksProvider(
+            _settings(organization_url="https://dev.azure.com/acme",
+                      client_id="client-1", client_secret="secret-1"),
+            self.context)
+        oauth_tokens.save_tokens(
+            oauth.PROVIDER, access_token="at", refresh_token="rt",
+            expires_at=_iso(timedelta(hours=1)), account="dev@acme.com",
+            main_context=self.context)
+
+    def test_the_query_and_its_result_are_logged(self) -> None:
+        wiql = _response({"workItems": [{"id": 11}]})
+        items = _response({"value": [
+            {"id": 11, "fields": {"System.Title": "Fix it",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "User Story"}},
+        ]})
+
+        with self.assertLogs("codee_tasks_azure_devops.provider",
+                             "DEBUG") as logs:
+            with patch("codee_tasks_azure_devops.provider.requests.post",
+                       side_effect=[wiql, items]):
+                self.provider.get_tasks(["Ready"])
+
+        output = "\n".join(logs.output)
+        self.assertIn("[System.WorkItemType] IN ('User Story', 'Task')", output)
+        self.assertIn("[System.State] IN ('Ready')", output)
+        # Both names, so a type that was mapped is distinguishable from one
+        # that passed through untouched.
+        self.assertIn("11 [Ready/User Story->story]", output)
+
+    def test_an_empty_result_still_logs_the_query_that_produced_it(self) -> None:
+        with self.assertLogs("codee_tasks_azure_devops.provider",
+                             "DEBUG") as logs:
+            with patch("codee_tasks_azure_devops.provider.requests.post",
+                       side_effect=[_response({"workItems": []})]):
+                self.provider.get_tasks(["Ready"])
+
+        output = "\n".join(logs.output)
+        self.assertIn("WIQL: SELECT [System.Id] FROM WorkItems", output)
+
+
+class AzureDevOpsWorkItemTypesTest(unittest.TestCase):
+    """The settings page's dropdown, gathered project by project."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.context = CodeeMainContext(data_dir=Path(self._temporary.name))
+        self.provider = AzureDevOpsTasksProvider(
+            _settings(organization_url="https://dev.azure.com/acme",
+                      client_id="client-1", client_secret="secret-1"),
+            self.context)
+
+    def _connect(self) -> None:
+        oauth_tokens.save_tokens(
+            oauth.PROVIDER, access_token="at", refresh_token="rt",
+            expires_at=_iso(timedelta(hours=1)), account="dev@acme.com",
+            main_context=self.context)
+
+    def test_types_are_merged_across_the_projects(self) -> None:
+        # Two projects on different process templates offer different types,
+        # and both have to be pickable from one dropdown.
+        self._connect()
+        responses = [
+            _response({"value": [{"name": "Core"}, {"name": "Web Shop"}]}),
+            _response({"value": [{"name": "Task"}, {"name": "User Story"}]}),
+            _response({"value": [{"name": "Task"},
+                                 {"name": "Product Backlog Item"}]}),
+        ]
+
+        with patch("codee_tasks_azure_devops.provider.requests.get",
+                   side_effect=responses) as get:
+            types = self.provider.list_work_item_types()
+
+        self.assertEqual(types, ["Product Backlog Item", "Task", "User Story"])
+        # A project name with a space has to survive the URL it goes into.
+        self.assertIn("/Web%20Shop/_apis/wit/workitemtypes",
+                      get.call_args_list[2].args[0])
+
+    def test_a_project_that_refuses_is_skipped_rather_than_fatal(self) -> None:
+        # Read access to one project is enough to configure a mapping.
+        self._connect()
+        denied = requests.HTTPError(
+            "403", response=Mock(status_code=403, text="Access denied"))
+        denied.response.json.side_effect = ValueError("no body")
+        refused = _response({})
+        refused.raise_for_status.side_effect = denied
+        responses = [
+            _response({"value": [{"name": "Core"}, {"name": "Secret"}]}),
+            _response({"value": [{"name": "Task"}]}),
+            refused,
+        ]
+
+        with patch("codee_tasks_azure_devops.provider.requests.get",
+                   side_effect=responses):
+            self.assertEqual(self.provider.list_work_item_types(), ["Task"])
+
+    def test_a_failure_that_leaves_nothing_to_show_is_raised(self) -> None:
+        self._connect()
+        denied = requests.HTTPError(
+            "403", response=Mock(status_code=403, text="Access denied"))
+        denied.response.json.side_effect = ValueError("no body")
+        refused = _response({})
+        refused.raise_for_status.side_effect = denied
+
+        with patch("codee_tasks_azure_devops.provider.requests.get",
+                   side_effect=[_response({"value": [{"name": "Core"}]}),
+                                refused]):
+            with self.assertRaises(TasksProviderError) as raised:
+                self.provider.list_work_item_types()
+
+        self.assertIn("HTTP 403", str(raised.exception))
+
+    def test_it_refuses_before_the_oauth_consent_is_done(self) -> None:
+        with patch("codee_tasks_azure_devops.provider.requests.get") as get:
+            with self.assertRaises(TasksProviderError):
+                self.provider.list_work_item_types()
+
+        get.assert_not_called()
 
 
 def main():

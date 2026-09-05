@@ -4,31 +4,37 @@ sidebar_position: 1
 
 # Working on tasks in Jira
 
-Codee works in Jira like a teammate does. It has its own Jira account, looks at the issues
-assigned to it, picks up the ones in a status it handles, does the work, and moves the
-issue to the next status.
+Codee works in Jira like a teammate does. It watches your project for issues in a status
+it handles, picks them up, does the work, and moves the issue to the next status.
 
-To hand an issue to Codee you need to do two things, and both are required:
-
-1. **Assign the issue to Codee's Jira user.**
-2. **Set the issue to an `AI` status.**
+To hand an issue to Codee, **set it to an `AI` status**. That is the whole handover — the
+`AI` statuses are what your team and Codee agree mean "this one is the AI's now", which is
+why they must be statuses nothing else in your workflow uses.
 
 For a story, also add the `CodeeStory` label, which tells Codee to drive the whole story
 and its subtasks from the story issue.
 
-This tutorial shows how to create those statuses, how assignment works, and how a story
-and a task move through them.
+This tutorial shows how to create those statuses and how a story and a task move through
+them.
 
-## Assigning issues to Codee
+## Which issues Codee picks up
 
-Codee logs into Jira as a dedicated account, the one you set under
-**Settings → Tasks provider → Account email** (see [Configuration](../configuration)). It
-only picks up issues that are in your project, assigned to that account, and in one of the
-statuses its skills trigger on.
+Codee polls the project you set under **Settings → Tasks provider → Project key** (see
+[Configuration](../configuration)) for issues that are of one of the types listed under
+**Settings → Tasks provider → Work items** and in one of the statuses its skills trigger
+on. That mapping ships pointing `story` at Jira's `Story` and `task` at `Task`; repoint it
+there if your project calls them something else.
 
-Codee keeps itself as the assignee while it works, so after you assign a story or task at
-the start, you usually do not touch the assignee again until it reaches
-`AI Ready for Human review`.
+Nothing is filtered on the assignee. An issue reaching an `AI` status is picked up whoever
+it is assigned to, so leave it with whoever owns it — you will want it back on them when
+Codee hands it to `AI Ready for Human review`.
+
+:::warning[The `AI` statuses have to be Codee's alone]
+
+Because status is the only handover, any issue of a mapped type that lands in one of these
+statuses gets worked on. Do not reuse an existing status your team already moves issues
+through, and do not add an `AI` status to a workflow Codee should not be driving.
+:::
 
 :::tip[Label the story `CodeeStory`]
 
@@ -38,8 +44,7 @@ itself to keep track of where each one is. You do not need to assign them or mov
 along.
 
 The label also stops Codee from picking the subtasks up separately. Without it, any
-subtask that happens to be assigned to Codee and sits in a matching status is treated as
-its own piece of work.
+subtask that sits in a matching status is treated as its own piece of work.
 :::
 
 Stories and tasks share one queue, ordered by priority first and then oldest. So the Jira
@@ -48,12 +53,15 @@ Codee takes it before the others waiting.
 
 ### Set up the Codee account
 
-Create a separate Jira user for Codee instead of reusing a person's account:
+Codee authenticates as a Jira user, and every comment, status change and pull request it
+makes is attributed to that user. Create a separate one for it rather than reusing a
+person's account, so a glance at an issue's history tells you what the AI did and what a
+person did. Its email and API token are what you paste into
+**Settings → Tasks provider**.
 
-- Its email is the assignee that every poll filters on.
-- Its comments, status changes and pull requests are attributed to it, so you can see
-  what the AI did and what a person did.
-- If you reuse a person's account, Codee picks up everything that person is assigned.
+Its identity has no effect on what gets picked up — the poll does not filter on an
+assignee — so this account needs permission to *act* in the project, not to be assigned
+work in it.
 
 On Jira Cloud:
 
@@ -66,22 +74,25 @@ On Jira Cloud:
 4. Add the account to your project. In a company-managed project that is
    **Project settings → People → Add people**, in a team-managed project
    **Project settings → Access → Add people**.
-5. Give it a role that includes the **Assignable User**, **Transition Issues**,
-   **Add Comments** and **Edit Issues** permissions. Company-managed projects list these
-   under **Project settings → Permissions**.
+5. Give it a role that includes the **Transition Issues**, **Add Comments** and
+   **Edit Issues** permissions. Company-managed projects list these under
+   **Project settings → Permissions**. **Assignable User** is worth adding too, so a
+   person can hand an issue to it by name, but Codee does not need it to work.
 6. Log in as Codee and create an API token at
    [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens),
    using **Create API token**. This is the token you paste into
-   **Settings → Tasks provider → API token**.
+   **Settings → Tasks provider → API token**, alongside the same email under
+   **API Token Owner Email**.
 
-Then open any issue and check that Codee appears in the assignee dropdown. If it does not,
-the account is missing from the project or lacks **Assignable User**.
+Then use **Verify connection** on the settings page to check the account can reach the
+project and act on an issue in it.
 
 ## Creating statuses for Codee in Jira
 
 ### Why separate statuses
 
-Assignment says the issue is Codee's. Status says what Codee should do with it now.
+Status is the only thing that says an issue is Codee's, and what Codee should do with it
+now.
 
 Codee polls Jira for issues whose status matches a skill's `x-codee-issue-status` trigger.
 The `AI` statuses exist so that anyone looking at the board can see at a glance which
@@ -100,8 +111,8 @@ and wire different transitions between them. Codee is fully customizable here.
 Create these eight statuses. The `AI` prefix keeps them together in lists and makes it
 clear on the board who owns the issue.
 
-In every row the issue is assigned to Codee, which is what makes it visible to Codee at
-all. The `Assignee` column says who acts next.
+The `Assignee` column says who acts next. It is a convention for your board, not
+something Codee reads — the status alone decides what it picks up.
 
 | Status | Who moves the issue in | Assignee | What happens next |
 | --- | --- | --- | --- |
@@ -203,8 +214,8 @@ passes changes that fail the second one.
 The last status of the automated pipeline. Everything is implemented, reviewed,
 security-checked and tested, and now a person makes the final call and merges.
 
-Reassign the issue to yourself when you pick it up. That shows who owns it and takes it
-out of Codee's queue for good.
+Reassign the issue to yourself when you pick it up, so the board shows who owns it. What
+takes it out of Codee's queue is leaving this status, which no skill triggers on.
 
 **Why it is needed:** Codee does not merge its own pull requests. This status is where
 finished work waits for a person, so it does not sit unnoticed in a review queue and does
@@ -251,13 +262,13 @@ fastest way to spot a status that nothing leads into.
 A story is work too large to do in one go. Codee decomposes it into subtasks first, then
 implements them one by one.
 
-The whole flow is driven by the **story** issue: it stays assigned to Codee and labelled
-`CodeeStory`, and its status is what triggers each run. The subtasks are worked on inside
+The whole flow is driven by the **story** issue: it stays labelled `CodeeStory`, and its
+status is what triggers each run. The subtasks are worked on inside
 those runs, and Codee moves their statuses itself to track where each one is.
 
 ```mermaid
 flowchart TD
-    start([Assign to Codee, label CodeeStory]) --> decomp[AI Decomposition needed]
+    start([Label CodeeStory, set AI status]) --> decomp[AI Decomposition needed]
     decomp -->|story-planner| review[AI Decomposition review]
     review -.->|questions answered| decomp
     review -->|plan approved| dev[AI Ready for development]
@@ -276,7 +287,7 @@ flowchart TD
 
 ### 1. Decomposition
 
-Assign the story to Codee, add the `CodeeStory` label, and move it to
+Add the `CodeeStory` label to the story and move it to
 `AI Decomposition needed`. Codee picks it up on the next poll and:
 
 1. Reads the story, its acceptance criteria, attachments, comments and linked issues.
@@ -350,8 +361,8 @@ When all three passes are clean, the issue lands in `AI Ready for Human review`.
 ### 5. Human review
 
 Read the pull request, the review comments and the QA evidence, then merge. Reassign the
-issue to yourself when you pick it up, so it leaves Codee's queue and the board shows who
-owns it.
+issue to yourself when you pick it up so the board shows who owns it, and move it out of
+`AI Ready for Human review` — leaving that status is what ends Codee's involvement.
 
 ## Task flow
 
@@ -360,7 +371,7 @@ chore. It skips planning:
 
 ```mermaid
 flowchart TD
-    start([Assign to Codee]) --> dev[AI Ready for development]
+    start([Set AI status]) --> dev[AI Ready for development]
     dev -->|task-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
     sec --> qa[AI Ready for QA]
@@ -374,8 +385,7 @@ flowchart TD
     linkStyle 5,6,7 stroke-dasharray: 5 4
 ```
 
-Assign the task to Codee and move it straight to `AI Ready for development`. There is no
-planning round. Codee implements it the same way it implements a story subtask: dedicated
+Move the task straight to `AI Ready for development`. There is no planning round. Codee implements it the same way it implements a story subtask: dedicated
 branch, pull request, Jira comment. The review, security and QA stages work the same as in
 the story flow.
 

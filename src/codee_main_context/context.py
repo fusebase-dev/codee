@@ -47,12 +47,34 @@ class CredentialField:
     default: str = ""
 
 
+# Codee's own work item names. Every Codee installation has these two: skills
+# declare which one they trigger on (``x-codee-issue-type``), and the executor
+# treats a story as the thing whose children it must leave alone. The user can
+# add more in Settings, but never take these away.
+STORY_ISSUE_TYPE = "story"
+TASK_ISSUE_TYPE = "task"
+DEFAULT_ISSUE_TYPES = (STORY_ISSUE_TYPE, TASK_ISSUE_TYPE)
+
+# What each Codee work item is called in a freshly configured provider. Only a
+# starting point — the settings page lets the user point a Codee work item at
+# whatever the backend actually calls it, which is the only way an organization
+# with custom process templates can be polled at all.
+DEFAULT_WORK_ITEM_TYPES: dict[TasksProvider, dict[str, str]] = {
+    TasksProvider.JIRA: {"story": "Story", "task": "Task"},
+    TasksProvider.AZURE_DEVOPS: {"story": "User Story", "task": "Task"},
+}
+
+
 # Credential fields each provider needs. Keyed by provider so the admin UI can
 # render the right inputs and settings.json can store per-provider values.
 TASKS_PROVIDER_FIELDS: dict[TasksProvider, list[CredentialField]] = {
+    # The email is the API token's owner, not a filter: JIRA Cloud's REST API
+    # authenticates with HTTP Basic where the username is that email, and it
+    # rejects the token on its own. Nothing else reads it — which issues Codee
+    # picks up is decided by their type and status alone.
     TasksProvider.JIRA: [
         CredentialField("base_url", "Base URL"),
-        CredentialField("account_email", "Account email"),
+        CredentialField("account_email", "API Token Owner Email"),
         CredentialField("api_token", "API token", secret=True),
         CredentialField("project", "Project key"),
     ],
@@ -80,6 +102,13 @@ class Settings:
     credentials: dict[str, dict[str, str]] = field(default_factory=dict)
     # Max coding-agent runs the executor keeps in flight at once (>= 1).
     max_parallel_agents: int = 3
+    # Which backend work item type each Codee work item is polled as, keyed by
+    # provider value -> {codee work item: provider work item type}. Kept per
+    # provider like the credentials, because the names differ between them: a
+    # Codee story is a "Story" in JIRA and a "User Story" in Azure DevOps.
+    # Read it through :func:`work_item_types`, never directly — what is stored
+    # here may predate a Codee work item that has since become mandatory.
+    work_item_types: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -103,6 +132,7 @@ def load_settings(data_dir: Path) -> Settings:
                 coding_agent=CodingAgent(
                     data.get("coding_agent", CodingAgent.CLAUDE_CODE.value)),
                 credentials=data.get("credentials", {}),
+                work_item_types=data.get("work_item_types", {}),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
         except (json.JSONDecodeError, OSError, KeyError, ValueError):
             pass
@@ -121,8 +151,42 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "tasks_provider": settings.tasks_provider.value,
         "coding_agent": settings.coding_agent.value,
         "credentials": settings.credentials,
+        "work_item_types": settings.work_item_types,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(payload)
     os.replace(temp, path)
+
+
+def work_item_types(settings: Settings,
+                    provider: TasksProvider | None = None) -> dict[str, str]:
+    """Codee work item -> provider work item type, for one provider.
+
+    The mandatory work items are always present and always first, filled in
+    from the provider's defaults when nothing has been stored for them yet.
+    That is what keeps a settings file written before this setting existed —
+    or one a user hand-edited down to a single row — from leaving the executor
+    with no story to recognize. Anything the user added follows, in the order
+    it was saved.
+
+    Names are normalized to lower case, matching how skills declare
+    ``x-codee-issue-type``; a row with no name or no backend type is dropped,
+    since neither side of it could ever match anything.
+    """
+    provider = provider or settings.tasks_provider
+    defaults = DEFAULT_WORK_ITEM_TYPES.get(provider, {})
+    stored = settings.work_item_types.get(provider.value) or {}
+    resolved = {name: defaults[name] for name in DEFAULT_ISSUE_TYPES
+                if name in defaults}
+    for name, backend_type in stored.items():
+        name = str(name).strip().lower()
+        backend_type = str(backend_type).strip()
+        if name and backend_type:
+            resolved[name] = backend_type
+    return resolved
+
+
+def codee_issue_types(settings: Settings) -> tuple[str, ...]:
+    """The Codee work item names skills may trigger on, for the current provider."""
+    return tuple(work_item_types(settings))

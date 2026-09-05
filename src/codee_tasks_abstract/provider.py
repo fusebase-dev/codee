@@ -98,6 +98,31 @@ class AbstractTasksProvider(ABC):
         """
         ...
 
+    def list_work_item_types(self) -> list[str]:
+        """Every work item type name the backend offers, for the settings page.
+
+        Which of them Codee actually polls is the user's choice, made by
+        pointing each Codee work item at one of these; the provider only has to
+        say what there is to choose from. Asked with the credentials sitting on
+        the settings form, so it has to answer before anything is saved.
+
+        Raises ``TasksProviderError`` when the backend can't be reached or
+        refuses — the settings page shows that message beside the empty list.
+        An empty list means the provider has no way to enumerate them, which
+        leaves the user typing the name the backend uses.
+        """
+        return []
+
+    def work_item_types_scope(self) -> str:
+        """Where ``list_work_item_types`` looks, in the user's own vocabulary.
+
+        The settings page prints this beside the count, because a list that is
+        narrower than the backend as a whole is indistinguishable from a broken
+        one otherwise: a project defining five types and a failed fetch that
+        fell back to five mapped names look identical in a dropdown.
+        """
+        return ""
+
     def verify_connection(self, statuses: list[str]) -> tuple[bool, str]:
         """Pull tasks for real and report the outcome, for the settings page."""
         try:

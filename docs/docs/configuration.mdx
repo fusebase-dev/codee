@@ -26,9 +26,12 @@ For Codee in Jira you need to create a separate user account. So it acts as a re
 
 Your Jira domain, e.g. `https://myjira.atlassian.net`.
 
-#### Account email
+#### API Token Owner Email
 
-Codee's user email in Jira.
+The email the API token below belongs to. Jira Cloud's REST API authenticates with HTTP
+Basic where the username is that email, so it is required — but it is only a credential.
+It does not decide which issues Codee picks up: the poll does not filter on an assignee,
+only on the project, the work item types and the statuses the skills trigger on.
 
 #### API token
 
@@ -53,6 +56,34 @@ After you specified Organization URL fill in fields based on app registration:
 - Directory (tenant) ID (optional)
 
 Then click Connect to Azure DevOps. You will have to grant access for your app and after that the setup is done.
+
+### Work items
+
+Codee only picks up work items whose type you have listed here. Every row maps one of
+Codee's work items — the name a skill declares in `x-codee-issue-type` — to what your
+provider calls it.
+
+`story` and `task` are always present and cannot be removed: the skills that ship with
+Codee trigger on them, and a story is what tells Codee to drive its children inside the
+story's own run rather than one by one. Their provider type is yours to change. Out of the
+box they point at:
+
+| Codee work item | Jira | Azure DevOps |
+| --- | --- | --- |
+| `story` | `Story` | `User Story` |
+| `task` | `Task` | `Task` |
+
+**Load types from provider** fills the dropdowns with the types your backend actually
+defines — the issue types of the configured Jira project, or the work item types across
+your Azure DevOps organization's projects. It needs the credentials above to be filled in
+(and, for Azure DevOps, connected), but nothing has to be saved first.
+
+Use **Add work item** for anything beyond a story and a task — a `bug` pointed at your
+backend's `Bug`, say. A skill can then declare `x-codee-issue-type: bug`, and the Workflow
+page gets its own graph for it.
+
+Anything assigned to Codee whose type is not listed here is left alone, whatever state it
+is in.
 
 ### Verify connection
 

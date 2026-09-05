@@ -9,8 +9,9 @@ from pydantic import BaseModel
 
 from codee.admin_api import api_app
 from codee.admin_service import (
-    AGENTS_FILE, TASKS_CHECKS, AdminService, ISSUE_TYPES, SKILL_TYPES)
+    AGENTS_FILE, TASKS_CHECKS, AdminService, SKILL_TYPES, normalize_work_items)
 from codee.workflow_graph import workflow_graph
+from codee_main_context.context import DEFAULT_ISSUE_TYPES
 
 SERVICE = AdminService()
 
@@ -90,6 +91,29 @@ def check_result(check: dict[str, Any]) -> CheckResult:
                        message=check["message"])
 
 
+class WorkItem(BaseModel):
+    """One row of the work item mapping on the settings page.
+
+    ``fixed`` marks the work items Codee cannot run without: they are listed
+    like the rest and pointed at whatever the backend calls them, but their
+    name is not the user's to change and they have no remove button.
+    """
+
+    name: str
+    provider_type: str
+    fixed: bool = False
+
+
+class WorkflowSection(BaseModel):
+    """One Codee work item's status graph, as the workflow page renders it."""
+
+    issue_type: str
+    title: str
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+
 class RunRecord(BaseModel):
     skill_name: str
     trigger_type: str
@@ -146,12 +170,7 @@ class AdminState(rx.State):
     runs_loading: bool = False
     session_viewer: str = SERVICE.session_viewer
 
-    story_workflow_nodes: list[dict[str, Any]] = []
-    story_workflow_edges: list[dict[str, Any]] = []
-    story_workflow_warnings: list[str] = []
-    task_workflow_nodes: list[dict[str, Any]] = []
-    task_workflow_edges: list[dict[str, Any]] = []
-    task_workflow_warnings: list[str] = []
+    workflow_sections: list[WorkflowSection] = []
     workflow_error: str = ""
     workflow_loading: bool = False
     edge_menu_skills: list[str] = []
@@ -173,6 +192,20 @@ class AdminState(rx.State):
     azure_account: str = ""
     azure_expires_label: str = ""
     azure_redirect_uri: str = ""
+    work_items: list[WorkItem] = []
+    # Rows edited this session but left behind by a provider switch, keyed by
+    # the provider they were edited for. The credentials get this for free by
+    # having a flat field per provider; the mapping is one shared list, so it
+    # has to be parked by hand or switching away and back would discard it.
+    other_work_items: dict[str, dict[str, str]] = {}
+    provider_work_item_types: list[str] = []
+    # Where the fetched list came from, in the provider's own words. Shown
+    # beside the count, because a list narrower than the backend as a whole
+    # otherwise reads as types gone missing.
+    provider_work_item_types_scope: str = ""
+    work_item_types_loading: bool = False
+    work_item_types_error: str = ""
+    skill_issue_types: list[str] = list(DEFAULT_ISSUE_TYPES)
     tasks_verifying: bool = False
     tasks_checks: list[CheckResult] = []
     mcp_setup_ok: bool = False
@@ -301,6 +334,9 @@ class AdminState(rx.State):
     def load_skills(self) -> None:
         self.skills = [SkillSummary(**skill)
                        for skill in SERVICE.list_skills()]
+        # The editor's issue-type picker offers the work items Settings
+        # configures, so a work item added there is selectable right away.
+        self.skill_issue_types = list(SERVICE.issue_types())
 
     def create_skill(self) -> Any:
         saved, pushed, message, slug = SERVICE.create_skill(
@@ -519,21 +555,22 @@ class AdminState(rx.State):
         except Exception as error:
             async with self:
                 self.workflow_error = str(error)
-                self.story_workflow_nodes = []
-                self.story_workflow_edges = []
-                self.story_workflow_warnings = []
-                self.task_workflow_nodes = []
-                self.task_workflow_edges = []
-                self.task_workflow_warnings = []
+                self.workflow_sections = []
                 self.workflow_loading = False
             return
         async with self:
-            self.story_workflow_nodes = workflow["story"]["nodes"]
-            self.story_workflow_edges = workflow["story"]["edges"]
-            self.story_workflow_warnings = workflow["story"]["warnings"]
-            self.task_workflow_nodes = workflow["task"]["nodes"]
-            self.task_workflow_edges = workflow["task"]["edges"]
-            self.task_workflow_warnings = workflow["task"]["warnings"]
+            # One section per Codee work item, in the order Settings lists
+            # them, so a work item added there shows up here as its own graph.
+            self.workflow_sections = [
+                WorkflowSection(
+                    issue_type=issue_type,
+                    title=f"{issue_type.capitalize()} workflow",
+                    nodes=graph.get("nodes", []),
+                    edges=graph.get("edges", []),
+                    warnings=graph.get("warnings", []),
+                )
+                for issue_type, graph in workflow.items()
+            ]
             self.workflow_loading = False
 
     def open_edge_menu(self, skills: list[str], x: float, y: float) -> None:
@@ -576,10 +613,42 @@ class AdminState(rx.State):
         self.azure_tenant_id = azure.get("tenant_id", "")
         self.azure_client_id = azure.get("client_id", "")
         self.azure_client_secret = azure.get("client_secret", "")
+        # A fresh page load has nothing parked: what is on disk is the truth.
+        self.other_work_items = {}
+        self._load_work_items()
         self._drop_provider_results()
         self.load_mcp_status()
         self.load_azure_connection()
         return self._azure_callback_toast()
+
+    def _load_work_items(self) -> None:
+        """Fill the mapping rows for the selected provider.
+
+        From the rows parked by an earlier switch when there are any — those
+        are edits the user has not saved and would not expect to lose — and
+        from the saved mapping otherwise.
+        """
+        mapping = self.other_work_items.get(self.tasks_provider)
+        if mapping is None:
+            mapping = SERVICE.work_item_types(self.tasks_provider)
+        self.work_items = [
+            WorkItem(name=name, provider_type=provider_type,
+                     fixed=name in DEFAULT_ISSUE_TYPES)
+            for name, provider_type in mapping.items()
+        ]
+
+    def load_settings_page(self) -> Any:
+        """Everything the settings page needs, in the order it needs it.
+
+        The types are fetched *after* the load rather than beside it in
+        ``on_load``: the fetch reads the credentials the load puts in state,
+        and a background event listed alongside starts before the event before
+        it has committed — it would find an empty form and decline to run.
+        """
+        events: list[Any] = [AdminState.load_work_item_types]
+        toast = self.load_settings()
+        # The OAuth outcome, when the browser came back from a consent screen.
+        return [toast, *events] if toast is not None else events
 
     def load_mcp_status(self) -> None:
         """Read back whether the selected provider's MCP server is already installed."""
@@ -609,11 +678,118 @@ class AdminState(rx.State):
         self.tasks_checks = []
         self.mcp_setup_ok = False
         self.mcp_setup_message = ""
+        # The fetched work item types came from the same backend the changed
+        # credentials address, so they are no more current than the checks are.
+        # The mapping rows themselves stay: they are the user's edit, not a
+        # result, and the dropdowns keep offering whatever they already name.
+        self.provider_work_item_types = []
+        self.provider_work_item_types_scope = ""
+        self.work_item_types_error = ""
 
-    def set_tasks_provider(self, value: str) -> None:
+    def set_tasks_provider(self, value: str) -> Any:
+        # Park the rows on screen under the provider they were edited for, or
+        # switching away and back would silently reset them to the defaults.
+        self.other_work_items = {
+            **self.other_work_items,
+            self.tasks_provider: self._work_items_mapping(),
+        }
         self.tasks_provider = value
+        self._load_work_items()
         self._drop_provider_results()
         self.load_mcp_status()
+        # The types just cleared belong to the provider being left behind.
+        return AdminState.load_work_item_types
+
+    def set_work_item_name(self, index: int, value: str) -> None:
+        self.work_items[index].name = value
+        # Reflex only re-renders on assignment, not on a mutated element.
+        self.work_items = list(self.work_items)
+
+    def set_work_item_type(self, index: int, value: str) -> None:
+        self.work_items[index].provider_type = value
+        self.work_items = list(self.work_items)
+
+    def add_work_item(self) -> None:
+        self.work_items = self.work_items + \
+            [WorkItem(name="", provider_type="")]
+
+    def remove_work_item(self, index: int) -> None:
+        if self.work_items[index].fixed:
+            return
+        self.work_items = [item for position, item
+                           in enumerate(self.work_items) if position != index]
+
+    def _work_items_mapping(self) -> dict[str, str]:
+        """The rows as they stand, without the validation ``save`` applies."""
+        return {item.name.strip().lower(): item.provider_type.strip()
+                for item in self.work_items if item.name.strip()}
+
+    @rx.var
+    def work_item_type_options(self) -> list[str]:
+        """What the mapping dropdowns offer.
+
+        The types fetched from the backend, plus whatever the rows already
+        name. Without that union a mapping saved against a project this account
+        can no longer see — or one saved before the types were ever fetched —
+        would render as an empty select, and the user would have no way to tell
+        a lost setting from an unset one.
+        """
+        options = set(self.provider_work_item_types)
+        options.update(item.provider_type.strip() for item in self.work_items
+                       if item.provider_type.strip())
+        return sorted(options, key=str.casefold)
+
+    @rx.var
+    def work_item_types_hint(self) -> str:
+        """The line under the mapping rows: what the dropdowns currently hold.
+
+        Naming the scope is the point. A backend where most types live in a
+        project Codee is not pointed at will offer a short list, and without
+        this the only reading available is "types are missing".
+        """
+        if self.work_item_types_loading:
+            return "This can take a moment."
+        if not self.work_item_types_can_load:
+            return "Connect to the provider above to list its work item types."
+        if self.work_item_types_error:
+            return "The dropdowns still offer the types already mapped below."
+        if not self.provider_work_item_types:
+            return "Loaded from the provider when the page opens."
+        count = len(self.provider_work_item_types)
+        scope = self.provider_work_item_types_scope
+        return (f"{count} type{'' if count == 1 else 's'}"
+                + (f" from {scope}" if scope else "")
+                + ". Reload after changing the credentials above.")
+
+    @rx.event(background=True)
+    async def load_work_item_types(self) -> None:
+        """Ask the provider what its work item types are called.
+
+        Runs on page load and on a provider switch, and again whenever the
+        button is pressed. In the background because it is a network round trip
+        — several, for Azure DevOps, which has to walk the organization's
+        projects — and the rest of the settings page is usable while it runs.
+
+        Failing is not an error state for the page: the dropdowns fall back to
+        the names already mapped, and the message says why there is nothing new
+        to pick from. That matters more now that it runs unasked — a provider
+        that is unreachable must not make opening Settings look broken.
+        """
+        async with self:
+            if self.work_item_types_loading or not self.work_item_types_can_load:
+                return
+            self.work_item_types_loading = True
+            self.work_item_types_error = ""
+            provider, credentials = self.tasks_provider, self._credentials()
+
+        types, scope, error = await asyncio.to_thread(
+            SERVICE.list_work_item_types, provider, credentials)
+
+        async with self:
+            self.provider_work_item_types = types
+            self.provider_work_item_types_scope = scope
+            self.work_item_types_error = error
+            self.work_item_types_loading = False
 
     def set_coding_agent(self, value: str) -> None:
         self.coding_agent = value
@@ -675,6 +851,20 @@ class AdminState(rx.State):
         return self.azure_can_connect and self.azure_connected
 
     @rx.var
+    def work_item_types_can_load(self) -> bool:
+        """Whether the provider can be asked what its work item types are.
+
+        The same reach the task pull needs, minus JIRA's project key: without
+        one the listing falls back to every type defined on the site, which is
+        still a better dropdown than an empty one.
+        """
+        if self.tasks_provider == "jira":
+            return all(value.strip() for value in (
+                self.jira_base_url, self.jira_account_email,
+                self.jira_api_token))
+        return self.azure_can_connect and self.azure_connected
+
+    @rx.var
     def mcp_can_setup(self) -> bool:
         """Whether the selected provider can describe its MCP server yet.
 
@@ -705,7 +895,7 @@ class AdminState(rx.State):
     @rx.var
     def mcp_missing_hint(self) -> str:
         if self.tasks_provider == "jira":
-            return "Fill in base URL, account email and API token first."
+            return "Fill in base URL, API Token Owner Email and API token first."
         return "Fill in the organization URL first."
 
     def setup_tasks_mcp(self) -> None:
@@ -801,11 +991,16 @@ class AdminState(rx.State):
             parallel_agents = int(self.max_parallel_agents)
         except ValueError:
             return "Max parallel tasks must be a number"
+        work_items, error = normalize_work_items(
+            [(item.name, item.provider_type) for item in self.work_items])
+        if error:
+            return error
         SERVICE.save_settings(
             self.tasks_provider,
             self.coding_agent,
             parallel_agents,
             self._credentials(),
+            work_items,
         )
         return ""
 
@@ -1313,7 +1508,8 @@ def skill_editor() -> rx.Component:
         rx.cond(AdminState.skill_type == "issue trigger",
                 rx.grid(
                     field("Issue type", rx.select(
-                        ISSUE_TYPES, value=AdminState.skill_issue_type,
+                        AdminState.skill_issue_types,
+                        value=AdminState.skill_issue_type,
                         on_change=AdminState.set_skill_issue_type, width="100%")),
                     field("Issue statuses", rx.input(value=AdminState.skill_issue_status,
                                                      on_change=AdminState.set_skill_issue_status,
@@ -1569,14 +1765,11 @@ def workflow_edge_menu() -> rx.Component:
     )
 
 
-def workflow_section(
-    title: str,
-    nodes: rx.Var,
-    edges: rx.Var,
-    warnings: rx.Var,
-) -> rx.Component:
+def workflow_section(section: WorkflowSection) -> rx.Component:
+    """One work item's graph. Built per section so the page grows with Settings."""
+    nodes, edges, warnings = section.nodes, section.edges, section.warnings
     return rx.vstack(
-        rx.heading(title, size="5"),
+        rx.heading(section.title, size="5"),
         rx.cond(
             nodes.length() > 0,
             rx.vstack(
@@ -1599,7 +1792,7 @@ def workflow_section(
             ),
             empty_state(
                 "git-branch",
-                f"No {title.lower()} issue-trigger skills found.",
+                "No " + section.issue_type + " issue-trigger skills found.",
             ),
         ),
         spacing="4",
@@ -1612,7 +1805,8 @@ def workflow_page() -> rx.Component:
     return shell(rx.vstack(
         rx.flex(
             page_header(
-                "Workflow", "Story and task transitions inferred from issue-trigger skills."),
+                "Workflow",
+                "Status transitions per work item, inferred from issue-trigger skills."),
             rx.spacer(),
             rx.button(
                 rx.icon("refresh-cw", size=16),
@@ -1636,18 +1830,7 @@ def workflow_page() -> rx.Component:
                     width="100%",
                 ),
                 rx.vstack(
-                    workflow_section(
-                        "Story workflow",
-                        AdminState.story_workflow_nodes,
-                        AdminState.story_workflow_edges,
-                        AdminState.story_workflow_warnings,
-                    ),
-                    workflow_section(
-                        "Task workflow",
-                        AdminState.task_workflow_nodes,
-                        AdminState.task_workflow_edges,
-                        AdminState.task_workflow_warnings,
-                    ),
+                    rx.foreach(AdminState.workflow_sections, workflow_section),
                     spacing="8",
                     width="100%",
                 ),
@@ -1825,6 +2008,121 @@ def tasks_mcp_setup() -> rx.Component:
         spacing="3", width="100%")
 
 
+def work_item_row(item: WorkItem, index: int) -> rx.Component:
+    """One mapping: the Codee work item, and what the provider calls it.
+
+    The mandatory two render with their name read-only and no remove button —
+    the same row as the rest, minus the two things that would break the
+    executor. Everything else is the user's to name, repoint, and delete.
+    """
+    # Each side gets its own flex box rather than a bare `width="100%"` child:
+    # two flex items both asking for the full row collapse unpredictably, and
+    # the name input lost every pixel of it.
+    cell = {"flex": "1", "min_width": "0"}
+    return rx.hstack(
+        rx.box(
+            rx.cond(
+                item.fixed,
+                # Read-only rather than disabled: a disabled input greys its
+                # text, and "story" then reads as a placeholder for a name the
+                # user still has to type instead of the name it already has.
+                rx.input(value=item.name, read_only=True, width="100%",
+                         cursor="default"),
+                rx.input(value=item.name, placeholder="bug",
+                         on_change=lambda value: AdminState.set_work_item_name(
+                             index, value),
+                         width="100%"),
+            ),
+            **cell),
+        rx.icon("arrow-right", size=16, color=MUTED, flex_shrink="0"),
+        rx.box(
+            rx.select(
+                AdminState.work_item_type_options,
+                value=item.provider_type,
+                placeholder="Select a work item type",
+                # Inert while the fetch is in flight: the list it would offer
+                # is the thing being replaced, so a pick made now is a pick
+                # from a menu that is about to change under it.
+                disabled=AdminState.work_item_types_loading,
+                on_change=lambda value: AdminState.set_work_item_type(
+                    index, value),
+                width="100%",
+            ),
+            **cell),
+        # The delete column is a fixed-width box holding the button rather
+        # than the button itself. A ghost button carries a negative margin to
+        # align optically, which swallows the row's gap and makes the column
+        # 10px narrower than the spacer a fixed row gets — enough for the two
+        # flex cells to absorb the difference and leave the rows unaligned.
+        rx.box(
+            rx.cond(
+                item.fixed,
+                rx.fragment(),
+                # Icon-only, so it needs a name of its own: without one a
+                # screen reader announces identical "button"s down the column.
+                rx.button(rx.icon("trash-2", size=14), type="button",
+                          variant="ghost", color_scheme="red",
+                          aria_label="Remove work item " + item.name,
+                          title="Remove work item",
+                          on_click=lambda: AdminState.remove_work_item(index)),
+            ),
+            width="2rem", flex_shrink="0", display="flex",
+            align_items="center", justify_content="center"),
+        spacing="2", align="center", width="100%")
+
+
+def work_items_setting() -> rx.Component:
+    """Which work items Codee picks up, and what each is called in the backend.
+
+    The names on the left are what a skill declares in ``x-codee-issue-type``;
+    the types on the right are what the provider offers. Those are fetched when
+    the page loads, so the dropdowns are already populated by the time anyone
+    opens one. The button is for the case the page load cannot cover: the
+    credentials were edited since, and the list belongs to the old ones.
+    """
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Work items", weight="medium", font_size="0.85rem"),
+            # The fetch can take seconds — Azure DevOps walks the whole
+            # organization — so the heading says what is happening rather than
+            # leaving the dropdowns looking merely unresponsive.
+            rx.cond(
+                AdminState.work_item_types_loading,
+                rx.hstack(
+                    rx.spinner(size="1"),
+                    rx.text(f"Loading work item types from "
+                            f"{AdminState.mcp_provider_label}…",
+                            color=MUTED, font_size="0.8rem"),
+                    spacing="2", align="center"),
+                rx.text("Codee only picks up work items of these types.",
+                        color=MUTED, font_size="0.8rem")),
+            spacing="2", align="center", width="100%"),
+        rx.foreach(AdminState.work_items, work_item_row),
+        rx.hstack(
+            rx.button(rx.icon("plus", size=16), "Add work item",
+                      type="button", variant="outline",
+                      disabled=AdminState.work_item_types_loading,
+                      on_click=AdminState.add_work_item),
+            rx.button(
+                rx.cond(AdminState.work_item_types_loading,
+                        rx.spinner(size="2"), rx.icon("refresh-cw", size=16)),
+                rx.cond(AdminState.work_item_types_loading,
+                        "Loading types…", "Reload types"),
+                type="button", variant="outline",
+                disabled=(AdminState.work_item_types_loading
+                          | ~AdminState.work_item_types_can_load),
+                on_click=AdminState.load_work_item_types),
+            rx.text(AdminState.work_item_types_hint,
+                    color=MUTED, font_size="0.8rem"),
+            spacing="3", align="center", width="100%"),
+        rx.cond(
+            AdminState.work_item_types_error != "",
+            rx.callout(AdminState.work_item_types_error, icon="circle-alert",
+                       size="1", color_scheme="red", width="100%"),
+        ),
+        spacing="3", width="100%")
+
+
 def tasks_check_row(check: CheckResult) -> rx.Component:
     """One check: where it stands as an icon, its name, and what it found."""
     marker = {"flex_shrink": "0", "margin_top": "0.15rem"}
@@ -1865,8 +2163,7 @@ def tasks_verification() -> rx.Component:
                 AdminState.tasks_can_verify,
                 # Worth saying up front: the second check spends a coding-agent
                 # run and leaves a closed task behind in the real backend.
-                rx.text("Pulls tasks, then has the coding agent create and "
-                        "close one task through MCP. Takes a minute.",
+                rx.text("Pull/modification tasks check.",
                         color=MUTED, font_size="0.8rem"),
                 rx.text("Fill in every field above to check the connection.",
                         color=MUTED, font_size="0.8rem")),
@@ -1885,8 +2182,14 @@ def settings_page() -> rx.Component:
     jira_fields = rx.vstack(
         field("Base URL", rx.input(value=AdminState.jira_base_url,
                                    on_change=AdminState.set_jira_base_url, width="100%")),
-        field("Account email", rx.input(value=AdminState.jira_account_email,
-                                        on_change=AdminState.set_jira_account_email, width="100%")),
+        field("API Token Owner Email",
+              rx.input(value=AdminState.jira_account_email,
+                       on_change=AdminState.set_jira_account_email,
+                       placeholder="agent@example.com", width="100%"),
+              rx.text("The email the API token below belongs to. Jira signs "
+                      "every request as this account; it does not decide "
+                      "which issues Codee picks up.",
+                      color=MUTED, font_size="0.8rem")),
         field("API token", rx.input(value=AdminState.jira_api_token,
                                     on_change=AdminState.set_jira_api_token, type="password", width="100%")),
         field("Project key", rx.input(value=AdminState.jira_project,
@@ -1911,6 +2214,7 @@ def settings_page() -> rx.Component:
                                         on_change=AdminState.set_tasks_provider, width="100%")),
             rx.box(rx.cond(AdminState.tasks_provider == "jira",
                    jira_fields, azure_fields()), margin_top="1rem"),
+            rx.box(work_items_setting(), margin_top="1.25rem"),
             rx.box(tasks_mcp_setup(), margin_top="1.25rem"),
             rx.box(tasks_verification(), margin_top="1.25rem"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
@@ -2049,4 +2353,5 @@ app.add_page(runs_page, route="/runs", title="Runs | Codee",
 app.add_page(sessions_page, route="/sessions",
              title="Sessions | Codee", on_load=AdminState.load_settings)
 app.add_page(settings_page, route="/settings",
-             title="Settings | Codee", on_load=AdminState.load_settings)
+             title="Settings | Codee",
+             on_load=AdminState.load_settings_page)

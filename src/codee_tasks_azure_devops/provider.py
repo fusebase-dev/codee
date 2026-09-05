@@ -4,13 +4,21 @@ Every call here is a read: a WIQL query for the ids assigned to the connected
 account, then a batch fetch of those work items. The WIQL endpoint is a POST,
 but it is a query — nothing in this module creates or modifies a work item.
 """
+from urllib.parse import quote
+
 import requests
-from codee_main_context.context import CodeeMainContext, Settings, data_dir
+from codee_main_context.context import (
+    CodeeMainContext, STORY_ISSUE_TYPE, Settings, TASK_ISSUE_TYPE,
+    TasksProvider, data_dir,
+    work_item_types)
+from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, McpServer, Task, TasksProviderError)
 
 from codee_tasks_azure_devops.oauth import (
     AzureDevOpsAuth, AzureDevOpsAuthError, OAuthConfig)
+
+log = get_logger(__name__)
 
 API_VERSION = "7.1"
 
@@ -25,15 +33,11 @@ _FIELDS = [
     "Microsoft.VSTS.Common.Priority",
 ]
 
-# The custom work item types Codee picks up, mapped to the provider-agnostic
-# issue types the executor and the issue-trigger matcher speak. Anything else
-# assigned to the connected account belongs to a human and is left alone.
-_WORK_ITEM_TYPES = {"Codee Task": "Task", "Codee Story": "Story"}
-
-# The work item type that marks a story as Codee-owned. Children of such a
-# story are driven by the story's own agent run, so the executor leaves them
-# alone — the Azure DevOps counterpart of JIRA's CodeeStory label.
-CODEE_STORY_WORK_ITEM_TYPE = "Codee Story"
+# Which Azure DevOps work item types Codee picks up, and what each stands for,
+# is configured per installation in Settings — organizations disagree on the
+# names ("User Story" in Agile, "Product Backlog Item" in Scrum, anything at
+# all in a custom process). Anything else assigned to the connected account
+# belongs to a human and is left alone.
 
 # Azure DevOps priority is 1-4 with 1 highest; the executor logs this next to
 # JIRA-style names, so translate rather than print a bare digit.
@@ -46,10 +50,25 @@ MCP_SERVER_PACKAGE = "@azure-devops/mcp"
 # Ceiling the WIQL query is capped at, matching the JIRA provider's page size.
 _MAX_TASKS = 50
 
+# How many projects the settings page's type list is gathered from. Work item
+# types are defined per process, not per organization, so the only way to see
+# them all is to ask project by project — and an organization with hundreds of
+# projects would turn one dropdown into hundreds of requests. Past this many
+# the list is what the first projects offer, which in practice is every process
+# in use.
+_MAX_TYPE_PROJECTS = 25
+
 # Hard limit of the workitemsbatch endpoint.
 _BATCH_LIMIT = 200
 
 _TIMEOUT = 30
+
+
+def _describe_task(task: Task) -> str:
+    """One work item as a log fragment: what it is and what Codee decided it is."""
+    raw = getattr(task, "work_item_type", "")
+    mapped = f"{raw}->{task.issue_type}" if raw != task.issue_type else task.issue_type
+    return f"{task.key} [{task.status}/{mapped}]"
 
 
 def _quote_wiql(value: str) -> str:
@@ -78,22 +97,28 @@ def _describe_error(exc: requests.RequestException) -> str:
 class AzureDevOpsWorkItem(Task):
     """A Task that remembers the raw Azure DevOps work item type.
 
-    ``issue_type`` carries the mapped, provider-agnostic name, and that mapping
-    is lossy: a "Codee Story" and a plain "Story" both arrive as "Story".
-    Keeping the type Azure DevOps actually reported is what lets
-    ``is_parent_codee_story`` tell one parent from the other.
+    ``issue_type`` carries the mapped Codee name, and that mapping is lossy in
+    both directions: a type Codee was never pointed at passes through unmapped
+    and may collide with a Codee name by accident. Comparing the raw type
+    against ``story_work_item_type`` — the backend type this installation
+    mapped its story to — is what keeps that accident from reading as a real
+    Codee story.
     """
 
-    def __init__(self, work_item_type: str = "", **kwargs):
+    def __init__(self, work_item_type: str = "",
+                 story_work_item_type: str = "", **kwargs):
         self.work_item_type = work_item_type
+        self.story_work_item_type = story_work_item_type
         super().__init__(**kwargs)
 
     @property
     def is_parent_codee_story(self) -> bool:
-        """In Azure DevOps a Codee-owned story is a "Codee Story" work item."""
+        """In Azure DevOps a Codee-owned story is the type mapped to "story"."""
         parent = self.parent
         return (isinstance(parent, AzureDevOpsWorkItem)
-                and parent.work_item_type == CODEE_STORY_WORK_ITEM_TYPE)
+                and bool(self.story_work_item_type)
+                and parent.work_item_type.casefold()
+                == self.story_work_item_type.casefold())
 
 
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
@@ -107,6 +132,17 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         # the default data directory to reach the token store.
         context = main_context or CodeeMainContext(data_dir=data_dir())
         self._auth = AzureDevOpsAuth(self._config, context)
+        # Which backend work item type stands for which Codee work item. Both
+        # directions are needed: the names go into the WIQL type filter, and an
+        # item that comes back is reported to the executor under the Codee name
+        # the user mapped it to.
+        self._work_item_types = work_item_types(
+            settings, TasksProvider.AZURE_DEVOPS)
+        self._codee_types = {item_type.casefold(): codee_type
+                             for codee_type, item_type
+                             in self._work_item_types.items()}
+        self._story_work_item_type = self._work_item_types.get(
+            STORY_ISSUE_TYPE, "")
 
     def is_configured(self) -> bool:
         """Configured means the app details are filled in *and* OAuth completed."""
@@ -115,8 +151,9 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
     def describe(self) -> str:
         connection = self._auth.connection() or {}
         account = connection.get("account") or "connected account"
+        types = ", ".join(self._work_item_types.values()) or "no work item types"
         return (f"Azure DevOps {self._config.organization_url} "
-                f"(all projects, assignee {account})")
+                f"(all projects, assignee {account}, types {types})")
 
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
@@ -145,23 +182,93 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
     def mcp_check_steps(self, summary: str) -> list[str] | None:
         """Create a work item of the type the executor polls, then close it again.
 
-        The type is named explicitly because it is custom: an organization that
-        never defined "Codee Task" is one the executor can never pick anything
-        up from, and this is where that shows up. No project is named — there is
-        no project setting, queries span the organization — so the agent picks
-        one it can write to.
+        The type comes from the work item mapping rather than a fixed name: an
+        organization whose backlog is "Product Backlog Item" would otherwise be
+        checked with a type it does not define, and fail a check the executor
+        would have passed. No project is named — there is no project setting,
+        queries span the organization — so the agent picks one it can write to.
         """
         account = (self._auth.connection() or {}).get("account")
         organization = self._config.organization
-        if not (organization and account):
+        item_type = self._work_item_types.get(TASK_ISSUE_TYPE)
+        if not (organization and account and item_type):
             return None
         return [
-            f'Create a new "Codee Task" work item in the {organization} '
+            f'Create a new "{item_type}" work item in the {organization} '
             "organization, in any project you can create work items in, with "
             f'the title "{summary}", assigned to {account}.',
             "Move that work item to a Done, Closed or Removed state — "
             "whichever its board offers — so it does not stay open.",
         ]
+
+    def work_item_types_scope(self) -> str:
+        """Every project the listing reached, capped the same way it is."""
+        return f"up to {_MAX_TYPE_PROJECTS} projects in the organization"
+
+    def list_work_item_types(self) -> list[str]:
+        """Every work item type name defined across the organization's projects.
+
+        Work item types belong to a process, not to the organization, so there
+        is no single endpoint that lists them — two projects on different
+        process templates offer different types, and the queries here span
+        every project. So does this: the names are gathered project by project
+        and merged, capped at ``_MAX_TYPE_PROJECTS``.
+
+        A project that refuses is skipped rather than fatal: read access to one
+        project is enough to configure a mapping, and an organization where
+        some projects are closed off is normal. Only a failure that leaves
+        nothing at all to show is raised.
+        """
+        try:
+            token = self._auth.access_token()
+        except AzureDevOpsAuthError as exc:
+            raise TasksProviderError(
+                f"Azure DevOps sign-in failed: {exc}") from exc
+
+        try:
+            projects = self._fetch_projects(token)
+        except requests.RequestException as exc:
+            raise TasksProviderError(_describe_error(exc)) from exc
+
+        names: set[str] = set()
+        last_error: requests.RequestException | None = None
+        for project in projects[:_MAX_TYPE_PROJECTS]:
+            try:
+                names.update(self._fetch_work_item_types(token, project))
+            except requests.RequestException as exc:
+                last_error = exc
+        if not names and last_error is not None:
+            raise TasksProviderError(_describe_error(last_error)) from last_error
+        resolved = sorted(names, key=str.casefold)
+        log.debug("%d project(s) offer %d work item type(s): %s",
+                  min(len(projects), _MAX_TYPE_PROJECTS), len(resolved),
+                  ", ".join(resolved))
+        return resolved
+
+    def _fetch_projects(self, token: str) -> list[str]:
+        """Names of the projects the connected account can see."""
+        response = requests.get(
+            f"{self._config.organization_url}/_apis/projects",
+            params={"api-version": API_VERSION, "$top": _MAX_TYPE_PROJECTS},
+            headers=self._headers(token),
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+        return [name for project in (response.json().get("value") or [])
+                if (name := str(project.get("name", "")).strip())]
+
+    def _fetch_work_item_types(self, token: str, project: str) -> list[str]:
+        """Work item type names one project defines. Quoted: names carry spaces."""
+        response = requests.get(
+            f"{self._config.organization_url}/{quote(project, safe='')}"
+            "/_apis/wit/workitemtypes",
+            params={"api-version": API_VERSION},
+            headers=self._headers(token),
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+        return [name for item_type in (response.json().get("value") or [])
+                if (name := str(item_type.get("name", "")).strip())]
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
@@ -177,7 +284,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             if raise_errors:
                 raise TasksProviderError(
                     f"Azure DevOps sign-in failed: {exc}") from exc
-            print(f"Azure DevOps auth error: {exc}")
+            log.error("Azure DevOps auth error: %s", exc)
             return []
 
         try:
@@ -189,23 +296,32 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         except requests.RequestException as exc:
             if raise_errors:
                 raise TasksProviderError(_describe_error(exc)) from exc
-            print(f"Azure DevOps API error: {exc}")
+            log.error("Azure DevOps API error: %s", _describe_error(exc))
             return []
 
         # The batch endpoint doesn't preserve the WIQL ordering, so restore the
         # priority-then-age order the query asked for.
         by_id = {item["id"]: item for item in items}
-        return [self._to_task(by_id[item_id], parents)
-                for item_id in ids if item_id in by_id]
+        tasks = [self._to_task(by_id[item_id], parents)
+                 for item_id in ids if item_id in by_id]
+        log.debug("WIQL matched %d work item(s)%s", len(tasks),
+                  ": " + ", ".join(_describe_task(task) for task in tasks)
+                  if tasks else "")
+        return tasks
 
     def _query_work_item_ids(self, token: str, statuses: list[str]) -> list[int]:
         # Organization-scoped, like the batch fetch below: the endpoint's
         # project segment is optional, and leaving it off is what lets one query
         # span every project the connected account can read.
+        query = self._build_wiql(statuses)
+        # Logged verbatim: "Codee isn't picking up my work item" is answered by
+        # reading the types the work item mapping resolved to and the states
+        # the skills asked for, both of which are in this one string.
+        log.debug("WIQL: %s", query)
         response = requests.post(
             f"{self._config.organization_url}/_apis/wit/wiql",
             params={"api-version": API_VERSION, "$top": _MAX_TASKS},
-            json={"query": self._build_wiql(statuses)},
+            json={"query": query},
             headers=self._headers(token),
             timeout=_TIMEOUT,
         )
@@ -234,15 +350,27 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         item types, only the states asked for, and only what is assigned to the
         connected account.
         """
-        quoted_types = ", ".join(_quote_wiql(item_type)
-                                 for item_type in _WORK_ITEM_TYPES)
         return (
             "SELECT [System.Id] FROM WorkItems "
             "WHERE [System.AssignedTo] = @Me "
-            f"AND [System.WorkItemType] IN ({quoted_types}) "
+            f"{self._build_wiql_type_clause()}"
             f"{self._build_wiql_status_clause(statuses)}"
             "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, [System.CreatedDate] ASC"
         )
+
+    def _build_wiql_type_clause(self) -> str:
+        """The work item type filter, from the work items configured in Settings.
+
+        Dropped when nothing is mapped, like the state clause above and for the
+        same reason — but this one dropping is worse than a wide query: it would
+        hand the executor every item assigned to the account. Settings keeps the
+        mandatory work items filled in so it cannot happen in practice.
+        """
+        item_types = list(self._work_item_types.values())
+        if not item_types:
+            return ""
+        quoted = ", ".join(_quote_wiql(item_type) for item_type in item_types)
+        return f"AND [System.WorkItemType] IN ({quoted}) "
 
     def _fetch_work_items(self, token: str, ids: list[int]) -> list[dict]:
         """Batch-fetch the requested work items. Organization-scoped, as the API requires."""
@@ -285,12 +413,14 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         work_item_type = fields.get("System.WorkItemType", "")
         return AzureDevOpsWorkItem(
             work_item_type=work_item_type,
+            story_work_item_type=self._story_work_item_type,
             key=str(item["id"]),
             summary=fields.get("System.Title", ""),
             status=fields.get("System.State", ""),
             # Parents aren't type-filtered by the query, so an unmapped type
-            # (a plain "User Story" above a Codee Task) passes through as-is.
-            issue_type=_WORK_ITEM_TYPES.get(work_item_type, work_item_type),
+            # (an "Epic" above a Codee task) passes through as-is.
+            issue_type=self._codee_types.get(
+                work_item_type.casefold(), work_item_type),
             priority=_PRIORITY_NAMES.get(
                 fields.get("Microsoft.VSTS.Common.Priority"), "Unknown"),
             labels=_split_tags(fields.get("System.Tags")),

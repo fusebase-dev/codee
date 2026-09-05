@@ -14,8 +14,14 @@ To hand a work item to Codee you need to do two things, and both are required:
 2. **Set the work item to an `AI` state.**
 
 And there is a third requirement, which is what the setup below is mostly about: the work
-item has to be of a **custom work item type**, `Codee Task` or `Codee Story`. Codee ignores
-every other type, even when it is assigned to its account and sits in a matching state.
+item has to be of a type you listed under **Settings → Tasks provider → Work items**. Codee
+ignores every other type, even when it is assigned to its account and sits in a matching
+state.
+
+This tutorial uses two custom types, `Codee Story` and `Codee Task`, so that work handed to
+Codee is separated from your team's own backlog by type as well as by assignment. That is a
+choice, not a requirement — the mapping ships pointing at `User Story` and `Task`, and you
+can leave it there and separate the work by assignment and state alone.
 
 This tutorial shows how to set up the account and the app registration, how to create the
 work item types and states, and how a story and a task move through them.
@@ -69,13 +75,18 @@ Then open any work item and check that Codee appears in the **Assigned To** pick
 
 ### Which types Codee polls
 
-Codee picks up exactly two work item types, and each maps to an issue type your skills
-trigger on:
+Codee picks up the work item types listed under **Settings → Tasks provider → Work items**,
+and each maps to an issue type your skills trigger on. The rest of this tutorial assumes
+the two custom types it creates below:
 
 | Work item type | `x-codee-issue-type` |
 | --- | --- |
 | `Codee Story` | `story` |
 | `Codee Task` | `task` |
+
+Set that mapping in Settings once the types exist: click **Load types from provider** and
+pick `Codee Story` for `story` and `Codee Task` for `task`. Until you do, Codee is still
+polling for the default `User Story` and `Task`.
 
 Everything else assigned to Codee is ignored, whatever state it is in. The children of a
 `Codee Story` are not picked up on their own either. Codee works on them inside the story's

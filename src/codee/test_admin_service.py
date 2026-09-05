@@ -13,10 +13,11 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    MCP_CHECK, TASKS_CHECK, AdminService, azure_oauth, parse_skill,
-    repository_name)
+    MCP_CHECK, TASKS_CHECK, AdminService, azure_oauth, normalize_work_items,
+    parse_skill, repository_name)
 from codee_main_context.context import (
-    CodeeMainContext, CodingAgent, Settings, TasksProvider, save_settings)
+    CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
+    save_settings)
 
 
 def _empty_workflow() -> dict:
@@ -36,6 +37,122 @@ def _write_issue_skill(root: Path) -> Path:
         "After implementation, move the issue to Review.\n"
     )
     return skills_dir
+
+
+class NormalizeWorkItemsTest(unittest.TestCase):
+    """What the settings form's mapping rows have to satisfy before they save."""
+
+    def test_rows_become_a_lower_cased_mapping(self) -> None:
+        mapping, error = normalize_work_items(
+            [("Story", "User Story"), ("task", " Task "), ("Bug", "Bug")])
+
+        self.assertEqual(error, "")
+        self.assertEqual(mapping, {"story": "User Story", "task": "Task",
+                                   "bug": "Bug"})
+
+    def test_the_mandatory_work_items_cannot_be_removed(self) -> None:
+        # Losing them would leave every story skill matching nothing, silently.
+        _, error = normalize_work_items([("story", "Story"), ("bug", "Bug")])
+
+        self.assertEqual(error, "Work items task cannot be removed")
+
+    def test_a_row_without_a_name_is_refused(self) -> None:
+        _, error = normalize_work_items(
+            [("story", "Story"), ("task", "Task"), ("  ", "Bug")])
+
+        self.assertEqual(error, "Give every work item a name")
+
+    def test_a_row_without_a_provider_type_is_refused(self) -> None:
+        _, error = normalize_work_items(
+            [("story", "Story"), ("task", "Task"), ("bug", "")])
+
+        self.assertEqual(error,
+                         "Choose the provider work item type for 'bug'")
+
+    def test_two_rows_with_the_same_name_are_refused(self) -> None:
+        # They differ only in case, so one would silently overwrite the other.
+        _, error = normalize_work_items(
+            [("story", "Story"), ("task", "Task"), ("Bug", "Bug"),
+             ("bug", "Defect")])
+
+        self.assertEqual(error, "'bug' is listed twice")
+
+
+class AdminServiceWorkItemsTest(unittest.TestCase):
+    def _service(self, directory: Path) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.data_dir = directory
+        service.context = CodeeMainContext(data_dir=directory)
+        service.context.settings = load_settings(directory)
+        return service
+
+    def test_saving_keeps_the_other_provider_s_mapping(self) -> None:
+        # Switching provider and back must not reset what was configured.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {},
+                                  {"story": "Epic", "task": "Task"})
+            service.save_settings("azure_devops", "claude_code", 3, {},
+                                  {"story": "User Story", "task": "Task"})
+
+            stored = load_settings(directory).work_item_types
+            self.assertEqual(stored["jira"], {"story": "Epic", "task": "Task"})
+            self.assertEqual(stored["azure_devops"],
+                             {"story": "User Story", "task": "Task"})
+
+    def test_the_saved_work_items_are_what_skills_may_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {},
+                                  {"story": "Story", "task": "Task",
+                                   "bug": "Bug"})
+
+            self.assertEqual(service.issue_types(), ("story", "task", "bug"))
+
+
+class AdminServiceWorkItemTypesTest(unittest.TestCase):
+    """The listing the settings dropdowns are filled from."""
+
+    def _service(self, directory: Path) -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.data_dir = directory
+        service.root = directory
+        service.context = CodeeMainContext(data_dir=directory)
+        service.context.settings = load_settings(directory)
+        return service
+
+    def test_it_reports_the_names_and_where_they_came_from(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = Mock(status_code=200)
+            response.json.return_value = {"issueTypes": [
+                {"name": "Task"}, {"name": "Bug"}]}
+
+            with patch("codee_tasks_jira.provider.requests.get",
+                       return_value=response):
+                types, scope, error = service.list_work_item_types("jira", {
+                    "base_url": "https://acme.atlassian.net",
+                    "account_email": "agent@example.com",
+                    "api_token": "token", "project": "CORE"})
+
+            self.assertEqual(types, ["Bug", "Task"])
+            self.assertEqual(scope, "project CORE")
+            self.assertEqual(error, "")
+
+    def test_a_refused_listing_reports_the_message_and_no_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            types, scope, error = service.list_work_item_types("jira", {
+                "base_url": "", "account_email": "", "api_token": "",
+                "project": ""})
+
+            self.assertEqual((types, scope), ([], ""))
+            self.assertIn("Fill in", error)
 
 
 class AdminServiceIssueTriggerTest(unittest.TestCase):
@@ -68,6 +185,8 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             )
             service = AdminService.__new__(AdminService)
             service.skills_dir = skills_dir
+            # The work items a skill may declare come from the settings file.
+            service.data_dir = skills_dir
 
             with patch.object(service, "_write_and_push",
                               return_value=(True, True, "saved")) as write:
@@ -1313,7 +1432,8 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
             # Both provider steps, in order.
             self.assertIn("1. Create a new Task in JIRA project CORE",
                           self.prompt)
-            self.assertIn("assigned to agent@acme.test", self.prompt)
+            self.assertIn("2. Move that issue to a Done or Cancelled status",
+                          self.prompt)
             self.assertIn("2. Move that issue to a Done or Cancelled status",
                           self.prompt)
 

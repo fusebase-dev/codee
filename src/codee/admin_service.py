@@ -21,13 +21,13 @@ from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
-from codee_tasks_abstract.provider import AbstractTasksProvider
+from codee_tasks_abstract.provider import (
+    AbstractTasksProvider, TasksProviderError)
 from codee.lib import runs_db
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
 from codee.lib.trigger_cron_skills import trigger_cron_skills
 from codee.lib.trigger_issue_skills import (
-    ISSUE_TYPES,
     IssueTriggeredSkill,
     find_issue_triggered_skills,
     issue_statuses,
@@ -36,14 +36,17 @@ from codee.tasks_providers import TASKS_PROVIDERS, build_tasks_provider
 from codee_main_context.context import (
     CodeeMainContext,
     CodingAgent,
+    DEFAULT_ISSUE_TYPES,
     Settings,
     TasksProvider,
+    codee_issue_types,
     data_dir,
     load_settings,
     memory_dir,
     project_root,
     save_settings,
     skills_dir,
+    work_item_types,
 )
 
 load_dotenv()
@@ -325,15 +328,47 @@ def _transition_values(value: Any) -> list[dict[str, str]]:
     return transitions
 
 
-def _is_workflow(value: Any) -> bool:
-    """Whether a stored graph still has the shape the workflow page reads."""
+def normalize_work_items(rows: list[tuple[str, str]]) -> tuple[dict[str, str], str]:
+    """Turn the settings form's mapping rows into what ``Settings`` stores.
+
+    Returns the mapping and an error message, one of which is always empty.
+
+    Names are lower-cased because that is how a skill declares the work item it
+    triggers on, and the two have to meet. The mandatory work items must
+    survive: a settings page that let them be renamed away would leave every
+    story and task skill matching nothing, with no error to explain it.
+    """
+    mapping: dict[str, str] = {}
+    for raw_name, raw_type in rows:
+        name = raw_name.strip().lower()
+        item_type = raw_type.strip()
+        if not name:
+            return {}, "Give every work item a name"
+        if not item_type:
+            return {}, f"Choose the provider work item type for '{name}'"
+        if name in mapping:
+            return {}, f"'{name}' is listed twice"
+        mapping[name] = item_type
+    missing = [name for name in DEFAULT_ISSUE_TYPES if name not in mapping]
+    if missing:
+        return {}, f"Work items {' and '.join(missing)} cannot be removed"
+    return mapping, ""
+
+
+def _is_workflow(value: Any, issue_types: tuple[str, ...]) -> bool:
+    """Whether a stored graph still has the shape the workflow page reads.
+
+    Checked against the work items configured now rather than the ones the
+    graph was built for: adding a work item leaves the cache a section short,
+    and the page would render it as "no skills" instead of regenerating.
+    """
     if not isinstance(value, dict):
         return False
     return all(
         isinstance(value.get(issue_type), dict)
         and all(isinstance(value[issue_type].get(key), list)
                 for key in ("nodes", "edges", "warnings"))
-        for issue_type in ISSUE_TYPES
+        for issue_type in issue_types
     )
 
 
@@ -507,7 +542,12 @@ class AdminService:
     def _workflow_fingerprint(self) -> str:
         """Digest the skill documents the workflow graph is inferred from."""
         digest = hashlib.sha256()
-        for skill in find_issue_triggered_skills(self.skills_dir):
+        # The work items are part of the fingerprint: adding one adds a section
+        # to the graph without any skill file changing.
+        digest.update(",".join(self.issue_types()).encode())
+        digest.update(b"\0")
+        for skill in find_issue_triggered_skills(
+                self.skills_dir, self.issue_types()):
             digest.update(skill.slug.encode())
             digest.update(b"\0")
             digest.update(skill.path.read_bytes())
@@ -532,7 +572,7 @@ class AdminService:
         if not isinstance(stored, dict) or stored.get("fingerprint") != fingerprint:
             return None
         workflow = stored.get("workflow")
-        if not _is_workflow(workflow):
+        if not _is_workflow(workflow, self.issue_types()):
             return None
         self._workflow_cache = (fingerprint, workflow)
         return workflow
@@ -552,14 +592,15 @@ class AdminService:
             print(f"[admin] Failed to store workflow cache: {error}")
 
     def _generate_workflow(self) -> dict[str, Any]:
-        """Infer separate status graphs for story and task skills."""
-        skills = find_issue_triggered_skills(self.skills_dir)
+        """Infer one status graph per configured Codee work item."""
+        issue_types = self.issue_types()
+        skills = find_issue_triggered_skills(self.skills_dir, issue_types)
         return {
             issue_type: self._generate_issue_type_workflow(
                 [skill for skill in skills if skill.issue_type == issue_type],
                 issue_type,
             )
-            for issue_type in ISSUE_TYPES
+            for issue_type in issue_types
         }
 
     def _generate_issue_type_workflow(
@@ -960,8 +1001,10 @@ class AdminService:
             frontmatter["disable-model-invocation"] = True
         elif skill_type == "issue trigger":
             issue_type = skill.get("issue_type", "").strip().lower()
-            if issue_type not in ISSUE_TYPES:
-                return False, False, "Select an issue type: story or task", old_slug
+            issue_types = self.issue_types()
+            if issue_type not in issue_types:
+                return False, False, ("Select an issue type: "
+                                      f"{', '.join(issue_types)}"), old_slug
             frontmatter.update({
                 "disable-model-invocation": True,
                 "x-codee-trigger": "issue",
@@ -1190,20 +1233,73 @@ class AdminService:
         self.context.settings = load_settings(self.data_dir)
         return self.context.settings
 
+    def issue_types(self) -> tuple[str, ...]:
+        """The Codee work items skills may trigger on, per the saved settings.
+
+        Read off disk rather than off the last-loaded copy: the skill editor
+        and the workflow page are separate requests, and a work item added in
+        Settings has to be selectable in the very next one.
+        """
+        return codee_issue_types(load_settings(self.data_dir))
+
+    def work_item_types(self, tasks_provider: str = "") -> dict[str, str]:
+        """Codee work item -> backend work item type, for the settings form.
+
+        Defaults to the selected provider; naming another is how the settings
+        page reads back the mapping it kept for a provider the user just
+        switched to.
+        """
+        settings = load_settings(self.data_dir)
+        try:
+            provider = (TasksProvider(tasks_provider) if tasks_provider
+                        else settings.tasks_provider)
+        except ValueError:
+            provider = settings.tasks_provider
+        return work_item_types(settings, provider)
+
+    def list_work_item_types(
+        self,
+        tasks_provider: str,
+        credentials: dict[str, str],
+    ) -> tuple[list[str], str, str]:
+        """What the backend calls its work item types, for the mapping dropdown.
+
+        Answers from the credentials on the form rather than from disk, like
+        the connection check, so a user can pick their types before saving
+        anything. Returns the names, where the provider looked for them, and an
+        error message — the names and the error are never both filled in.
+        """
+        try:
+            provider = self._provider_from_form(tasks_provider, credentials)
+            return (provider.list_work_item_types(),
+                    provider.work_item_types_scope(), "")
+        except TasksProviderError as error:
+            return [], "", str(error)
+        except Exception as error:  # noqa: BLE001 - the UI must never see a traceback
+            return [], "", f"{type(error).__name__}: {error}"
+
     def save_settings(
         self,
         tasks_provider: str,
         coding_agent: str,
         max_parallel_agents: int,
         credentials: dict[str, str],
+        work_items: dict[str, str] | None = None,
     ) -> None:
         current = self.context.settings
         all_credentials = dict(current.credentials)
         all_credentials[tasks_provider] = credentials
+        # Like the credentials: only the selected provider's mapping is being
+        # edited, and the others are carried over so switching provider and
+        # back doesn't lose the work items configured for it.
+        all_work_items = dict(current.work_item_types)
+        if work_items is not None:
+            all_work_items[tasks_provider] = work_items
         self.context.settings = Settings(
             tasks_provider=TasksProvider(tasks_provider),
             coding_agent=CodingAgent(coding_agent),
             credentials=all_credentials,
+            work_item_types=all_work_items,
             max_parallel_agents=max(1, max_parallel_agents),
         )
         save_settings(self.data_dir, self.context.settings)
@@ -1240,7 +1336,8 @@ class AdminService:
         # exactly what the executor polls for — a check that passes here is a
         # poll that works.
         pulled, message = provider.verify_connection(
-            issue_statuses(find_issue_triggered_skills(self.skills_dir)))
+            issue_statuses(find_issue_triggered_skills(
+                self.skills_dir, self.issue_types())))
         yield _check(TASKS_CHECK, pulled, message)
         yield self._check_tasks_mcp(tasks_provider, provider, blocked=not pulled)
 

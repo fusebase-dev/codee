@@ -11,8 +11,8 @@ from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
-    CodeeMainContext, CodingAgent, Settings, data_dir,
-    load_settings, project_root)
+    CodeeMainContext, CodingAgent, STORY_ISSUE_TYPE, Settings,
+    codee_issue_types, data_dir, load_settings, project_root)
 from codee_main_context.logging import configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
@@ -97,10 +97,10 @@ def _refresh_config() -> None:
     """Re-read settings.json and rebuild whatever it changed.
 
     Providers capture their credentials at construction, so without this a
-    settings edit (new Azure DevOps app, rotated JIRA token, switched provider)
-    only took effect after restarting the executor. Rebuilds are conditional so
-    a poll that changes nothing keeps the live provider — and with it the
-    Azure DevOps refresh lock — untouched.
+    settings edit (new Azure DevOps app, rotated JIRA token, switched provider,
+    remapped work item) only took effect after restarting the executor.
+    Rebuilds are conditional so a poll that changes nothing keeps the live
+    provider — and with it the Azure DevOps refresh lock — untouched.
     """
     global tasks_provider, coding_agent
 
@@ -112,7 +112,8 @@ def _refresh_config() -> None:
               settings.coding_agent.value)
 
     if (settings.tasks_provider != previous.tasks_provider
-            or settings.credentials != previous.credentials):
+            or settings.credentials != previous.credentials
+            or settings.work_item_types != previous.work_item_types):
         try:
             tasks_provider = build_tasks_provider(settings)
         except Exception as exc:
@@ -292,7 +293,10 @@ def run_once() -> None:
     log.debug("Agent pool: %d/%d in flight/queued.",
               running, MAX_PARALLEL_AGENTS)
 
-    issue_skills = find_issue_triggered_skills()
+    # The work items come from the settings this tick already re-read, rather
+    # than from a second read of the same file inside the loader.
+    issue_skills = find_issue_triggered_skills(
+        issue_types=codee_issue_types(context.settings))
     if not issue_skills:
         log.debug("No issue-triggered skills found.")
         return
@@ -325,7 +329,8 @@ def run_once() -> None:
 
         # Children of a Codee-owned story are driven by that story's own agent
         # run. What marks a story as Codee-owned is the provider's business.
-        if issue_type != "Story" and task.is_parent_codee_story:
+        if (issue_type.casefold() != STORY_ISSUE_TYPE
+                and task.is_parent_codee_story):
             log.debug("Skipping %s: parent %s is a Codee story",
                       task_id, task.parent.key)
             continue

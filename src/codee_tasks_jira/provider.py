@@ -2,10 +2,13 @@ from typing import Callable
 
 import requests
 
-from codee_main_context.context import Settings, TasksProvider
+from codee_main_context.context import Settings, TasksProvider, work_item_types
+from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, McpServer, Task, TasksProviderError)
 
+
+log = get_logger(__name__)
 
 # The label that marks a JIRA story as Codee-owned. Children of such a story
 # are driven by the story's own agent run, so the executor leaves them alone.
@@ -15,6 +18,11 @@ CODEE_STORY_LABEL = "CodeeStory"
 # thing that has to exist on the machine is uv — no install step to keep in sync
 # with the credentials below.
 MCP_SERVER_PACKAGE = "mcp-atlassian"
+
+
+def _describe_task(task: Task) -> str:
+    """One task as a log fragment: what it is and what Codee decided it is."""
+    return f"{task.key} [{task.status}/{task.issue_type}]"
 
 
 def _quote_jql(value: str) -> str:
@@ -90,18 +98,28 @@ class JiraTasksProvider(AbstractTasksProvider):
     def __init__(self, settings: Settings):
         creds = settings.credentials.get(TasksProvider.JIRA.value, {})
         self._base_url = creds.get("base_url")
+        # Only ever the HTTP Basic username: JIRA Cloud signs a request as the
+        # account the API token belongs to, and rejects the token on its own.
+        # It is not an assignee filter — see ``_build_jql``.
         self._user_email = creds.get("account_email")
         self._api_token = creds.get("api_token")
-        # We poll for tasks assigned to the same account we authenticate as.
-        self._assignee_email = self._user_email
         self._project = creds.get("project")
+        # Which JIRA issue types stand for which Codee work item. Both
+        # directions are needed: the names go into the JQL type filter, and an
+        # issue that comes back is reported to the executor under the Codee
+        # name the user mapped it to.
+        self._work_item_types = work_item_types(settings, TasksProvider.JIRA)
+        self._codee_types = {issue_type.casefold(): codee_type
+                             for codee_type, issue_type
+                             in self._work_item_types.items()}
 
     def is_configured(self) -> bool:
         return bool(self._user_email and self._api_token)
 
     def describe(self) -> str:
+        types = ", ".join(self._work_item_types.values()) or "no issue types"
         return (f"JIRA {self._base_url} "
-                f"(project {self._project}, assignee {self._assignee_email})")
+                f"(project {self._project}, types {types})")
 
     def mcp_server(self) -> McpServer | None:
         """mcp-atlassian, wired to the same account the executor polls with.
@@ -127,18 +145,20 @@ class JiraTasksProvider(AbstractTasksProvider):
         )
 
     def mcp_check_steps(self, summary: str) -> list[str] | None:
-        """Create an issue assigned to the polled account, then close it again.
+        """Create an issue in the polled project, then close it again.
 
         Between them the two steps cover everything the executor asks of JIRA:
-        it reads issues assigned to this account and moves them along their
-        workflow. Which resolution the project calls "closed" varies, so the
-        step names both rather than a status that may not exist here.
+        it reads issues in this project and moves them along their workflow.
+        Nothing is said about the assignee, because nothing depends on it —
+        the poll below does not filter on one. Which resolution the project
+        calls "closed" varies, so the step names both rather than a status that
+        may not exist here.
         """
-        if not (self._project and self._assignee_email):
+        if not self._project:
             return None
         return [
             f'Create a new Task in JIRA project {self._project} with the '
-            f'summary "{summary}", assigned to {self._assignee_email}.',
+            f'summary "{summary}".',
             "Move that issue to a Done or Cancelled status — whichever its "
             "workflow offers — so it does not stay open.",
         ]
@@ -157,6 +177,11 @@ class JiraTasksProvider(AbstractTasksProvider):
             "fields": "key,summary,status,issuetype,parent,labels,priority",
             "maxResults": 50,
         }
+        # The query verbatim, because "Codee isn't picking up my issue" is
+        # answered by reading it: the project, the issue types the work item
+        # mapping resolved to, and the statuses the skills asked for are all in
+        # this one string.
+        log.debug("JQL: %s", params["jql"])
 
         try:
             resp = requests.get(
@@ -171,17 +196,27 @@ class JiraTasksProvider(AbstractTasksProvider):
         except requests.RequestException as exc:
             if raise_errors:
                 raise TasksProviderError(_describe_error(exc)) from exc
-            print(f"JIRA API error: {exc}")
+            log.error("JIRA API error: %s", _describe_error(exc))
             return []
 
-        return [self._to_task(issue) for issue in data.get("issues", [])]
+        tasks = [self._to_task(issue) for issue in data.get("issues", [])]
+        log.debug("JQL matched %d issue(s)%s", len(tasks),
+                  ": " + ", ".join(_describe_task(task) for task in tasks)
+                  if tasks else "")
+        return tasks
 
     def _build_jql(self, statuses: list[str]) -> str:
-        """JQL for AI-owned issues, highest priority first, then oldest.
+        """JQL for Codee-owned issues, highest priority first, then oldest.
+
+        There is no assignee clause: what hands an issue to Codee is its type
+        and its status, not who it is assigned to. So an issue a human still
+        owns is picked up the moment it reaches a status one of the skills
+        triggers on, which is what makes those statuses the handover — they
+        have to be ones only Codee's workflow uses.
 
         With no statuses the clause is dropped rather than left empty: an
         ``in ()`` is a JQL syntax error, and the only caller that asks for no
-        statuses is the connection check, which wants every assigned issue.
+        statuses is the connection check, which wants every issue it can see.
         """
         status_clause = ""
         if statuses:
@@ -190,10 +225,83 @@ class JiraTasksProvider(AbstractTasksProvider):
             status_clause = f'AND status in ({quoted_statuses}) '
         return (
             f'project = {self._project} '
-            f'AND assignee = "{self._assignee_email}" '
+            f'{self._build_type_clause()}'
             f'{status_clause}'
             f'ORDER BY priority DESC, created ASC'
         )
+
+    def _build_type_clause(self) -> str:
+        """The issue-type filter, from the work items configured in Settings.
+
+        Narrowing the query rather than filtering the response is what keeps an
+        issue of a type Codee was never pointed at from consuming one of the 50
+        rows a page returns. Dropped when nothing is mapped, for the same reason
+        the status clause is: ``in ()`` is a JQL syntax error.
+        """
+        issue_types = list(self._work_item_types.values())
+        if not issue_types:
+            return ""
+        quoted = ", ".join(_quote_jql(issue_type) for issue_type in issue_types)
+        return f'AND issuetype in ({quoted}) '
+
+    def _codee_issue_type(self, issue_type: str) -> str:
+        """The Codee work item this JIRA issue type was mapped to.
+
+        An unmapped type keeps the name JIRA gave it. The query above only
+        returns mapped types, but a parent is not type-filtered, so this is
+        what lets a story above a Codee task pass through recognizably.
+        """
+        return self._codee_types.get(issue_type.casefold(), issue_type)
+
+    def work_item_types_scope(self) -> str:
+        """Which project the types come from — the one the JQL is bound to.
+
+        Worth saying out loud: a team-managed project defines its own handful
+        of types while the site next door has dozens, and "why is my type
+        missing" is almost always "that type lives in another project".
+        """
+        if self._project:
+            return f"project {self._project}"
+        return "every project on the site"
+
+    def list_work_item_types(self) -> list[str]:
+        """The issue types the configured project offers, else the whole site's.
+
+        The project is the useful answer — mapping a Codee work item to a type
+        the polled project doesn't define would give the JQL above nothing to
+        match. Without a project key there is still something worth listing, so
+        it falls back to every type defined on the site.
+        """
+        if not (self._base_url and self._user_email and self._api_token):
+            raise TasksProviderError(
+                "Fill in base URL, API Token Owner Email and API token first.")
+        if self._project:
+            url = f"{self._base_url}/rest/api/3/project/{self._project}"
+        else:
+            url = f"{self._base_url}/rest/api/3/issuetype"
+        try:
+            resp = requests.get(
+                url,
+                auth=(self._user_email, self._api_token),
+                headers={"Accept": "application/json"},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except requests.RequestException as exc:
+            raise TasksProviderError(_describe_error(exc)) from exc
+        except ValueError as exc:
+            raise TasksProviderError(
+                f"JIRA returned something that is not JSON: {exc}") from exc
+        # The project endpoint nests them, the site-wide one returns them flat.
+        entries = payload.get("issueTypes", []) if isinstance(
+            payload, dict) else payload
+        names = {str(entry.get("name", "")).strip()
+                 for entry in entries or [] if isinstance(entry, dict)}
+        resolved = sorted((name for name in names if name), key=str.casefold)
+        log.debug("%s offers %d issue type(s): %s", url, len(resolved),
+                  ", ".join(resolved))
+        return resolved
 
     def _to_task(self, issue: dict) -> Task:
         fields = issue.get("fields", {})
@@ -202,7 +310,8 @@ class JiraTasksProvider(AbstractTasksProvider):
             key=issue["key"],
             summary=fields.get("summary", ""),
             status=fields.get("status", {}).get("name", ""),
-            issue_type=fields.get("issuetype", {}).get("name", ""),
+            issue_type=self._codee_issue_type(
+                fields.get("issuetype", {}).get("name", "")),
             priority=(fields.get("priority") or {}).get("name", "Unknown"),
             labels=fields.get("labels") or [],
             parent=self._to_parent_task(
@@ -217,7 +326,8 @@ class JiraTasksProvider(AbstractTasksProvider):
             key=key,
             summary=fields.get("summary", ""),
             status=fields.get("status", {}).get("name", ""),
-            issue_type=fields.get("issuetype", {}).get("name", ""),
+            issue_type=self._codee_issue_type(
+                fields.get("issuetype", {}).get("name", "")),
             priority=(fields.get("priority") or {}).get("name", "Unknown"),
             labels=fields.get("labels"),
             labels_loader=lambda: self._fetch_issue_labels(key),
@@ -237,5 +347,5 @@ class JiraTasksProvider(AbstractTasksProvider):
             resp.raise_for_status()
             return resp.json().get("fields", {}).get("labels", [])
         except requests.RequestException as exc:
-            print(f"[cron_jira] Failed to fetch labels for {issue_key}: {exc}")
+            log.error("Failed to fetch labels for %s: %s", issue_key, exc)
             return []

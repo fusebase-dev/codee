@@ -4,11 +4,23 @@ from typing import Any
 
 import yaml
 
-from codee_main_context.context import project_root, skills_dir as default_skills_dir
+from codee_main_context.context import (
+    codee_issue_types, data_dir, load_settings, project_root,
+    skills_dir as default_skills_dir)
 
 REPO_ROOT = project_root()
 SKILLS_DIR = default_skills_dir(REPO_ROOT)
-ISSUE_TYPES = ("story", "task")
+
+
+def configured_issue_types() -> tuple[str, ...]:
+    """The Codee work items a skill may declare, per the tasks provider settings.
+
+    Read from disk rather than cached: the executor polls in a loop and the
+    settings page can add a work item under it, and a skill written for that
+    new work item has to start matching on the next tick rather than after a
+    restart. Always contains story and task, whatever the file says.
+    """
+    return codee_issue_types(load_settings(data_dir()))
 
 
 @dataclass(frozen=True)
@@ -23,8 +35,17 @@ class IssueTriggeredSkill:
 
 def find_issue_triggered_skills(
     skills_dir: Path = SKILLS_DIR,
+    issue_types: tuple[str, ...] | None = None,
 ) -> list[IssueTriggeredSkill]:
-    """Load valid issue-triggered skills from skill frontmatter."""
+    """Load valid issue-triggered skills from skill frontmatter.
+
+    ``issue_types`` is the set of Codee work items a skill may trigger on,
+    defaulting to what Settings configures. Passed in by callers that already
+    hold the settings, so one page load doesn't re-read the file per call.
+    """
+    if issue_types is None:
+        issue_types = configured_issue_types()
+    allowed = ", ".join(issue_types) or "none"
     skills: list[IssueTriggeredSkill] = []
     for path in sorted(skills_dir.glob("*/SKILL.md")):
         try:
@@ -52,10 +73,10 @@ def find_issue_triggered_skills(
 
         raw_issue_type = metadata.get("x-codee-issue-type")
         issue_type = str(raw_issue_type).strip().lower()
-        if not isinstance(raw_issue_type, str) or issue_type not in ISSUE_TYPES:
+        if not isinstance(raw_issue_type, str) or issue_type not in issue_types:
             print(
                 f"[issue_skills] ERROR: {path} declares x-codee-trigger: issue but "
-                "x-codee-issue-type must be story or task; skipping."
+                f"x-codee-issue-type must be one of {allowed}; skipping."
             )
             continue
         skills.append(IssueTriggeredSkill(
