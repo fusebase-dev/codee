@@ -1639,6 +1639,25 @@ def memory_editor() -> rx.Component:
         spacing="4", width="100%"),
 
 
+COPILOT_MEMORY_URL = "https://github.com/settings/copilot/memory"
+
+
+def copilot_memory_notice() -> rx.Component:
+    """Github Copilot keeps memory in the GitHub account, not in the repository."""
+    return rx.center(
+        rx.vstack(
+            rx.icon("notebook-text", size=28, color=SUBTLE_ICON),
+            rx.text("Memory is stored in GitHub account and can be managed here",
+                    color=MUTED),
+            rx.link(COPILOT_MEMORY_URL, href=COPILOT_MEMORY_URL, is_external=True,
+                    color=ACCENT),
+            spacing="3", align="center"),
+        border="1px dashed var(--codee-border)",
+        min_height="10rem",
+        width="100%",
+    )
+
+
 def memory_page() -> rx.Component:
     listing = rx.cond(AdminState.memories.length() > 0,
                       rx.vstack(rx.foreach(AdminState.memories,
@@ -1646,9 +1665,7 @@ def memory_page() -> rx.Component:
                       empty_state("notebook-text", "No memories yet."))
     return shell(rx.vstack(page_header("Memory", "Manage agent provider's memory."),
                            rx.cond(AdminState.coding_agent == "github_copilot",
-                                   empty_state(
-                                       "notebook-text",
-                                       "Github Copilot currently does not support local memory"),
+                                   copilot_memory_notice(),
                                    rx.cond(AdminState.selected_memory ==
                                            "", listing, memory_editor())),
                            align="start", width="100%"))
