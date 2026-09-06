@@ -8,25 +8,88 @@ Codee is a pypi package which is installed as dependency for you custom-built vi
 
 We recommend using [uv](https://docs.astral.sh/uv/) for managing you python project.
 
-First init a new project:
+## Quick start
+
+Make a directory for your Codee project and initialize it:
+
+```
+mkdir my-codee && cd my-codee
+uvx codee-agent init
+```
+
+That single command does everything below: it creates the project, detects the coding
+agents installed on the machine, and walks you through connecting a tasks provider.
+
+### What `init` creates
+
+```
+my-codee/
+├── pyproject.toml      # a uv project depending on codee-agent
+├── AGENTS.md           # the instructions every run starts from
+├── CLAUDE.md
+├── .claude/skills/     # the skills Codee ships with
+├── .codee/             # settings.json and Codee's own state
+├── .mcp.json           # the tasks provider's MCP server
+├── repositories/       # clones Codee works on
+├── temp/               # scratch files
+└── memory/             # long-term memory, tracked in git
+```
+
+`repositories/`, `temp/`, `.codee/` and `.mcp.json` are added to `.gitignore` — the last
+two hold API tokens. `memory/` is tracked on purpose: Codee commits what it learns.
+
+Run it again at any time. Existing files are refreshed rather than replaced, which is how a
+project picks up skills added in a newer Codee release, and your `pyproject.toml` is left
+alone once it exists.
+
+### Choosing a coding agent
+
+`init` looks for the `claude` and `copilot` CLIs on your PATH:
+
+- **One found** — it is used, and `init` says so.
+- **Both found** — you pick.
+- **Neither found** — you still pick one, and install it afterwards. The CLI is only needed
+  when Codee actually runs a task, not to configure it.
+
+### Connecting a tasks provider
+
+**Jira** is set up entirely in the terminal. `init` asks for the base URL, the API token
+owner's email, the API token and the project key, writes the `mcp-atlassian` MCP server
+into `.mcp.json`, and then verifies the credentials by pulling tasks the same way the
+executor polls. It finally offers the MCP check, which has the coding agent create and
+close a real issue through MCP — say no to skip it and run it later from the Settings page.
+
+**Azure DevOps** cannot be finished in a terminal: it signs in through an Entra ID consent
+flow whose redirect URI is a route served by Codee's own admin UI. `init` saves what it can,
+starts Codee, and opens the browser on the Settings page where you paste the app
+registration details and click **Connect**. The first start compiles the admin UI, so give
+it a few minutes.
+
+## Manual setup
+
+If you would rather assemble the project yourself, or already have one:
 
 ```
 uv init
-```
-
-Install codee-agent dependency:
-
-```
 uv add codee-agent
+uv run codee-start
 ```
 
-Start codee, this command will run:
+`codee-start` runs the Codee UI (the url is in the command output) and the executor that
+drives the agent. On the first run it lays down the same project files `init` does, and
+everything else is configured on the [Settings page](./configuration).
 
-- Codee UI - you will see the url in the command output
-- Codee executor - the process that drives the agent
+## Running Codee
+
+After `init`, start Codee from the project directory:
 
 ```
 uv run codee-start
 ```
 
-Done. You are ready to [configure](./configuration) Codee now.
+## Debug mode
+
+```bash
+uv run codee-start --debug       # Codee debug output
+uv run codee-start --debug-all   # ...plus reflex, boto3, urllib3 and friends
+```

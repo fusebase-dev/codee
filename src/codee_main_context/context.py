@@ -45,6 +45,11 @@ class CredentialField:
     label: str
     secret: bool = False
     default: str = ""
+    # One sentence saying what to type and where to find it, for fields whose
+    # label is not self-explanatory. Shown under the input on the settings page
+    # and above the prompt in `codee-agent init`, so the wording lives here
+    # rather than being written twice and drifting apart.
+    hint: str = ""
 
 
 # Codee's own work item names. Every Codee installation has these two: skills
@@ -73,10 +78,19 @@ TASKS_PROVIDER_FIELDS: dict[TasksProvider, list[CredentialField]] = {
     # rejects the token on its own. Nothing else reads it — which issues Codee
     # picks up is decided by their type and status alone.
     TasksProvider.JIRA: [
-        CredentialField("base_url", "Base URL"),
-        CredentialField("account_email", "API Token Owner Email"),
+        CredentialField("base_url", "Base URL",
+                        hint="Your Jira site, e.g. "
+                             "https://your-company.atlassian.net"),
+        CredentialField("account_email", "API Token Owner Email",
+                        hint="The email the API token below belongs to. Jira "
+                             "signs every request as this account."),
         CredentialField("api_token", "API token", secret=True),
-        CredentialField("project", "Project key"),
+        CredentialField("project", "Project key",
+                        hint="The short prefix on every issue key in the "
+                             "project, not its name \u2014 for issue "
+                             "MYPRJ-4124 the project key is MYPRJ. Jira shows "
+                             "it under Project settings \u2192 Details, and "
+                             "it is in the URL of any board."),
     ],
     # Azure DevOps authenticates through an Entra ID app registration, so the
     # stored credentials describe the app; the tokens it yields live in SQLite
@@ -165,6 +179,19 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(payload)
     os.replace(temp, path)
+
+
+def credential_field(provider: TasksProvider, key: str) -> CredentialField:
+    """One provider field by key, for a surface that renders fields by hand.
+
+    The settings page binds each input to its own state variable, so it cannot
+    loop over the list the way the setup wizard does; this lets it still read
+    the label and hint from the same definition instead of restating them.
+    """
+    for field in TASKS_PROVIDER_FIELDS[provider]:
+        if field.key == key:
+            return field
+    raise KeyError(f"{provider.value} has no credential field {key!r}")
 
 
 def work_item_types(settings: Settings,

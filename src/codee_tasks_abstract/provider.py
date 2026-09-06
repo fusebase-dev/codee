@@ -71,6 +71,11 @@ class AbstractTasksProvider(ABC):
     provider it's talking to or what configuration that provider needs.
     """
 
+    # How the provider shows up to a human choosing one ("Azure DevOps" rather
+    # than ``azure_devops``). On the class for the same reason MCP_SERVER_NAME
+    # is: the setup wizard can name a provider it has not configured yet.
+    DISPLAY_NAME = ""
+
     # Key ``mcp_server`` writes its server under, empty for a provider that has
     # none. A constant on the class rather than a field on the server, so a
     # provider missing its credentials can still be asked whether the server it

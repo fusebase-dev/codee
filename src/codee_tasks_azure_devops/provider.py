@@ -124,6 +124,7 @@ class AzureDevOpsWorkItem(Task):
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
     """Fetches work items assigned to the connected account as provider-agnostic Tasks."""
 
+    DISPLAY_NAME = "Azure DevOps"
     MCP_SERVER_NAME = "ado"
 
     def __init__(self, settings: Settings, main_context: CodeeMainContext | None = None):

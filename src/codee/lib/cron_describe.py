@@ -6,8 +6,13 @@ None on anything it can't parse so the UI falls back to the raw expression.
 
 from cron_descriptor import Options, get_description
 
-_OPTS = Options()
-_OPTS.use_24hour_time_format = False
+# The locale is pinned rather than autodetected. Left to cron_descriptor, an
+# unset or `C` locale (containers, cron, systemd) makes it warn on import and
+# fall back to en_US anyway, and a non-English one gets a half-translated
+# description -- `LANG=de_DE` yields "Um 05:00, Tuesday bis Saturday". These
+# strings go into the admin UI beside cron expressions that are themselves
+# English, so en_US is the answer on every machine.
+_OPTS = Options(locale_code="en_US", use_24hour_time_format=False)
 
 
 def describe_cron(expr):

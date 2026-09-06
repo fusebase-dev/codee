@@ -11,7 +11,8 @@ from codee.admin_api import api_app
 from codee.admin_service import (
     AGENTS_FILE, TASKS_CHECKS, AdminService, SKILL_TYPES, normalize_work_items)
 from codee.workflow_graph import workflow_graph
-from codee_main_context.context import DEFAULT_ISSUE_TYPES
+from codee_main_context.context import (
+    DEFAULT_ISSUE_TYPES, TasksProvider, credential_field)
 
 SERVICE = AdminService()
 
@@ -1392,6 +1393,18 @@ def agents_editor() -> rx.Component:
         spacing="4", align="start", width="100%")
 
 
+def credential_hint(provider: TasksProvider, key: str) -> rx.Component | None:
+    """The shared explanation for one provider field, as muted help text.
+
+    Read from ``TASKS_PROVIDER_FIELDS`` rather than written here, so the
+    settings page and `codee-agent init` explain a field the same way.
+    """
+    hint = credential_field(provider, key).hint
+    if not hint:
+        return None
+    return rx.text(hint, color=MUTED, font_size="0.8rem")
+
+
 def field(label: str, control: rx.Component, hint: rx.Component | None = None) -> rx.Component:
     children = [rx.text(label, font_weight="600",
                         font_size="0.85rem"), control]
@@ -2262,21 +2275,24 @@ def tasks_verification() -> rx.Component:
 
 
 def settings_page() -> rx.Component:
+    jira = TasksProvider.JIRA
     jira_fields = rx.vstack(
         field("Base URL", rx.input(value=AdminState.jira_base_url,
-                                   on_change=AdminState.set_jira_base_url, width="100%")),
+                                   on_change=AdminState.set_jira_base_url,
+                                   placeholder="https://your-company.atlassian.net",
+                                   width="100%"),
+              credential_hint(jira, "base_url")),
         field("API Token Owner Email",
               rx.input(value=AdminState.jira_account_email,
                        on_change=AdminState.set_jira_account_email,
                        placeholder="agent@example.com", width="100%"),
-              rx.text("The email the API token below belongs to. Jira signs "
-                      "every request as this account; it does not decide "
-                      "which issues Codee picks up.",
-                      color=MUTED, font_size="0.8rem")),
+              credential_hint(jira, "account_email")),
         field("API token", rx.input(value=AdminState.jira_api_token,
                                     on_change=AdminState.set_jira_api_token, type="password", width="100%")),
         field("Project key", rx.input(value=AdminState.jira_project,
-                                      on_change=AdminState.set_jira_project, width="100%")),
+                                      on_change=AdminState.set_jira_project,
+                                      placeholder="MYPRJ", width="100%"),
+              credential_hint(jira, "project")),
         spacing="4", width="100%")
     return shell(rx.vstack(
         page_header(

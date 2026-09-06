@@ -29,6 +29,17 @@ dependencies = [
     "cron-descriptor >= 2.1.0,<3",
     "python-dotenv >= 1.2.2,<2",
     "reflex >= 0.9.7",
+    # Imported directly by the admin UI and the API, and declared here for
+    # that reason alone. They used to arrive through reflex, which is exactly
+    # the problem: reflex-base 0.9.10 moved pydantic behind an optional
+    # `pydantic` extra, so every fresh install of Codee resolving that version
+    # crashed on `from pydantic import BaseModel`. What the code imports, the
+    # package depends on.
+    "pydantic >= 2.12,<3",       # codee.admin
+    "starlette >= 1.3,<2",       # codee.admin_api
+    "anyio >= 4,<5",             # codee_database.database
+    # Pinned exactly by reflex itself, so it carries no range of its own here.
+    "reflex-base",               # codee.workflow_graph
 ]
 
 [dependency-groups]
@@ -42,6 +53,9 @@ Repository = "https://github.com/fusebase-dev/codee"
 Issues = "https://github.com/fusebase-dev/codee/issues"
 
 [project.scripts]
+# Shares the distribution name so `uvx codee-agent init` finds it with nothing
+# installed; the other scripts are for a project that already has Codee.
+codee-agent = "codee.agent_cli:main"
 codee-start = "codee.start_cli:main"
 codee-init = "codee.init_cli:main"
 codee-admin = "codee.admin_cli:main"

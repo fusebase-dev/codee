@@ -377,7 +377,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(settings=Settings(
                 coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 service.generate_workflow()
@@ -436,7 +436,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(settings=Settings(
                 coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: agent_type,
             }):
                 workflows = service.generate_workflow()
@@ -525,7 +525,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 workflow = service.generate_workflow()["story"]
@@ -567,7 +567,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 workflow = service.generate_workflow()["story"]
@@ -618,7 +618,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 workflow = service.generate_workflow()["story"]
@@ -675,7 +675,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 workflow = service.generate_workflow()["story"]
@@ -715,7 +715,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             service.context = Mock(
                 settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
 
-            with patch.dict("codee.admin_service._CODING_AGENTS", {
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
                 CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
             }):
                 workflow = service.generate_workflow()["story"]

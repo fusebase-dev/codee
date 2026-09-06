@@ -1,3 +1,4 @@
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +27,26 @@ class AbstractCodingAgent(ABC):
     driving or what configuration that agent needs.
     """
 
+    # How the agent shows up to a human choosing one, and the executable that
+    # has to be on PATH for it to run at all. Both are answered by the class
+    # rather than by the caller, so the setup wizard can list and detect the
+    # agents without knowing anything about them.
+    DISPLAY_NAME = ""
+    CLI_COMMAND = ""
+
     def __init__(self, settings: Settings, cwd: Path):
         self._cwd = cwd
+
+    @classmethod
+    def is_installed(cls) -> bool:
+        """Whether this agent's CLI can be found on PATH.
+
+        Only says the executable exists — not that it is signed in, or that the
+        account behind it has credit. That is deliberate: the cheap check is the
+        one worth making before anything is configured, and the expensive
+        answer comes from the first real run.
+        """
+        return bool(cls.CLI_COMMAND) and shutil.which(cls.CLI_COMMAND) is not None
 
     @abstractmethod
     def run(self, user_message: str, session_id: str, model: str = "") -> str:

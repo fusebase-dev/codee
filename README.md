@@ -8,17 +8,23 @@ As agents it current works with Claude Code and Github Copilot.
 
 ## Run Codee
 
-Codee is a python package, you first need to install it.
+Codee lives in its own directory, where it keeps skills, memory, temp files and config.
+Create one and initialize it:
 
-TODO: provide install instructions
+```bash
+mkdir my-codee && cd my-codee
+uvx codee-agent init
+```
 
-You need to create a separate repo for Codee where it will store skills, memory, temp files, config, etc.
+`init` scaffolds the project, detects the coding agents installed on the machine and asks
+which one to use, then walks you through connecting Jira (entirely in the terminal) or
+Azure DevOps (which finishes in the browser, since it needs an Entra ID consent flow).
 
-Run Codee:
+Afterwards, run Codee with:
 
-`uv run codee-start`
-
-On the first run, the command initializes Codee instructions and skills.
+```bash
+uv run codee-start
+```
 
 ## Debug mode
 

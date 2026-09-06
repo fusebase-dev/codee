@@ -19,10 +19,9 @@ from dotenv import load_dotenv
 from codee_database import oauth_tokens
 from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
-from codee_agent_claude_code.provider import ClaudeCodeAgent
-from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
+from codee.coding_agents import CODING_AGENTS, build_coding_agent
 from codee.lib import runs_db
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
@@ -91,10 +90,6 @@ FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 INDEX_RE = re.compile(
     r"^- \[(?P<title>.+?)\]\((?P<file>[^)]+\.md)\)(?:\s*—\s*(?P<hook>.*))?$")
 
-_CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
-    CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
-    CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
-}
 WORKFLOW_NODE_SPACING = 440
 WORKFLOW_NODE_CENTER_OFFSET = 110
 # Inferring the workflow costs a coding-agent run, so the graph is kept in the
@@ -497,7 +492,7 @@ class AdminService:
         with self._models_lock:
             models = self._models_cache.get(agent_key)
             if models is None:
-                agent_type = _CODING_AGENTS.get(agent_key)
+                agent_type = CODING_AGENTS.get(agent_key)
                 try:
                     models = agent_type.list_models() if agent_type else []
                 except Exception as error:
@@ -1391,12 +1386,10 @@ class AdminService:
 
     def _build_coding_agent(self) -> AbstractCodingAgent:
         """The configured coding agent, pointed at the project root."""
-        agent_type = _CODING_AGENTS.get(self.context.settings.coding_agent)
-        if agent_type is None:
-            raise RuntimeError(
-                f"Coding agent '{self.context.settings.coding_agent.value}' "
-                "is not available")
-        return agent_type(self.context.settings, self.root)
+        try:
+            return build_coding_agent(self.context.settings, self.root)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def setup_tasks_mcp(
         self,
@@ -1422,8 +1415,7 @@ class AdminService:
             path = write_mcp_server(self.root, server)
         except (OSError, ValueError) as exc:
             return False, str(exc)
-        return True, (f"{server.name} is configured in {path} for Claude Code "
-                      f"and GitHub Copilot. {server.requires}".rstrip())
+        return True, f"{server.name} is configured in {path}"
 
     def tasks_mcp_configured(self, tasks_provider: str) -> bool:
         """Whether this provider's MCP server is already in the project's ``.mcp.json``.

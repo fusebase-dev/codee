@@ -94,6 +94,7 @@ class JiraTask(Task):
 class JiraTasksProvider(AbstractTasksProvider):
     """Fetches AI-owned issues from JIRA and maps them to provider-agnostic Tasks."""
 
+    DISPLAY_NAME = "Jira"
     MCP_SERVER_NAME = "mcp-atlassian"
 
     def __init__(self, settings: Settings):

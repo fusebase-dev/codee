@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,7 @@ from unittest.mock import patch
 
 import yaml
 
-from codee.init_cli import main
+from codee.init_cli import ensure_git_repository, main, project_name
 
 
 class InitCliTest(unittest.TestCase):
@@ -59,10 +60,10 @@ class InitCliTest(unittest.TestCase):
                 self.assertTrue(Path("temp").is_dir())
                 self.assertTrue(Path("memory").is_dir())
                 # memory/ stays tracked: the admin UI commits memory edits.
-                # .mcp.json is not: the MCP setup writes an API token into it.
+                # .mcp.json and /.codee are not: both hold API tokens.
                 self.assertEqual(
                     Path(".gitignore").read_text(),
-                    "/repositories\n/temp\n.mcp.json\n")
+                    "/repositories\n/temp\n.mcp.json\n/.codee\n.venv\n")
             finally:
                 os.chdir(original_directory)
 
@@ -76,7 +77,7 @@ class InitCliTest(unittest.TestCase):
                 self.assertEqual(main(), 0)
                 self.assertEqual(
                     Path(".gitignore").read_text(),
-                    "*.log\nrepositories/\n/temp\n.mcp.json\n",
+                    "*.log\nrepositories/\n/temp\n.mcp.json\n/.codee\n.venv\n",
                 )
             finally:
                 os.chdir(original_directory)
@@ -86,12 +87,54 @@ class InitCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             os.chdir(temporary_directory)
             try:
-                covered = "/repositories\n/temp\n.mcp.json\n"
+                covered = ("/repositories\n/temp\n.mcp.json\n"
+                           "/.codee\n.venv\n")
                 Path(".gitignore").write_text(covered)
                 self.assertEqual(main(), 0)
                 self.assertEqual(Path(".gitignore").read_text(), covered)
             finally:
                 os.chdir(original_directory)
+
+    def test_writes_a_uv_project_named_after_the_directory(self) -> None:
+        original_directory = Path.cwd()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory) / "My Codee_Bot"
+            project.mkdir()
+            os.chdir(project)
+            try:
+                self.assertEqual(main(), 0)
+                pyproject = Path("pyproject.toml").read_text()
+                self.assertIn('name = "my-codee-bot"', pyproject)
+                self.assertIn('dependencies = ["codee-agent"]', pyproject)
+            finally:
+                os.chdir(original_directory)
+
+    def test_keeps_an_existing_pyproject(self) -> None:
+        original_directory = Path.cwd()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            os.chdir(temporary_directory)
+            try:
+                Path("pyproject.toml").write_text("[project]\nname = \"mine\"\n")
+                self.assertEqual(main(), 0)
+                self.assertEqual(Path("pyproject.toml").read_text(),
+                                 "[project]\nname = \"mine\"\n")
+            finally:
+                os.chdir(original_directory)
+
+    def test_project_name_falls_back_when_normalization_empties_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            unnamed = Path(temporary_directory) / "___"
+            unnamed.mkdir()
+            self.assertEqual(project_name(unnamed), "codee-project")
+
+    def test_does_not_nest_a_repository_inside_an_existing_one(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+            nested = root / "codee"
+            nested.mkdir()
+            self.assertFalse(ensure_git_repository(nested))
+            self.assertFalse((nested / ".git").exists())
 
     def test_declining_prompt_leaves_existing_files_unchanged(self) -> None:
         original_directory = Path.cwd()

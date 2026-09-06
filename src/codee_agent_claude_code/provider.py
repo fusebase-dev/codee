@@ -30,6 +30,8 @@ MODELS = [
 class ClaudeCodeAgent(AbstractCodingAgent):
     """Runs the ``claude`` CLI in a fresh session, under the id the caller supplies."""
 
+    DISPLAY_NAME = "Claude Code"
+    CLI_COMMAND = "claude"
     MAX_BUDGET_USD = "20.00"
     TIMEOUT_SECONDS = 7200  # 2 hours
     # `--model` takes an alias for the latest model of a tier, so asking for the
@@ -49,7 +51,7 @@ class ClaudeCodeAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "") -> str:
         cmd = [
-            "claude",
+            self.CLI_COMMAND,
             "-p", user_message,
             "--session-id", session_id,
             "--max-budget-usd", self.MAX_BUDGET_USD,

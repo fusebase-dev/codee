@@ -6,6 +6,14 @@ sidebar_position: 3
 
 Codee works with tasks providers to execute them. After you run `uv run codee-start` you need to open Codee UI and open `Settings`.
 
+:::tip
+
+`uvx codee-agent init` asks for most of this in the terminal — the coding agent, the max
+parallel tasks, and, for Jira, every credential below. See [Installation](./installation).
+This page is where you change any of it afterwards, and where Azure DevOps is connected.
+
+:::
+
 ## Coding agent configuration
 
 Codee supports Claude Code and Github Copilot coding agents. You need to select one of them.
@@ -39,7 +47,9 @@ API token to access Jira. Create a separate API token in Codee account settings.
 
 #### Project key
 
-Your project key, it is used as tasks prefix, e.g. for task id `MYPRJ-4124` the project key is `MYPRJ`.
+The short prefix on every issue key in the project, **not the project's name** — for issue
+`MYPRJ-4124` the project key is `MYPRJ`. Jira shows it under **Project settings → Details**,
+and it appears in the URL of any board. Codee polls this one project only.
 
 ### Azure DevOps
 

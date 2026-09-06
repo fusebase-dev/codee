@@ -51,6 +51,8 @@ def _max_ai_credits() -> str:
 class GitHubCopilotAgent(AbstractCodingAgent):
     """Runs the ``copilot`` CLI in a fresh session, under the id the caller supplies."""
 
+    DISPLAY_NAME = "GitHub Copilot"
+    CLI_COMMAND = "copilot"
     TIMEOUT_SECONDS = 7200  # 2 hours
     # Copilot's catalog carries only versioned ids -- its one version-free value
     # is `auto`, which picks for cost rather than capability -- so the best model
@@ -76,7 +78,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "") -> str:
         cmd = [
-            "copilot",
+            self.CLI_COMMAND,
             "-p", user_message,
             "--session-id", session_id,
             "--max-ai-credits", _max_ai_credits(),
