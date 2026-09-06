@@ -1,10 +1,10 @@
 # Codee - a virtual co-worker
 
-The goal of this project is to provide an assistant that will integrate into your existing environment in order to help you to solve tasks.
+The goal of this project is to provide an assistant that will integrate into your existing environment in order to help you to work on tasks (development, code review, testing).
 
-Codee works with Jira and Azure DevOps as tasks provider, new providers are quite easy to create, PRs are welcome.
+Codee works with Jira and Azure DevOps as tasks providers, new providers are quite easy to create, PRs are welcome.
 
-As agents it current works with Claude Code and Github Copilot.
+As agents it currently works with Claude Code and Github Copilot.
 
 ## Run Codee
 
@@ -36,6 +36,3 @@ uv run codee-start --debug-all   # ...plus reflex, boto3, urllib3 and friends
 ### Skills
 
 Codee uses skills to perform tasks. It is the same skills which are used in Claude Code, Codex and other agents.
-
-
-TODO: add skill types, x-codee skills extension
