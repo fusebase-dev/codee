@@ -13,8 +13,8 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    MCP_CHECK, TASKS_CHECK, AdminService, azure_oauth, normalize_work_items,
-    parse_skill, repository_name)
+    MCP_CHECK, TASKS_CHECK, AdminService, _remove_redundant_skill_transitions,
+    azure_oauth, normalize_work_items, parse_skill, repository_name)
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
     save_settings)
@@ -1674,6 +1674,71 @@ class SetupTasksMcpTest(unittest.TestCase):
 
             self.assertFalse(done)
             self.assertIn("not valid JSON", message)
+
+
+class RemoveRedundantSkillTransitionsTest(unittest.TestCase):
+    """Only a genuine detour removes an edge, never a repeated statement."""
+
+    def _transition(self, source: str, target: str, label: str,
+                    evidence: str) -> dict[str, str]:
+        return {"source": source, "target": target,
+                "label": label, "evidence": evidence}
+
+    def test_a_bypass_of_a_two_step_path_is_removed(self) -> None:
+        transitions = [
+            self._transition("Ready", "In progress", "dev", "first"),
+            self._transition("In progress", "Review", "dev", "second"),
+            self._transition("Ready", "Review", "dev", "third"),
+        ]
+
+        retained = _remove_redundant_skill_transitions(transitions)
+
+        self.assertEqual([(row["source"], row["target"]) for row in retained],
+                         [("Ready", "In progress"), ("In progress", "Review")])
+
+    def test_repeating_one_transition_keeps_it(self) -> None:
+        """A skill that names the same target twice still gets its edge.
+
+        story-planner moves the story to `AI Decomposition review` both when
+        the plan is ready and when it stops to ask a question, so the agent
+        reports the pair twice. Reading the second copy as a longer path made
+        each delete the other and the transition disappeared from the graph.
+        """
+        transitions = [
+            self._transition("AI Decomposition needed", "AI Decomposition review",
+                             "story-planner", "plan posted"),
+            self._transition("AI Decomposition needed", "AI Decomposition review",
+                             "story-planner", "questions asked"),
+        ]
+
+        retained = _remove_redundant_skill_transitions(transitions)
+
+        self.assertEqual(retained, transitions)
+
+    def test_a_duplicated_bypass_is_still_removed(self) -> None:
+        transitions = [
+            self._transition("Ready", "In progress", "dev", "first"),
+            self._transition("In progress", "Review", "dev", "second"),
+            self._transition("Ready", "Review", "dev", "third"),
+            self._transition("Ready", "Review", "dev", "fourth"),
+        ]
+
+        retained = _remove_redundant_skill_transitions(transitions)
+
+        self.assertEqual([(row["source"], row["target"]) for row in retained],
+                         [("Ready", "In progress"), ("In progress", "Review")])
+
+    def test_another_skill_bypass_is_left_alone(self) -> None:
+        """The detour has to belong to the same skill to count as one."""
+        transitions = [
+            self._transition("Ready", "In progress", "dev", "first"),
+            self._transition("In progress", "Review", "dev", "second"),
+            self._transition("Ready", "Review", "qa", "third"),
+        ]
+
+        retained = _remove_redundant_skill_transitions(transitions)
+
+        self.assertEqual(len(retained), 3)
 
 
 if __name__ == "__main__":

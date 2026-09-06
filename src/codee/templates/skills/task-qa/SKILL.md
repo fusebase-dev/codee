@@ -22,5 +22,11 @@ QA is read-only: do not modify the implementation or merge its pull request.
 6. For service work, test success, validation, authorization, and edge cases. Record requests, responses, HTTP codes, and relevant side effects.
 7. Mark each criterion pass or fail and separate blocking defects from non-blocking observations.
 8. Post a concise Issue Tracker report with the results, evidence, environment, and actionable reproduction steps for failures.
+9. Move the task to `AI Ready for Human review` when every criterion passes, or back to `AI Ready for development` when any blocking defect was found.
+
+## Status Transitions
+
+- Every acceptance criterion passed: move the task to `AI Ready for Human review`.
+- Any blocking defect: move the task to `AI Ready for development` with the reproduction steps.
 
 Create a separate Issue Tracker item for unrelated defects instead of expanding the task.

@@ -380,6 +380,15 @@ def _remove_redundant_skill_transitions(
         for transition in transitions:
             if transition is candidate or transition["label"].casefold() != label:
                 continue
+            # Another entry for the same pair is a duplicate, not a detour.
+            # Counting it would make each copy the "longer path" that deletes
+            # the other, and the edge would vanish entirely. A skill that
+            # states one transition in several places (story-planner names
+            # `AI Decomposition review` for both a finished plan and an open
+            # question) is exactly what makes the agent emit those copies.
+            if (transition["source"].casefold() == source
+                    and transition["target"].casefold() == target):
+                continue
             adjacency.setdefault(transition["source"].casefold(), set()).add(
                 transition["target"].casefold()
             )

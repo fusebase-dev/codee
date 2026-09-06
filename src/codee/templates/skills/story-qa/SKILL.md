@@ -24,5 +24,12 @@ Validate one subtask per invocation. QA is read-only: do not modify the implemen
 8. Mark each criterion pass or fail and separate blocking defects from non-blocking observations.
 9. Post a concise Issue Tracker report with the results, evidence, environment, and actionable reproduction steps for failures.
 10. Update the story specification with a short QA summary when useful.
+11. Move the story to `AI Ready for Human review` when every criterion passes, or back to `AI Ready for development` when any blocking defect was found.
+
+## Status Transitions
+
+- Every applicable acceptance criterion passed: move the story to `AI Ready for Human review`.
+- Any blocking defect: move the story to `AI Ready for development` with the reproduction steps.
+- Subtasks still awaiting verification: leave the story in `AI Ready for QA` so the next run validates the next one.
 
 Create a separate Issue Tracker item for unrelated defects instead of expanding the subtask.

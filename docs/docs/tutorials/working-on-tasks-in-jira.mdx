@@ -274,7 +274,7 @@ flowchart TD
     review -->|plan approved| dev[AI Ready for development]
     dev -->|story-developer| cr[AI Ready for CR]
     cr -->|story-code-reviewer| sec[AI Ready for security review]
-    sec --> qa[AI Ready for QA]
+    sec -->|story-security-reviewer| qa[AI Ready for QA]
     qa -->|story-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev
@@ -373,8 +373,8 @@ chore. It skips planning:
 flowchart TD
     start([Set AI status]) --> dev[AI Ready for development]
     dev -->|task-developer| cr[AI Ready for CR]
-    cr -->|story-code-reviewer| sec[AI Ready for security review]
-    sec --> qa[AI Ready for QA]
+    cr -->|task-code-reviewer| sec[AI Ready for security review]
+    sec -->|task-security-reviewer| qa[AI Ready for QA]
     qa -->|task-qa| done([AI Ready for Human review])
     cr -.->|changes needed| dev
     sec -.-> dev

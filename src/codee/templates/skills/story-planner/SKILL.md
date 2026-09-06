@@ -3,7 +3,7 @@ name: story-planner
 description: Decompose an Issue Tracker story into actionable subtasks and supporting documentation.
 disable-model-invocation: true
 x-codee-trigger: issue
-x-codee-issue-status: ['AI Decomposition Needed']
+x-codee-issue-status: ['AI Decomposition needed']
 x-codee-issue-type: story
 argument-hint: <STORY_ID>
 ---
@@ -28,6 +28,13 @@ Decompose an Issue Tracker story into actionable subtasks with supporting docume
 ## Feedback Rounds
 
 When a plan already exists, re-read new comments and edit the existing subtasks and specification. Create new subtasks only for newly identified work, and avoid duplicates. Move the story back to `AI Decomposition review` when the round is done.
+
+## Status Transitions
+
+- Plan posted: move the story to `AI Decomposition review`.
+- Waiting on answers to clarifying questions: move the story to `AI Decomposition review` and stop.
+
+Never move the story to `AI Ready for development` yourself. Approving the plan is a human decision.
 
 ## Guidelines
 
