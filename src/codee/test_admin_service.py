@@ -1719,7 +1719,7 @@ class SetupTasksMcpTest(unittest.TestCase):
             config = self._config(root)
             self.assertEqual(config["mcpServers"]["ado"], {
                 "command": "npx",
-                "args": ["-y", "@azure-devops/mcp", "acme",
+                "args": ["-y", "@azure-devops/mcp@2.8.0", "acme",
                          "--authentication", "azcli"],
             })
             self.assertEqual(config["servers"]["ado"]["type"], "stdio")

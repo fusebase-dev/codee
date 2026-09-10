@@ -629,7 +629,7 @@ class AzureDevOpsMcpTest(unittest.TestCase):
 
         self.assertEqual(server.name, "ado")
         self.assertEqual(server.command, "npx")
-        self.assertEqual(server.args, ["-y", "@azure-devops/mcp", "acme",
+        self.assertEqual(server.args, ["-y", "@azure-devops/mcp@2.8.0", "acme",
                                        "--authentication", "azcli"])
         # It signs in through `az login`, so it carries no credentials of ours.
         self.assertEqual(server.env, {})

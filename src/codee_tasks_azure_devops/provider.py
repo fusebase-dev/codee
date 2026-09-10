@@ -44,8 +44,10 @@ _FIELDS = [
 _PRIORITY_NAMES = {1: "Highest", 2: "High", 3: "Medium", 4: "Low"}
 
 # Microsoft's own Azure DevOps MCP server, run from npm through `npx` so
-# nothing has to be installed alongside it.
-MCP_SERVER_PACKAGE = "@azure-devops/mcp"
+# nothing has to be installed alongside it. Version 2.8.0 keeps work item
+# creation compatible with coding agents that stringify the consolidated
+# write tool's fields parameter introduced in 2.9.0.
+MCP_SERVER_PACKAGE = "@azure-devops/mcp@2.8.0"
 
 # Ceiling the WIQL query is capped at, matching the JIRA provider's page size.
 _MAX_TASKS = 50
