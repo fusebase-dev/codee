@@ -174,7 +174,7 @@ class JiraTasksProvider(AbstractTasksProvider):
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
-        """Fetch tasks assigned to the target user in the configured states."""
+        """Fetch the Codee issues sitting in the configured statuses."""
         # Nothing is waiting on an issue, so there is no request worth making.
         # The settings check passes no statuses too, but there the whole point
         # is to reach JIRA, so it queries without a status filter.

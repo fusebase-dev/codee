@@ -55,6 +55,10 @@ and it appears in the URL of any board. Codee polls this one project only.
 
 For Azure DevOps you will need to create an App Registration,  you will see instruction on the Settings page on how to do that.
 
+As with Jira, the connected account is a credential and a scope, not a filter: the poll
+does not look at who a work item is assigned to, only at the work item types, the states
+the skills trigger on, and the projects that account can read.
+
 #### Organization URL
 
 Specify your organiztion URL in Azure DevOps.
@@ -92,8 +96,7 @@ Use **Add work item** for anything beyond a story and a task — a `bug` pointed
 backend's `Bug`, say. A skill can then declare `x-codee-issue-type: bug`, and the Workflow
 page gets its own graph for it.
 
-Anything assigned to Codee whose type is not listed here is left alone, whatever state it
-is in.
+A work item whose type is not listed here is left alone, whatever state it is in.
 
 ### Custom JQL / WIQL
 
@@ -111,6 +114,11 @@ whole clause is bracketed before it is joined, so an `OR` inside it stays inside
 | Jira | `labels = "codee" AND component != "legacy"` |
 | Azure DevOps | `[System.Tags] CONTAINS 'codee'` |
 
+This is also where an assignee filter goes. Codee does not apply one itself — status and
+type are the whole handover — so a team that wants "only what is assigned to Codee" writes
+it here: `assignee = "codee@yourcompany.com"` for Jira, `[System.AssignedTo] = @Me` for
+Azure DevOps, where `@Me` is the account that authorized the connection.
+
 Each provider keeps its own filter, so switching provider and back does not lose it.
 Nothing is validated as you type: the backend is the only thing that can say whether a
 clause parses, so use **Verify connection** below to have it checked — an invalid filter
@@ -121,7 +129,7 @@ tasks on every poll.
 
 Once every field of the selected provider is filled in (and, for Azure DevOps, the app is connected), a **Verify connection** button becomes available at the bottom of the Tasks provider section.
 
-Clicking it pulls tasks exactly the way Codee does when it polls: same account, same statuses your issue-triggered skills declare. It reports either the tasks it found or the reason the provider refused — a wrong project key, an expired token, an unreachable host. Nothing is saved by verifying, so you can check credentials before storing them.
+Clicking it pulls tasks exactly the way Codee does when it polls: same account, same work item types, same statuses your issue-triggered skills declare, and the same custom filter if you set one. It reports either the tasks it found or the reason the provider refused — a wrong project key, an expired token, an unreachable host. Nothing is saved by verifying, so you can check credentials before storing them.
 
 ### Setting up MCP server for tasks provider
 

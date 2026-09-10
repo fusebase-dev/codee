@@ -4,24 +4,41 @@ sidebar_position: 2
 
 # Working on tasks in Azure DevOps
 
-Codee works in Azure DevOps like a teammate does. It has its own account, looks at the work
-items assigned to it, picks up the ones in a state it handles, does the work, and moves the
-work item to the next state.
+Codee works in Azure DevOps like a teammate does. It watches your organization for work
+items in a state it handles, picks them up, does the work, and moves the work item to the
+next state.
 
-To hand a work item to Codee you need to do two things, and both are required:
+To hand a work item to Codee, **set it to an `AI` state**. That is the whole handover — the
+`AI` states are what your team and Codee agree mean "this one is the AI's now", which is why
+they must be states nothing else in your process uses.
 
-1. **Assign the work item to Codee's Azure DevOps account.**
-2. **Set the work item to an `AI` state.**
+Nothing is filtered on the assignee. A work item reaching an `AI` state is picked up whoever
+it is assigned to, so leave it with whoever owns it — you will want it back on them when
+Codee hands it to `AI Ready for Human review`.
 
-And there is a third requirement, which is what the setup below is mostly about: the work
-item has to be of a type you listed under **Settings → Tasks provider → Work items**. Codee
-ignores every other type, even when it is assigned to its account and sits in a matching
-state.
+There is one more requirement, which is what the setup below is mostly about: the work item
+has to be of a type you listed under **Settings → Tasks provider → Work items**. Codee
+ignores every other type, even in a matching state.
 
 This tutorial uses two custom types, `Codee Story` and `Codee Task`, so that work handed to
-Codee is separated from your team's own backlog by type as well as by assignment. That is a
+Codee is separated from your team's own backlog by type as well as by state. That is a
 choice, not a requirement — the mapping ships pointing at `User Story` and `Task`, and you
-can leave it there and separate the work by assignment and state alone.
+can leave it there and separate the work by state alone.
+
+:::warning[The `AI` states have to be Codee's alone]
+
+Because state is the only handover, any work item of a mapped type that lands in one of
+these states gets worked on. Do not reuse an existing state your team already moves work
+items through, and do not add an `AI` state to a type Codee should not be driving.
+:::
+
+:::tip[You can still narrow the queue yourself]
+
+**Settings → Tasks provider → Custom WIQL** adds one more `AND` condition to every poll, so
+an organization that does want an owner filter — or a tag, or an area path — writes it
+there. `[System.AssignedTo] = @Me` restores the assignee filter Codee used to apply on its
+own. See [Configuration](../configuration).
+:::
 
 This tutorial shows how to set up the account and the app registration, how to create the
 work item types and states, and how a story and a task move through them.
@@ -34,8 +51,8 @@ accounts:
 - **Reading - the Entra ID app registration.** This is what you set up in
   **Settings → Tasks provider** and finish by clicking **Connect to Azure DevOps**.
   It polls for work items and nothing else: every call it makes is a read. The account you
-  sign in with during that consent step is the one the queue filters on -the query is
-  literally `[System.AssignedTo] = @Me`, and `@Me` is whoever authorized.
+  sign in with during that consent step does not filter the queue — it decides what the
+  query can *see*, because a poll spans every project that account can read.
 - **Writing - the Azure DevOps MCP server.** The coding agent reads and updates work items
   through Microsoft's own [`@azure-devops/mcp`](https://www.npmjs.com/package/@azure-devops/mcp)
   server, which Codee wires up with `--authentication azcli`. It signs in through the
@@ -45,7 +62,7 @@ accounts:
 :::warning[Use the same account for both]
 
 Sign in as Codee's account during the OAuth consent step **and** run `az login` as Codee's
-account on the agent machine. If they differ, work items are picked up as one identity and
+account on the agent machine. If they differ, work items are read as one identity and
 updated as another, which makes the history unreadable and can leave Codee unable to
 transition a work item it can see.
 :::
@@ -54,22 +71,27 @@ transition a work item it can see.
 
 Create a separate Entra ID user for Codee instead of reusing a person's account:
 
-- It is the assignee that every poll filters on.
 - Its comments, state changes and pull requests are attributed to it, so you can see what
   the AI did and what a person did.
-- If you reuse a person's account, Codee picks up everything that person is assigned.
+- It is the account whose project access decides what a poll can see, so its membership is
+  how you keep Codee out of projects it has no business in.
+
+Its identity has no effect on *which* work items are picked up — the poll does not filter on
+an assignee — so this account needs permission to *act* in a project and to read it, not to
+be assigned work in it.
 
 1. Pick an email address for Codee, for example `codee@yourcompany.com`, in the Entra ID
    directory that backs your Azure DevOps organization.
 2. Add it to the organization: **Organization settings → Users → Add users**. Give it the
    **Basic** access level.
 3. Add it to every project it should work in, as a member of the **Contributors** group.
-   Contributors can be assigned work items, change their state, comment, and create pull
-   requests, which is the whole set of things Codee does.
+   Contributors can change a work item's state, comment, and create pull requests, which is
+   the whole set of things Codee does.
 4. On the agent machine, sign the Azure CLI in as that account: `az login`. This is the
    identity behind everything Codee writes.
 
-Then open any work item and check that Codee appears in the **Assigned To** picker.
+Then use **Verify connection** on the settings page to check the account can reach your
+projects and act on a work item in them.
 
 ## Creating the work item types
 
@@ -88,9 +110,8 @@ Set that mapping in Settings once the types exist: click **Load types from provi
 pick `Codee Story` for `story` and `Codee Task` for `task`. Until you do, Codee is still
 polling for the default `User Story` and `Task`.
 
-Everything else assigned to Codee is ignored, whatever state it is in. The children of a
-`Codee Story` are not picked up on their own either. Codee works on them inside the story's
-run.
+Every other type is ignored, whatever state it is in. The children of a `Codee Story` are
+not picked up on their own either. Codee works on them inside the story's run.
 
 ### Create work item types in an inherited process
 
@@ -113,8 +134,8 @@ Until you do, a `Codee Task` cannot be given a `Codee Story` parent.
 
 ### Why separate states
 
-Assignment and type say the work item is Codee's. State says what Codee should do with it
-now.
+Type says the work item is one Codee handles at all. State is the only thing that says the
+work item is Codee's now, and what Codee should do with it.
 
 Codee polls for work items whose `System.State` matches a skill's `x-codee-issue-status`
 trigger. The `AI` prefix keeps Codee's stages visible on the board.
@@ -133,8 +154,8 @@ editor: open the type, go to **States**, and use **New state** for each one. Eve
 you add must be put in a **state category** - that is what tells Azure DevOps whether a
 work item counts as open, active or closed for boards, queries and burndown.
 
-In every row the work item is assigned to Codee, which is what makes it visible to Codee at
-all. The `Assignee` column says who acts next.
+The `Assignee` column says who acts next. It is a convention for your board, not something
+Codee reads — the state alone decides what it picks up.
 
 | State | State category | Who moves it in | Assignee | What happens next |
 | --- | --- | --- | --- | --- |
@@ -242,8 +263,8 @@ security-checked and tested, and now a person makes the final call and merges.
 If you want changes instead, comment on the pull request and move the work item back to
 `AI Ready for development`. Codee reads the new comments on its next run and addresses them.
 
-Reassign the work item to yourself when you pick it up. That shows who owns it and takes it
-out of Codee's queue for good.
+Reassign the work item to yourself when you pick it up, so the board shows who owns it. What
+takes it out of Codee's queue is moving it out of the `AI` states, not the reassignment.
 
 **Why it is needed:** Codee does not merge its own pull requests. This state is where
 finished work waits for a person, so it does not sit unnoticed in a review queue and does
@@ -329,27 +350,28 @@ expressed in that file:
 ### Verify the connection
 
 **Verify connection** pulls work items exactly the way Codee does when it polls: same
-account, same states your issue-triggered skills declare. It reports either the work items
-it found or the reason Azure DevOps refused.
+account, same types, same states your issue-triggered skills declare, and the same custom
+WIQL if you set one. It reports either the work items it found or the reason Azure DevOps
+refused.
 
 The MCP check goes further and exercises the write path: it asks the agent to create a
-`Codee Task` in any project it can write to, assigned to the connected account, and then
-move it to a `Done`, `Closed` or `Removed` state so it does not stay open.
+`Codee Task` in any project it can write to, and then move it to a `Done`, `Closed` or
+`Removed` state so it does not stay open.
 
 ## Story flow
 
 A story is work too large to do in one go. Codee decomposes it into child work items first,
 then implements them one by one.
 
-The whole flow is driven by the **story** work item: it stays assigned to Codee, is of type
-`Codee Story`, and its state is what triggers each run. The children are worked on inside
+The whole flow is driven by the **story** work item: it is of type `Codee Story`, and its
+state is what triggers each run. The children are worked on inside
 those runs, and Codee moves their states itself to track where each one is. Because their
 parent is a `Codee Story`, Codee skips them in the queue instead of treating each as
 separate work.
 
 ```mermaid
 flowchart TD
-    start([Assign to Codee, type Codee Story]) --> decomp[AI Decomposition needed]
+    start([Create as Codee Story]) --> decomp[AI Decomposition needed]
     decomp -->|story-planner| review[AI Decomposition review]
     review -.->|questions answered| decomp
     review -->|plan approved| dev[AI Ready for development]
@@ -368,8 +390,7 @@ flowchart TD
 
 ### 1. Decomposition
 
-Create the story as a `Codee Story`, assign it to Codee, and move it to
-`AI Decomposition needed`. On the next poll Codee:
+Create the story as a `Codee Story` and move it to `AI Decomposition needed`. On the next poll Codee:
 
 1. Reads the story, its acceptance criteria, attachments, comments and linked work items,
    then the project instructions and the code the story touches.
@@ -441,9 +462,9 @@ When all three passes are clean, the work item lands in `AI Ready for Human revi
 
 ### 5. Human review
 
-Read the pull request, the review comments and the QA evidence, then merge. Reassign the
-work item to yourself when you pick it up, so it leaves Codee's queue and the board shows
-who owns it.
+Read the pull request, the review comments and the QA evidence, then merge. Moving the work
+item out of the `AI` states is what takes it out of Codee's queue; reassigning it to
+yourself is how the board shows who owns it now.
 
 The pull request is reviewed where the code lives, which does not have to be Azure DevOps.
 The code can sit in any Git host: Azure Repos, GitHub, Bitbucket, GitLab. One story can even
@@ -476,7 +497,7 @@ chore. It is a `Codee Task` with no parent, and it skips planning:
 
 ```mermaid
 flowchart TD
-    start([Assign to Codee, type Codee Task]) --> dev[AI Ready for development]
+    start([Create as Codee Task]) --> dev[AI Ready for development]
     dev -->|task-developer| cr[AI Ready for CR]
     cr -->|task-code-reviewer| sec[AI Ready for security review]
     sec -->|task-security-reviewer| qa[AI Ready for QA]
@@ -490,8 +511,7 @@ flowchart TD
     linkStyle 5,6,7 stroke-dasharray: 5 4
 ```
 
-Create it as a `Codee Task`, assign it to Codee and move it straight to
-`AI Ready for development`. There is no planning round. Codee implements it the same way it
+Create it as a `Codee Task` and move it straight to `AI Ready for development`. There is no planning round. Codee implements it the same way it
 implements a story child: dedicated branch, pull request, work item comment. The review,
 security and QA stages work the same as in the story flow.
 
@@ -510,15 +530,17 @@ request. Decomposition would only add an extra review step here.
 Work through these in order - they follow the query Codee actually runs:
 
 1. **Is the type right?** Only `Codee Task` and `Codee Story` are polled. A `User Story`,
-   `Product Backlog Item` or `Bug` assigned to Codee is invisible to it, whatever its state.
-2. **Is it assigned to the connected account?** Not to a group, and not to the account you
-   happened to be signed in as when you clicked Connect. The settings page names the
-   connected account.
-3. **Does the state name match a skill exactly?** Case does not matter; everything else
+   `Product Backlog Item` or `Bug` is invisible to Codee, whatever its state.
+2. **Does the state name match a skill exactly?** Case does not matter; everything else
    does. `AI Ready for dev` is not `AI Ready for development`.
-4. **Does a skill cover this type *and* this state?** A skill has to match both. A state
+3. **Does a skill cover this type *and* this state?** A skill has to match both. A state
    defined on `Codee Task` with only a `story` skill triggering on it never fires.
-5. **Does the connected account have access to that project?** The query spans the
+4. **Does the connected account have access to that project?** The query spans the
    organization, but only the projects that account can read.
+5. **Is a custom WIQL filtering it out?** Anything in
+   **Settings → Tasks provider → Custom WIQL** is `AND`ed onto every poll and can only
+   narrow it. Empty it to rule it out.
 6. **Is it a child of a `Codee Story`?** Then it is deliberately skipped - its parent's run
    drives it.
+
+Note that the assignee is *not* on this list: it is not part of the query at all.

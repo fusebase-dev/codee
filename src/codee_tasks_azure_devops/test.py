@@ -339,8 +339,15 @@ class TasksProviderTest(unittest.TestCase):
         wiql = self.provider._build_wiql(["Ready", "Bob's queue"])
 
         self.assertIn("[System.State] IN ('Ready', 'Bob''s queue')", wiql)
-        self.assertIn("[System.AssignedTo] = @Me", wiql)
         self.assertIn("ORDER BY [Microsoft.VSTS.Common.Priority] ASC", wiql)
+
+    def test_the_query_does_not_filter_on_an_assignee(self) -> None:
+        # Type and state are the handover; who the work item is assigned
+        # to is nobody's business but the humans working alongside it.
+        wiql = self.provider._build_wiql(["Ready"])
+
+        self.assertNotIn("System.AssignedTo", wiql)
+        self.assertNotIn("@Me", wiql)
 
     def test_wiql_only_asks_for_the_mapped_work_item_types(self) -> None:
         wiql = self.provider._build_wiql(["Ready"])
@@ -534,7 +541,7 @@ class TasksProviderTest(unittest.TestCase):
         wiql = self.provider._build_wiql([])
 
         self.assertNotIn("[System.State] IN", wiql)
-        self.assertIn("[System.AssignedTo] = @Me", wiql)
+        self.assertIn("[System.WorkItemType] IN", wiql)
 
     def test_a_successful_pull_names_the_work_items_it_found(self) -> None:
         self._connect()
@@ -614,7 +621,8 @@ class AzureDevOpsMcpTest(unittest.TestCase):
         self.assertIn('"Task" work item', steps[0])
         self.assertIn("acme organization", steps[0])
         self.assertIn('title "Codee check 1234"', steps[0])
-        self.assertIn("assigned to dev@acme.com", steps[0])
+        # Nothing is said about the assignee: the poll does not filter on one.
+        self.assertNotIn("assigned to", steps[0])
         self.assertIn("Done, Closed or Removed", steps[1])
 
     def test_no_check_steps_before_the_account_is_known(self) -> None:

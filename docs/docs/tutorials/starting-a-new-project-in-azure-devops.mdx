@@ -14,7 +14,7 @@ It takes three steps:
 1. **Give Codee access to the Azure DevOps project**, with the `Codee` work item types and
    the `AI` states available in it.
 2. **Add the git repository to Codee**, on the **Repositories** page in the Codee UI.
-3. **Create work items and move them into an `AI` state**, assigned to Codee's account.
+3. **Create work items and move them into an `AI` state.**
 
 ```mermaid
 flowchart LR
@@ -34,7 +34,9 @@ the connected account can read**, so setting up a project comes down to two thin
 
 - **Codee's account is a member.** Add it under **Project settings → Permissions** as a
   **Contributor**, or invite it through **Project settings → Teams**. Contributor is enough:
-  it can be assigned work items, change their state, comment, and open pull requests.
+  it can read work items, change their state, comment, and open pull requests. Membership is
+  also what makes the project visible to the poll at all — a project Codee's account cannot
+  read is a project Codee never sees.
 - **The work item types and states exist.** `Codee Task`, `Codee Story` and the `AI` states
   come from an inherited process. If you already set one up for an earlier project, you do
   not create anything new - open **Project settings → Overview → Process** and point the new
@@ -84,14 +86,15 @@ project conventions belong in the repository's own `AGENTS.md`, `CLAUDE.md` or
 
 ## 3. Create the work items
 
-Create the work items in Azure DevOps as usual, with three constraints:
+Create the work items in Azure DevOps as usual, with two constraints:
 
 - **Type: `Codee Story` or `Codee Task`.** Codee ignores every other work item type.
-- **Assigned to Codee's account.** The query filters on the account that authorized the
-  connection.
 - **The work is in the description.** Codee reads the description, the acceptance criteria,
   the attachments, the comments and the linked work items. Screenshots, error output, links
   to an existing implementation and a Definition of Done all belong there.
+
+The assignee is not a constraint: the poll does not filter on one, so leave the work item
+with whoever owns it.
 
 ### Story or task
 
@@ -104,8 +107,9 @@ request. It goes straight to implementation.
 
 ## 4. Move it to an `AI` state
 
-The state is the trigger. Assignment and type say the work item is Codee's; the state says
-what to do with it now, and Codee only acts on states its skills declare.
+The state is the trigger. Type says the work item is one Codee handles at all; the state
+says it is Codee's now and what to do with it, and Codee only acts on states its skills
+declare.
 
 | Type | Start it in | What Codee does |
 | --- | --- | --- |

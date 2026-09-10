@@ -2215,7 +2215,9 @@ def task_filter_setting() -> rx.Component:
                          rows="2", width="100%")),
         hint=rx.text("Optional. Added to every task query as one more AND "
                      "condition, on top of the work items above. Leave it "
-                     "empty to pick up everything they match.",
+                     "empty to pick up everything they match. The poll does "
+                     "not filter on an assignee — put one here if you want "
+                     "one.",
                      color=MUTED, font_size="0.8rem"))
 
 

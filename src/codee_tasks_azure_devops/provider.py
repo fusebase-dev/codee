@@ -1,7 +1,7 @@
 """Read-only Azure DevOps tasks provider, authenticated through Entra ID.
 
-Every call here is a read: a WIQL query for the ids assigned to the connected
-account, then a batch fetch of those work items. The WIQL endpoint is a POST,
+Every call here is a read: a WIQL query for the ids of the Codee work items in
+the states the skills trigger on, then a batch fetch of those work items. The WIQL endpoint is a POST,
 but it is a query — nothing in this module creates or modifies a work item.
 """
 from urllib.parse import quote
@@ -36,8 +36,8 @@ _FIELDS = [
 # Which Azure DevOps work item types Codee picks up, and what each stands for,
 # is configured per installation in Settings — organizations disagree on the
 # names ("User Story" in Agile, "Product Backlog Item" in Scrum, anything at
-# all in a custom process). Anything else assigned to the connected account
-# belongs to a human and is left alone.
+# all in a custom process). A work item of any other type belongs to a human
+# and is left alone, whatever state it reaches.
 
 # Azure DevOps priority is 1-4 with 1 highest; the executor logs this next to
 # JIRA-style names, so translate rather than print a bare digit.
@@ -122,7 +122,7 @@ class AzureDevOpsWorkItem(Task):
 
 
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
-    """Fetches work items assigned to the connected account as provider-agnostic Tasks."""
+    """Fetches the organization's Codee work items as provider-agnostic Tasks."""
 
     DISPLAY_NAME = "Azure DevOps"
     MCP_SERVER_NAME = "ado"
@@ -157,11 +157,14 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         connection = self._auth.connection() or {}
         account = connection.get("account") or "connected account"
         types = ", ".join(self._work_item_types.values()) or "no work item types"
+        # The account is named as the identity the query runs as, not as a
+        # filter — the poll matches on type and state, whoever a work item is
+        # assigned to.
         # The filter only gets a mention when there is one: it is off for most
         # installations, and "filter none" reads like a setting gone wrong.
         extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"Azure DevOps {self._config.organization_url} "
-                f"(all projects, assignee {account}, types {types}{extra})")
+                f"(all projects, connected as {account}, types {types}{extra})")
 
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
@@ -204,7 +207,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return [
             f'Create a new "{item_type}" work item in the {organization} '
             "organization, in any project you can create work items in, with "
-            f'the title "{summary}", assigned to {account}.',
+            f'the title "{summary}".',
             "Move that work item to a Done, Closed or Removed state — "
             "whichever its board offers — so it does not stay open.",
         ]
@@ -280,7 +283,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
-        """Fetch work items assigned to the connected account in the given states."""
+        """Fetch the Codee work items sitting in the given states."""
         # Nothing is waiting on a work item, so there is no request worth
         # making. The settings check passes no statuses too, but there the whole
         # point is to reach Azure DevOps, so it queries without a state filter.
@@ -342,29 +345,39 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         """The state filter, dropped entirely when nothing was requested.
 
         ``IN ()`` is not valid WIQL, and the only caller that passes no statuses
-        is the connection check — it wants every Codee work item assigned to the
-        account, whatever state it sits in.
+        is the connection check — it wants every Codee work item it can see,
+        whatever state it sits in.
         """
         if not statuses:
             return ""
         quoted = ", ".join(_quote_wiql(status) for status in statuses)
-        return f"AND [System.State] IN ({quoted}) "
+        return f"[System.State] IN ({quoted})"
 
     def _build_wiql(self, statuses: list[str]) -> str:
-        """WIQL for Codee work items owned by the connected account, highest priority first.
+        """WIQL for Codee work items, highest priority first, then oldest.
 
-        Nothing here names a project, and no ``@project`` macro is used — that
-        is what keeps the query valid with no project in the route, so it spans
-        the organization. What comes back is still narrow: only the Codee work
-        item types, only the states asked for, and only what is assigned to the
-        connected account.
+        There is no assignee clause: what hands a work item to Codee is its
+        type and its state, not who it is assigned to. So a work item a human
+        still owns is picked up the moment it reaches a state one of the skills
+        triggers on, which is what makes those states the handover — they have
+        to be ones only Codee's workflow uses. An installation that does want
+        an owner filter writes one as the custom WIQL in Settings, e.g.
+        ``[System.AssignedTo] = @Me``.
+
+        Nothing here names a project either, and no ``@project`` macro is used
+        — that is what keeps the query valid with no project in the route, so
+        it spans the organization. What comes back is still narrow: only the
+        Codee work item types, and only the states asked for.
         """
+        clauses = [clause for clause in (
+            self._build_wiql_type_clause(),
+            self._build_wiql_status_clause(statuses),
+            self._build_wiql_filter_clause(),
+        ) if clause]
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         return (
             "SELECT [System.Id] FROM WorkItems "
-            "WHERE [System.AssignedTo] = @Me "
-            f"{self._build_wiql_type_clause()}"
-            f"{self._build_wiql_status_clause(statuses)}"
-            f"{self._build_wiql_filter_clause()}"
+            f"{where}"
             "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, [System.CreatedDate] ASC"
         )
 
@@ -373,25 +386,26 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
 
         Bracketed, because a filter is a whole condition rather than a single
         term: an unparenthesized ``... OR ...`` would bind its OR across the
-        assignee and type clauses and hand back items Codee does not own.
+        type and state clauses and hand back items Codee does not own.
         """
         if not self._task_filter:
             return ""
-        return f"AND ({self._task_filter}) "
+        return f"({self._task_filter})"
 
     def _build_wiql_type_clause(self) -> str:
         """The work item type filter, from the work items configured in Settings.
 
         Dropped when nothing is mapped, like the state clause above and for the
-        same reason — but this one dropping is worse than a wide query: it would
-        hand the executor every item assigned to the account. Settings keeps the
-        mandatory work items filled in so it cannot happen in practice.
+        same reason — but this one dropping is worse than a wide query: with no
+        assignee clause to fall back on it would hand the executor every item in
+        the organization. Settings keeps the mandatory work items filled in so
+        it cannot happen in practice.
         """
         item_types = list(self._work_item_types.values())
         if not item_types:
             return ""
         quoted = ", ".join(_quote_wiql(item_type) for item_type in item_types)
-        return f"AND [System.WorkItemType] IN ({quoted}) "
+        return f"[System.WorkItemType] IN ({quoted})"
 
     def _fetch_work_items(self, token: str, ids: list[int]) -> list[dict]:
         """Batch-fetch the requested work items. Organization-scoped, as the API requires."""

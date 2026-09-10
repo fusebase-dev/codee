@@ -29,6 +29,10 @@ Nothing is filtered on the assignee. An issue reaching an `AI` status is picked 
 it is assigned to, so leave it with whoever owns it — you will want it back on them when
 Codee hands it to `AI Ready for Human review`.
 
+If you do want the queue narrowed further, **Settings → Tasks provider → Custom JQL** adds
+one more `AND` condition to every poll — an assignee, a label, a component. See
+[Configuration](../configuration).
+
 :::warning[The `AI` statuses have to be Codee's alone]
 
 Because status is the only handover, any issue of a mapped type that lands in one of these

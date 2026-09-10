@@ -146,7 +146,7 @@ class AbstractTasksProvider(ABC):
         """
         if not tasks:
             return (f"Connected to {self.describe()}. "
-                    "No tasks are assigned to it right now.")
+                    "No tasks are waiting for it right now.")
         preview = ", ".join(f"{task.key} {task.summary}" for task in tasks[:3])
         more = f", +{len(tasks) - 3} more" if len(tasks) > 3 else ""
         return (f"Connected to {self.describe()}. "
