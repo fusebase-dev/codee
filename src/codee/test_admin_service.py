@@ -911,7 +911,8 @@ class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
 
     def test_save_writes_the_extra_fields_into_the_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            service = self._service(Path(temporary_directory), "name: nightly\n")
+            service = self._service(
+                Path(temporary_directory), "name: nightly\n")
 
             write, _ = self._save(
                 service, "allowed-tools: Bash\ncompatibility: Claude Code\n")
@@ -942,9 +943,11 @@ class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
 
     def test_invalid_yaml_is_reported_and_nothing_is_written(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            service = self._service(Path(temporary_directory), "name: nightly\n")
+            service = self._service(
+                Path(temporary_directory), "name: nightly\n")
 
-            write, (saved, _, message, slug) = self._save(service, "allowed-tools")
+            write, (saved, _, message, slug) = self._save(
+                service, "allowed-tools")
 
             write.assert_not_called()
             self.assertFalse(saved)
@@ -953,7 +956,8 @@ class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
 
     def test_a_field_that_has_its_own_control_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            service = self._service(Path(temporary_directory), "name: nightly\n")
+            service = self._service(
+                Path(temporary_directory), "name: nightly\n")
 
             write, (saved, _, message, _) = self._save(
                 service, "model: claude-opus-5\n")
@@ -973,7 +977,8 @@ class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
 
     def test_load_returns_an_empty_string_when_there_are_none(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            service = self._service(Path(temporary_directory), "name: nightly\n")
+            service = self._service(
+                Path(temporary_directory), "name: nightly\n")
 
             self.assertEqual(service.load_skill("nightly")["extra"], "")
 
@@ -991,12 +996,14 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
         service = self._service(CodingAgent.CLAUDE_CODE)
 
         with patch.object(ClaudeCodeAgent, "list_models",
-                          return_value=[AgentModel("claude-opus-5", "Claude Opus 5")]
+                          return_value=[AgentModel(
+                              "claude-opus-5", "Claude Opus 5")]
                           ) as list_models:
             first = service.list_agent_models()
             second = service.list_agent_models()
 
-        self.assertEqual(first, [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
+        self.assertEqual(
+            first, [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
         self.assertEqual(second, first)
         list_models.assert_called_once()
 
@@ -1092,10 +1099,12 @@ class AdminServiceRepositoriesTest(unittest.TestCase):
         return result.stdout.strip()
 
     def test_name_is_taken_from_every_url_form(self) -> None:
-        self.assertEqual(repository_name("git@github.com:org/codee.git"), "codee")
+        self.assertEqual(repository_name(
+            "git@github.com:org/codee.git"), "codee")
         self.assertEqual(repository_name("ssh://git@github.com/org/codee.git"),
                          "codee")
-        self.assertEqual(repository_name("https://github.com/org/codee/"), "codee")
+        self.assertEqual(repository_name(
+            "https://github.com/org/codee/"), "codee")
         self.assertEqual(repository_name("  "), "")
 
     def test_add_builds_the_bare_and_worktree_layout(self) -> None:
@@ -1197,7 +1206,8 @@ class AzureDevOpsOAuthTest(unittest.TestCase):
             tasks_provider=TasksProvider.AZURE_DEVOPS,
             credentials={"azure_devops": credentials
                          if credentials is not None else self.AZURE_CREDENTIALS})
-        service.context = CodeeMainContext(data_dir=data_dir, settings=settings)
+        service.context = CodeeMainContext(
+            data_dir=data_dir, settings=settings)
         save_settings(data_dir, settings)
         return service
 
@@ -1241,14 +1251,16 @@ class AzureDevOpsOAuthTest(unittest.TestCase):
 
             with patch.object(azure_oauth, "exchange_code", return_value=tokens) as exchange, \
                     patch.object(azure_oauth, "fetch_account", return_value="dev@acme.com"):
-                connected, message = service.complete_azure_authorization("code-1", state)
+                connected, message = service.complete_azure_authorization(
+                    "code-1", state)
 
             self.assertTrue(started)
             self.assertTrue(connected)
             self.assertIn("dev@acme.com", message)
             # The exchange must reuse the redirect URI the authorization was issued
             # with — Entra rejects the code otherwise.
-            self.assertEqual(exchange.call_args.args[1], service.azure_redirect_uri())
+            self.assertEqual(
+                exchange.call_args.args[1], service.azure_redirect_uri())
             self.assertTrue(service.azure_connection()["connected"])
 
     def test_callback_with_a_forged_state_stores_nothing(self) -> None:
@@ -1274,7 +1286,8 @@ class AzureDevOpsOAuthTest(unittest.TestCase):
             with patch.object(azure_oauth, "exchange_code",
                               side_effect=azure_oauth.AzureDevOpsAuthError(
                                   "AADSTS7000215: Invalid client secret.")):
-                connected, message = service.complete_azure_authorization("code-1", state)
+                connected, message = service.complete_azure_authorization(
+                    "code-1", state)
 
             self.assertFalse(connected)
             self.assertIn("Invalid client secret", message)
@@ -1312,7 +1325,8 @@ class VerifyTasksConnectionTest(unittest.TestCase):
         service.skills_dir = _write_issue_skill(root)
         service.data_dir = root / ".codee"
         service.data_dir.mkdir()
-        settings = Settings(credentials={"jira": {"base_url": "https://stale.test"}})
+        settings = Settings(
+            credentials={"jira": {"base_url": "https://stale.test"}})
         service.context = CodeeMainContext(
             data_dir=service.data_dir, settings=settings)
         save_settings(service.data_dir, settings)
@@ -1422,6 +1436,7 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
                 "jira", self.JIRA_CREDENTIALS))
         self.assertEqual([check["name"] for check in checks],
                          [TASKS_CHECK, MCP_CHECK])
+        self.agent = agent
         self.prompt = agent.run.call_args.args[0] if agent.run.called else ""
         return checks[1]
 
@@ -1448,6 +1463,42 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
             self.assertIn("CORE-42", check["message"])
             self.assertIn("Done", check["message"])
 
+    def test_azure_devops_mcp_check_uses_the_agents_best_model(self) -> None:
+        class AzureProvider:
+            MCP_SERVER_NAME = "ado"
+
+            def mcp_check_steps(self, summary: str) -> list[str]:
+                return [f"Create {summary}"]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            agent = Mock(**{
+                "best_model.return_value": "claude-opus-5",
+                "run.return_value": '{"ok": true, "task": "42"}',
+            })
+
+            with patch.object(service, "tasks_mcp_configured",
+                              return_value=True), \
+                    patch.object(AdminService, "_build_coding_agent",
+                                 return_value=agent):
+                check = service._check_tasks_mcp(
+                    "azure_devops", AzureProvider(), blocked=False)
+
+            self.assertTrue(check["ok"], check["message"])
+            agent.best_model.assert_called_once_with()
+            self.assertEqual(agent.run.call_args.args[2], "claude-opus-5")
+
+    def test_jira_mcp_check_uses_the_agents_best_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            self._run(service, '{"ok": true, "task": "CORE-1"}')
+
+            self.agent.best_model.assert_called_once_with()
+            self.assertEqual(
+                self.agent.run.call_args.args[2],
+                self.agent.best_model.return_value)
+
     def test_the_prompt_forbids_every_route_other_than_mcp(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             service = self._service(Path(temporary_directory))
@@ -1462,6 +1513,10 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
             self.assertIn("2. Move that issue to a Done or Cancelled status",
                           self.prompt)
             self.assertIn("2. Move that issue to a Done or Cancelled status",
+                          self.prompt)
+            self.assertIn("complete MCP tool request exactly as sent",
+                          self.prompt)
+            self.assertIn("complete MCP response or error exactly as received",
                           self.prompt)
 
     def test_a_fenced_reply_is_still_read(self) -> None:
@@ -1483,6 +1538,40 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
             self.assertFalse(check["ok"])
             self.assertEqual(check["message"],
                              "No create-issue tool was offered.")
+
+    def test_a_reported_failure_includes_the_full_mcp_exchange(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            request = {
+                "tool": "ado-wit_work_item_write",
+                "arguments": {"fields": [{"name": "System.Title",
+                                          "value": "Codee check"}]},
+            }
+            response = {
+                "error": {"code": "invalid_type",
+                          "message": "Input validation failed"}}
+
+            check = self._run(service, json.dumps({
+                "ok": False,
+                "error": "Creating the work item failed.",
+                "request": request,
+                "response": response,
+            }))
+
+            self.assertFalse(check["ok"])
+            self.assertIn("MCP request:\n" + json.dumps(
+                request, indent=2), check["message"])
+            self.assertIn("MCP response:\n" + json.dumps(
+                response, indent=2), check["message"])
+
+    def test_a_non_json_failure_is_not_truncated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            response = "x" * 500
+
+            check = self._run(service, response)
+
+            self.assertTrue(check["message"].endswith(response))
 
     def test_an_answer_that_is_not_the_asked_for_json_fails_the_check(self) -> None:
         # An agent that ignored the format can't be believed about the rest.
@@ -1558,7 +1647,8 @@ class SetupTasksMcpTest(unittest.TestCase):
         service.root = root
         service.data_dir = root / ".codee"
         service.data_dir.mkdir()
-        settings = Settings(credentials={"jira": {"base_url": "https://stale.test"}})
+        settings = Settings(
+            credentials={"jira": {"base_url": "https://stale.test"}})
         service.context = CodeeMainContext(
             data_dir=service.data_dir, settings=settings)
         save_settings(service.data_dir, settings)
@@ -1572,7 +1662,8 @@ class SetupTasksMcpTest(unittest.TestCase):
             root = Path(temporary_directory)
             service = self._service(root)
 
-            done, message = service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+            done, message = service.setup_tasks_mcp(
+                "jira", self.JIRA_CREDENTIALS)
 
             self.assertTrue(done, message)
             config = self._config(root)
@@ -1670,7 +1761,8 @@ class SetupTasksMcpTest(unittest.TestCase):
             service = self._service(root)
             (root / ".mcp.json").write_text("{not json")
 
-            done, message = service.setup_tasks_mcp("jira", self.JIRA_CREDENTIALS)
+            done, message = service.setup_tasks_mcp(
+                "jira", self.JIRA_CREDENTIALS)
 
             self.assertFalse(done)
             self.assertIn("not valid JSON", message)

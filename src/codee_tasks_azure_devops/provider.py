@@ -166,6 +166,13 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return (f"Azure DevOps {self._config.organization_url} "
                 f"(all projects, connected as {account}, types {types}{extra})")
 
+    def verify_connection(self, statuses: list[str]) -> tuple[bool, str]:
+        """Pull tasks and include the exact WIQL in a successful check."""
+        verified, message = super().verify_connection(statuses)
+        if not verified:
+            return verified, message
+        return verified, f"{message}\n\nWIQL: {self._build_wiql(statuses)}"
+
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
 

@@ -159,7 +159,9 @@ def _mcp_check_prompt(server_name: str, steps: list[str]) -> str:
         '"status": "<the status you left it in>"}\n'
         "If any step did not complete:\n"
         '{"ok": false, "error": "<one sentence naming the step that failed '
-        'and why>"}'
+        'and why>", "request": "<the complete MCP tool request exactly as '
+        'sent, or null if none was sent>", "response": "<the complete MCP '
+        'response or error exactly as received, or null if none was received>"}'
     )
 
 
@@ -177,11 +179,18 @@ def _mcp_check_result(server_name: str, response: str) -> dict[str, Any]:
             raise ValueError
     except ValueError:
         return _check(MCP_CHECK, False, "The agent did not report a result: "
-                      f"{response.strip()[:300] or 'it said nothing'}")
+                      f"{response.strip() or 'it said nothing'}")
     if not payload.get("ok"):
-        return _check(MCP_CHECK, False,
-                      str(payload.get("error")
-                          or "The agent reported a failure."))
+        message = str(payload.get("error")
+                      or "The agent reported a failure.")
+        if "request" in payload or "response" in payload:
+            request = json.dumps(payload.get("request"), indent=2,
+                                 ensure_ascii=False)
+            response = json.dumps(payload.get("response"), indent=2,
+                                  ensure_ascii=False)
+            message += (f"\n\nMCP request:\n{request}"
+                        f"\n\nMCP response:\n{response}")
+        return _check(MCP_CHECK, False, message)
     task = str(payload.get("task") or "a task").strip()
     status = str(payload.get("status") or "a closed status").strip()
     return _check(MCP_CHECK, True,
@@ -1388,7 +1397,9 @@ class AdminService:
                           "fill in every field above.")
         try:
             agent = self._build_coding_agent()
-            response = agent.run(_mcp_check_prompt(server_name, steps), session_id)
+            response = agent.run(
+                _mcp_check_prompt(server_name, steps), session_id,
+                agent.best_model())
         except Exception as exc:
             return _check(MCP_CHECK, False, f"The coding agent failed: {exc}")
         return _mcp_check_result(server_name, response)
