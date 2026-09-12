@@ -13,8 +13,9 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    MCP_CHECK, TASKS_CHECK, AdminService, _remove_redundant_skill_transitions,
-    azure_oauth, normalize_work_items, parse_skill, repository_name)
+    MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION, AdminService,
+    _remove_redundant_skill_transitions, azure_oauth, normalize_work_items,
+    parse_skill, repository_name)
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
     save_settings)
@@ -456,6 +457,10 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 ["develop"],
             )
             self.assertEqual(
+                workflow["edges"][0]["data"]["reasons"],
+                ["After implementation, move the issue to Review."],
+            )
+            self.assertEqual(
                 workflow["edges"][0]["label"],
                 "develop",
             )
@@ -624,10 +629,15 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 workflow = service.generate_workflow()["story"]
 
             self.assertEqual(agent.run.call_count, 2)
+            retry_prompt = agent.run.call_args.args[0]
             self.assertIn(
-                "each transition label must name its defining skill",
-                agent.run.call_args.args[0],
+                'transition 1 ("[AI] Decomposition needed" -> '
+                '"[AI] Ready for development", label "") is labelled with a '
+                'skill that was not supplied',
+                retry_prompt,
             )
+            self.assertIn('the label must be one of "story-planner"',
+                          retry_prompt)
             route_out, route_in = workflow["nodes"][3:]
             self.assertEqual(route_out["id"], "forward-route-0-out")
             self.assertEqual(route_in["id"], "forward-route-0-in")
@@ -649,6 +659,196 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertNotIn("label", workflow["edges"][1])
             self.assertEqual(workflow["edges"][2]["source"], route_in["id"])
             self.assertEqual(workflow["edges"][2]["target"], "status-2")
+
+    def test_generate_workflow_accepts_a_chained_transition(self) -> None:
+        """A skill that hands the issue on through a status it does not own.
+
+        The bounce-back rules in the real skills read "move to X first, then
+        to Y", so the second hop starts from a status that is not one of the
+        skill's entry statuses. Rejecting it burned the single retry.
+        """
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to Human Review, then to CR Needed.\n"
+            )
+            agent = Mock()
+            agent.run.return_value = (
+                '{"statuses":["Ready","Human Review","CR Needed"],'
+                '"transitions":[{"source":"Ready","target":"Human Review",'
+                '"label":"develop","evidence":"Move the issue to Human Review, '
+                'then to CR Needed."},'
+                '{"source":"Human Review","target":"CR Needed",'
+                '"label":"develop","evidence":"Move the issue to Human Review, '
+                'then to CR Needed."}],"final_statuses":["CR Needed"]}'
+            )
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow()["story"]
+
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(
+                [(edge["source"], edge["target"])
+                 for edge in workflow["edges"]],
+                [("status-0", "status-1"), ("status-1", "status-2")],
+            )
+
+    def test_generate_workflow_reports_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to Review when work is done.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","Review"],"transitions":['
+                '{"source":"Ready","target":"Review","label":"develop",'
+                '"evidence":"Work the issue until it is done."}],'
+                '"final_statuses":["Review"]}',
+                '{"statuses":["Ready","Review"],"transitions":['
+                '{"source":"Ready","target":"Review","label":"develop",'
+                '"evidence":"Move the issue to Review when work is done."}],'
+                '"final_statuses":["Review"]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+            progress: list[str] = []
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow(report=progress.append)
+                service.generate_workflow(report=progress.append)
+
+            self.assertEqual(progress[0], (
+                "Generating workflow for work item Story from "
+                "1 issue-trigger skill..."
+            ))
+            self.assertEqual(progress[1], (
+                "Detected error in the workflow: transition evidence is not "
+                "an exact quote from develop, asking agent to fix..."
+            ))
+            self.assertEqual(
+                progress[2], "Story workflow: 2 statuses and 1 transition.")
+            self.assertEqual(
+                progress[3],
+                "No issue-trigger skills for work item Task.")
+            self.assertEqual(
+                progress[-1], "Skills are unchanged: showing the stored workflow.")
+
+    def test_generate_workflow_reports_every_problem_in_one_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to Review when work is done.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","Review"],"transitions":['
+                '{"source":"Blocked","target":"Review","label":"develop",'
+                '"evidence":"Move the issue to Review when work is done."},'
+                '{"source":"Ready","target":"Review","label":"develop",'
+                '"evidence":"Work the issue until it is done."}],'
+                '"final_statuses":["Done"]}',
+                '{"statuses":["Ready","Review"],"transitions":['
+                '{"source":"Ready","target":"Review","label":"develop",'
+                '"evidence":"Move the issue to Review when work is done."}],'
+                '"final_statuses":["Review"]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow()
+
+            retry_prompt = agent.run.call_args.args[0]
+            self.assertIn('transition 1 ("Blocked" -> "Review", label '
+                          '"develop") uses "Blocked", which is missing from '
+                          'statuses "Ready", "Review"', retry_prompt)
+            self.assertIn('transition 2 ("Ready" -> "Review", label "develop") '
+                          'quotes "Work the issue until it is done.", which '
+                          'does not appear in "develop"', retry_prompt)
+            self.assertIn('final_statuses contains "Done", missing from '
+                          'statuses "Ready", "Review"', retry_prompt)
+
+    def test_generate_workflow_names_the_entry_statuses_a_source_missed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "review"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: review\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Review]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to Done after approval.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","Review","Done"],"transitions":['
+                '{"source":"Ready","target":"Done","label":"review",'
+                '"evidence":"Move the issue to Done after approval."}],'
+                '"final_statuses":["Done"]}',
+                '{"statuses":["Ready","Review","Done"],"transitions":['
+                '{"source":"Review","target":"Done","label":"review",'
+                '"evidence":"Move the issue to Done after approval."}],'
+                '"final_statuses":["Done"]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow()
+
+            self.assertIn(
+                'transition 1 ("Ready" -> "Done", label "review") starts from '
+                'a status "review" never has the issue in: its entry statuses '
+                'are "Review" and no other transition of that skill moves the '
+                'issue to "Ready".',
+                agent.run.call_args.args[0],
+            )
 
     def test_generate_workflow_warns_when_statuses_have_no_edges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -689,7 +889,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 for node in workflow["nodes"]
             ))
 
-    def test_generate_workflow_flags_unhandled_status_on_its_node(self) -> None:
+    def test_generate_workflow_marks_a_human_status_on_its_node(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             skills_dir = root / ".claude" / "skills"
@@ -723,7 +923,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertEqual(workflow["warnings"], [])
             flagged = [
                 node["data"]["label"] for node in workflow["nodes"]
-                if "workflow-node--unhandled" in node.get("className", "")
+                if "workflow-node--human" in node.get("className", "")
             ]
             self.assertEqual(flagged, ["In Progress"])
 
@@ -806,7 +1006,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                               return_value=regenerated) as generate:
                 workflow = restarted.generate_workflow()
 
-            generate.assert_called_once_with()
+            self.assertEqual(generate.call_count, 1)
             self.assertEqual(workflow["story"]["warnings"], ["regenerated"])
 
     def test_generate_workflow_ignores_a_corrupt_stored_graph(self) -> None:
@@ -825,7 +1025,35 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                               return_value=generated) as generate:
                 self.assertIs(service.generate_workflow(), generated)
 
-            generate.assert_called_once_with()
+            self.assertEqual(generate.call_count, 1)
+
+
+    def test_generate_workflow_regenerates_a_graph_from_an_older_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = _write_issue_skill(root)
+            data_dir = root / ".codee"
+            data_dir.mkdir()
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = skills_dir
+            service.data_dir = data_dir
+            with patch.object(service, "_generate_workflow",
+                              return_value=_empty_workflow()):
+                service.generate_workflow()
+            stored = json.loads((data_dir / "workflow.json").read_text())
+            self.assertEqual(stored["version"], WORKFLOW_CACHE_VERSION)
+            stored["version"] = WORKFLOW_CACHE_VERSION - 1
+            (data_dir / "workflow.json").write_text(json.dumps(stored))
+
+            regenerated = _empty_workflow()
+            restarted = AdminService.__new__(AdminService)
+            restarted.skills_dir = skills_dir
+            restarted.data_dir = data_dir
+            with patch.object(restarted, "_generate_workflow",
+                              return_value=regenerated) as generate:
+                self.assertIs(restarted.generate_workflow(), regenerated)
+
+            self.assertEqual(generate.call_count, 1)
 
 
 class AdminServiceSkillModelTest(unittest.TestCase):

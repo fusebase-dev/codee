@@ -20,6 +20,17 @@ def _edge_click_signature(
     )
 
 
+def _edge_hover_signature(
+    event: Var, edge: Var
+) -> tuple[Var[list[str]], Var[float], Var[float]]:
+    """Pass the hovered edge's reasons and the viewport pointer position."""
+    return (
+        Var(_js_expr=f"({edge}?.data?.reasons ?? [])"),
+        Var(_js_expr=f"{event}.clientX"),
+        Var(_js_expr=f"{event}.clientY"),
+    )
+
+
 class ReactFlow(NoSSRComponent):
     library = REACT_FLOW_LIBRARY
     tag = "ReactFlow"
@@ -36,6 +47,8 @@ class ReactFlow(NoSSRComponent):
     pro_options: Var[dict[str, Any]] = field()
 
     on_edge_click: EventHandler[_edge_click_signature] = field()
+    on_edge_mouse_enter: EventHandler[_edge_hover_signature] = field()
+    on_edge_mouse_leave: EventHandler[no_args_event_spec] = field()
     on_pane_click: EventHandler[no_args_event_spec] = field()
 
     def add_imports(self) -> dict[str, str]:
@@ -55,6 +68,8 @@ def workflow_graph(
     nodes: list[dict[str, Any]] | Var,
     edges: list[dict[str, Any]] | Var,
     on_edge_click: Any = None,
+    on_edge_mouse_enter: Any = None,
+    on_edge_mouse_leave: Any = None,
     on_pane_click: Any = None,
 ) -> rx.Component:
     return rx.box(
@@ -63,6 +78,8 @@ def workflow_graph(
             nodes=nodes,
             edges=edges,
             on_edge_click=on_edge_click,
+            on_edge_mouse_enter=on_edge_mouse_enter,
+            on_edge_mouse_leave=on_edge_mouse_leave,
             on_pane_click=on_pane_click,
             fit_view=True,
             fit_view_options={"padding": 0.25},

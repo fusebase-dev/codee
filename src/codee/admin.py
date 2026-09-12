@@ -17,6 +17,8 @@ from codee_main_context.context import (
 SERVICE = AdminService()
 
 RUNS_PAGE_SIZE = 20
+# How often the workflow page picks up the lines the generation reported.
+WORKFLOW_PROGRESS_INTERVAL = 0.5
 
 
 def _save_toast(persisted: bool, pushed: bool, message: str) -> Any:
@@ -174,6 +176,9 @@ class AdminState(rx.State):
     workflow_sections: list[WorkflowSection] = []
     workflow_error: str = ""
     workflow_loading: bool = False
+    # What the generation is doing right now, newest line last. Inferring a
+    # graph is minutes of coding-agent work, so a bare spinner says too little.
+    workflow_progress: list[str] = []
     edge_menu_skills: list[str] = []
     edge_menu_left: str = "0px"
     edge_menu_top: str = "0px"
@@ -554,17 +559,32 @@ class AdminState(rx.State):
                 return
             self.workflow_loading = True
             self.workflow_error = ""
+            self.workflow_progress = []
             self.edge_menu_skills = []
+        # The service reports progress from the worker thread, which cannot
+        # touch the state; the lines are collected in a plain list and copied
+        # over here while the generation runs.
+        progress: list[str] = []
+        generating = asyncio.create_task(asyncio.to_thread(
+            SERVICE.generate_workflow, force, progress.append))
+        shown = 0
         try:
-            workflow = await asyncio.to_thread(
-                SERVICE.generate_workflow, force)
+            while not generating.done():
+                await asyncio.sleep(WORKFLOW_PROGRESS_INTERVAL)
+                if len(progress) != shown:
+                    shown = len(progress)
+                    async with self:
+                        self.workflow_progress = progress[:shown]
+            workflow = generating.result()
         except Exception as error:
             async with self:
                 self.workflow_error = str(error)
                 self.workflow_sections = []
+                self.workflow_progress = []
                 self.workflow_loading = False
             return
         async with self:
+            self.workflow_progress = []
             # One section per Codee work item, in the order Settings lists
             # them, so a work item added there shows up here as its own graph.
             self.workflow_sections = [
@@ -1869,6 +1889,17 @@ def workflow_section(section: WorkflowSection) -> rx.Component:
     )
 
 
+def workflow_progress_line(line: rx.Var[str]) -> rx.Component:
+    return rx.text(
+        line,
+        size="2",
+        color_scheme="gray",
+        text_align="center",
+        white_space="pre-wrap",
+        max_width="48rem",
+    )
+
+
 def workflow_page() -> rx.Component:
     return shell(rx.vstack(
         rx.flex(
@@ -1888,7 +1919,17 @@ def workflow_page() -> rx.Component:
         ),
         rx.cond(
             AdminState.workflow_loading,
-            rx.center(rx.spinner(size="3"), min_height="48rem", width="100%"),
+            rx.center(
+                rx.vstack(
+                    rx.spinner(size="3"),
+                    rx.foreach(AdminState.workflow_progress, workflow_progress_line),
+                    spacing="3",
+                    align="center",
+                    width="100%",
+                ),
+                min_height="48rem",
+                width="100%",
+            ),
             rx.cond(
                 AdminState.workflow_error != "",
                 rx.callout(

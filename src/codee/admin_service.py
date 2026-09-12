@@ -10,7 +10,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlparse
 
 import yaml
@@ -95,6 +95,9 @@ WORKFLOW_NODE_CENTER_OFFSET = 110
 # Inferring the workflow costs a coding-agent run, so the graph is kept in the
 # data directory and reused by later admin processes.
 WORKFLOW_CACHE_FILE = "workflow.json"
+# Bumped whenever the stored graph gains a field the page reads, so a
+# cache written by an older Codee is regenerated instead of rendered.
+WORKFLOW_CACHE_VERSION = 1
 
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
@@ -291,6 +294,11 @@ def build_skill(frontmatter: dict[str, Any], extra: dict[str, Any], body: str) -
 def _format_issue_status(value: Any) -> str:
     values = value if isinstance(value, list) else [value]
     return ", ".join(str(status) for status in values if status)
+
+
+def _count(quantity: int, noun: str, plural: str = "") -> str:
+    """Pluralize a noun for the progress lines: 1 skill, 2 skills."""
+    return f"{quantity} {noun if quantity == 1 else (plural or noun + 's')}"
 
 
 def _string_values(value: Any) -> list[str]:
@@ -521,14 +529,24 @@ class AdminService:
                 return skill["slug"]
         return ""
 
-    def generate_workflow(self, force: bool = False) -> dict[str, Any]:
+    def generate_workflow(
+        self,
+        force: bool = False,
+        report: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         """Return cached workflows by issue type, regenerating when requested.
 
         The cache outlives the admin process: it is stored in the data
         directory under the fingerprint of the skill documents the graph was
         inferred from, so a restart reuses it while an edited skill still
         regenerates it.
+
+        Generating costs one coding-agent run per work item and can take
+        minutes, so ``report`` is called with a line of progress whenever
+        there is something to say: which work item is being inferred, every
+        rejected answer the agent is asked to correct, and what came out.
         """
+        announce = report or (lambda message: None)
         workflow_lock = getattr(self, "_workflow_lock", None)
         if workflow_lock is None:
             workflow_lock = self._workflow_lock = threading.Lock()
@@ -537,8 +555,9 @@ class AdminService:
             if not force:
                 cached = self._cached_workflow(fingerprint)
                 if cached is not None:
+                    announce("Skills are unchanged: showing the stored workflow.")
                     return cached
-            workflow = self._generate_workflow()
+            workflow = self._generate_workflow(announce)
             self._workflow_cache = (fingerprint, workflow)
             self._store_workflow(fingerprint, workflow)
             return workflow
@@ -575,6 +594,8 @@ class AdminService:
             return None
         if not isinstance(stored, dict) or stored.get("fingerprint") != fingerprint:
             return None
+        if stored.get("version") != WORKFLOW_CACHE_VERSION:
+            return None
         workflow = stored.get("workflow")
         if not _is_workflow(workflow, self.issue_types()):
             return None
@@ -587,15 +608,21 @@ class AdminService:
         pending = path.with_suffix(".tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            pending.write_text(json.dumps(
-                {"fingerprint": fingerprint, "workflow": workflow}))
+            pending.write_text(json.dumps({
+                "version": WORKFLOW_CACHE_VERSION,
+                "fingerprint": fingerprint,
+                "workflow": workflow,
+            }))
             # Replace in one step so a crash mid-write cannot leave a
             # half-written cache behind.
             pending.replace(path)
         except OSError as error:
             print(f"[admin] Failed to store workflow cache: {error}")
 
-    def _generate_workflow(self) -> dict[str, Any]:
+    def _generate_workflow(
+        self,
+        report: Callable[[str], None] = lambda message: None,
+    ) -> dict[str, Any]:
         """Infer one status graph per configured Codee work item."""
         issue_types = self.issue_types()
         skills = find_issue_triggered_skills(self.skills_dir, issue_types)
@@ -603,6 +630,7 @@ class AdminService:
             issue_type: self._generate_issue_type_workflow(
                 [skill for skill in skills if skill.issue_type == issue_type],
                 issue_type,
+                report,
             )
             for issue_type in issue_types
         }
@@ -611,9 +639,11 @@ class AdminService:
         self,
         skills: list[IssueTriggeredSkill],
         issue_type: str,
+        report: Callable[[str], None] = lambda message: None,
     ) -> dict[str, Any]:
         """Infer one status graph from skills for a single issue type."""
         if not skills:
+            report(f"No issue-trigger skills for work item {issue_type.capitalize()}.")
             return {"nodes": [], "edges": [], "warnings": []}
 
         documents = []
@@ -654,6 +684,10 @@ class AdminService:
             + "\n\n".join(documents)
         )
         agent = self._build_coding_agent()
+        report(
+            f"Generating workflow for work item {issue_type.capitalize()} "
+            f"from {_count(len(skills), 'issue-trigger skill')}..."
+        )
         validation_error = ""
         for attempt in range(2):
             request = prompt
@@ -710,11 +744,24 @@ class AdminService:
             except (json.JSONDecodeError, ValueError) as error:
                 validation_error = str(error)
                 if attempt == 1:
+                    report(
+                        f"Detected error in the workflow: {error}. "
+                        f"The coding agent could not correct it."
+                    )
                     raise ValueError(
                         f"Coding agent returned invalid workflow data: {error}"
                     ) from error
+                report(
+                    f"Detected error in the workflow: {error}, "
+                    f"asking agent to fix..."
+                )
 
         transitions = _remove_redundant_skill_transitions(transitions)
+        report(
+            f"{issue_type.capitalize()} workflow: "
+            f"{_count(len(statuses), 'status', 'statuses')} and "
+            f"{_count(len(transitions), 'transition')}."
+        )
 
         status_ids = {
             status.casefold(): f"status-{index}"
