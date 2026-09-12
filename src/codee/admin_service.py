@@ -92,12 +92,16 @@ INDEX_RE = re.compile(
 
 WORKFLOW_NODE_SPACING = 440
 WORKFLOW_NODE_CENTER_OFFSET = 110
+# The yellow that marks a person's work on the graph, matching the human node
+# border. Edge colours have to be literals: React Flow builds an SVG arrow
+# marker per colour, keyed by the string, so a CSS variable cannot be used.
+WORKFLOW_HUMAN_EDGE_COLOR = "#d1a207"
 # Inferring the workflow costs a coding-agent run, so the graph is kept in the
 # data directory and reused by later admin processes.
 WORKFLOW_CACHE_FILE = "workflow.json"
 # Bumped whenever the stored graph gains a field the page reads, so a
 # cache written by an older Codee is regenerated instead of rendered.
-WORKFLOW_CACHE_VERSION = 2
+WORKFLOW_CACHE_VERSION = 3
 
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
@@ -329,6 +333,34 @@ def _transition_values(value: Any) -> list[dict[str, str]]:
                 "evidence": evidence,
             })
     return transitions
+
+
+def _human_action_values(value: Any) -> dict[str, str]:
+    """Map each status a person owns to the sentence telling them what to do."""
+    if not isinstance(value, list):
+        return {}
+    actions: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "")).strip()
+        action = str(item.get("action", "")).strip()
+        if status and action:
+            actions.setdefault(status.casefold(), action)
+    return actions
+
+
+def _css_string(text: str) -> str:
+    """Quote text for a CSS ``content`` value.
+
+    The human-action tooltip is drawn by one stylesheet rule shared by every
+    node, so the sentence itself travels as a custom property on the node.
+    That makes it CSS source rather than text, and an apostrophe in a skill's
+    wording would otherwise close the string early and break the rule.
+    """
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    escaped = collapsed.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
 
 
 def normalize_work_items(rows: list[tuple[str, str]]) -> tuple[dict[str, str], str]:
@@ -657,6 +689,9 @@ class AdminService:
                 f"## Skill: {skill.name}\nEntry statuses: {statuses}\n\n"
                 f"{skill_document}"
             )
+        # Every status a skill picks itself up in; anything else is a person's.
+        triggered = {status.casefold()
+                     for skill in skills for status in skill.statuses}
         prompt = (
             f"Build the {issue_type} workflow represented by the issue-trigger skills below. "
             "The frontmatter statuses are entry points only; infer outgoing status "
@@ -667,7 +702,11 @@ class AdminService:
             '{"statuses":["..."],"transitions":['
             '{"source":"...","target":"...","label":"skill name",'
             '"evidence":"exact quote from that skill"}],'
-            '"final_statuses":["..."]}. Every status must be copied exactly from the '
+            '"final_statuses":["..."],'
+            '"human_actions":[{"status":"...","action":"..."}],'
+            '"human_transitions":[{"source":"...","target":"...",'
+            '"evidence":"exact quote from a skill"}]}'
+            ". Every status must be copied exactly from the "
             "skill documents. Every transition must connect two listed statuses and its "
             "label must be the skill that defines it. Its source must be one of that "
             "skill's Entry statuses. evidence must be a verbatim quote from that same "
@@ -680,7 +719,20 @@ class AdminService:
             "Order statuses by the primary forward workflow so a return or rework "
             "transition targets an earlier item in the statuses list. "
             "final_statuses must contain only statuses explicitly described as completion "
-            "or handoff to a human. Do not include prose or non-status process steps.\n\n"
+            "or handoff to a human. Do not include prose or non-status process steps. "
+            "human_actions must cover every status a person has to act on: one whose "
+            "name is in no skill's Entry statuses and which is not a final status. "
+            "action is one sentence of at most 140 characters, addressed to that "
+            "person, saying what they have to do for the work item to leave the "
+            "status. Base it on the skill instructions that reach or leave the status "
+            "and do not invent work the skills never describe. "
+            "human_transitions are the status changes a person makes rather than a "
+            "skill: every one must start from a status a person acts on, so its "
+            "source must not appear in any skill's Entry statuses. Emit one wherever "
+            "a skill says a person carries the work on from such a status, so the "
+            "graph does not stop there. Its evidence must be a verbatim quote from "
+            "one of the supplied skills that names its target status. Never repeat a "
+            "transition already listed in transitions.\n\n"
             + "\n\n".join(documents)
         )
         agent = self._build_coding_agent()
@@ -740,6 +792,35 @@ class AdminService:
                 ):
                     raise ValueError(
                         "each final status must be a declared status")
+                human_actions = _human_action_values(
+                    payload.get("human_actions"))
+                if any(status not in declared_statuses
+                       for status in human_actions):
+                    raise ValueError(
+                        "each human action must name a declared status")
+                human_transitions = _transition_values(
+                    payload.get("human_transitions"))
+                for transition in human_transitions:
+                    if (transition["source"].casefold() not in declared_statuses
+                            or transition["target"].casefold()
+                            not in declared_statuses):
+                        raise ValueError(
+                            "each human transition must connect two declared statuses")
+                    if transition["source"].casefold() in triggered:
+                        raise ValueError(
+                            f"human transition source {transition['source']} is an "
+                            "entry status of a skill, so the skill makes that move")
+                    evidence = transition["evidence"]
+                    if not evidence or not any(
+                        evidence in document
+                        for _, document in skill_documents.values()
+                    ):
+                        raise ValueError(
+                            "human transition evidence is not an exact quote "
+                            "from a skill")
+                    if transition["target"].casefold() not in evidence.casefold():
+                        raise ValueError(
+                            "human transition evidence does not name its target")
                 break
             except (json.JSONDecodeError, ValueError) as error:
                 validation_error = str(error)
@@ -771,7 +852,13 @@ class AdminService:
             status.casefold(): index for index, status in enumerate(statuses)
         }
         grouped_transitions: dict[tuple[str, str], dict[str, Any]] = {}
-        for transition in transitions:
+        # Human moves come first so the arrows a person makes keep the order
+        # the agent listed them in. The two kinds can never meet in one group:
+        # a human transition starts where no skill's Entry statuses reach.
+        for transition, human_made in (
+            [(transition, True) for transition in human_transitions]
+            + [(transition, False) for transition in transitions]
+        ):
             key = (transition["source"].casefold(),
                    transition["target"].casefold())
             grouped = grouped_transitions.setdefault(key, {
@@ -779,6 +866,7 @@ class AdminService:
                 "target": transition["target"],
                 "labels": [],
                 "reasons": [],
+                "human": human_made,
             })
             if (transition["label"]
                     and transition["label"] not in grouped["labels"]):
@@ -788,17 +876,22 @@ class AdminService:
             if (transition["evidence"]
                     and transition["evidence"] not in grouped["reasons"]):
                 grouped["reasons"].append(transition["evidence"])
-        triggered = {status.casefold()
-                     for skill in skills for status in skill.statuses}
         final = {status.casefold() for status in final_statuses}
-        # Statuses no issue-trigger skill picks up are flagged on the graph
-        # node itself instead of as a warning callout above the diagram.
-        unhandled = {
+        # A status no issue-trigger skill picks up, and which is not the end of
+        # the road, only moves when a person moves it. Those are flagged on the
+        # graph node itself instead of as a warning callout above the diagram.
+        human = {
             status.casefold() for status in statuses
             if status.casefold() not in triggered and status.casefold() not in final
         }
+        # What the person waiting on each of those statuses has to do. Absent
+        # for a status the agent skipped, and for every automated status.
+        human_actions = {
+            status: action for status, action in human_actions.items()
+            if status in human
+        }
         warnings: list[str] = []
-        disconnected = len(statuses) > 1 and not transitions
+        disconnected = len(statuses) > 1 and not grouped_transitions
         if disconnected:
             warnings.append(
                 "Workflow statuses are disconnected: no status transitions were found."
@@ -813,13 +906,24 @@ class AdminService:
                 "position": {"x": index * WORKFLOW_NODE_SPACING, "y": 0},
                 "sourcePosition": "right",
                 "targetPosition": "left",
-                "data": {"label": status},
+                "data": {
+                    "label": status,
+                    **({"humanAction": human_actions[status.casefold()]}
+                       if status.casefold() in human_actions else {}),
+                },
                 "className": " ".join(
                     ["workflow-node"]
                     + (["workflow-node--disconnected"] if disconnected else [])
-                    + (["workflow-node--unhandled"]
-                       if status.casefold() in unhandled else [])
+                    + (["workflow-node--human"]
+                       if status.casefold() in human else [])
                 ),
+                # The hover tooltip is a `::after` on the shared node rule, so
+                # this node's own sentence has to reach it as a custom
+                # property; the rule falls back to generic wording without one.
+                **({"style": {
+                    "--codee-human-action": _css_string(
+                        human_actions[status.casefold()]),
+                }} if status.casefold() in human_actions else {}),
             }
             for index, status in enumerate(statuses)
         ]
@@ -831,7 +935,11 @@ class AdminService:
             target_order = status_order[transition["target"].casefold()]
             is_return = target_order <= source_order
             is_long_forward = target_order > source_order + 1
-            color = "#d97706" if is_return else "#167d5a"
+            is_human = transition["human"]
+            if is_human:
+                color = WORKFLOW_HUMAN_EDGE_COLOR
+            else:
+                color = "#d97706" if is_return else "#167d5a"
             edge_data = {
                 "data": {
                     "skills": transition["labels"],
@@ -839,9 +947,10 @@ class AdminService:
                 },
                 "type": "smoothstep",
                 "animated": is_return,
-                "className": (
-                    "workflow-edge workflow-edge--return"
-                    if is_return else "workflow-edge"
+                "className": " ".join(
+                    ["workflow-edge"]
+                    + (["workflow-edge--return"] if is_return else [])
+                    + (["workflow-edge--human"] if is_human else [])
                 ),
                 "markerEnd": {"type": "arrowclosed", "color": color},
                 "style": {
@@ -853,7 +962,9 @@ class AdminService:
             aria_label = (
                 f"{transition['source']} to {transition['target']}"
                 + (f" via {', '.join(transition['labels'])}"
-                   if transition["labels"] else "")
+                   if transition["labels"]
+                   # Colour is the only other thing saying who makes the move.
+                   else " by a person" if is_human else "")
             )
             label = ", ".join(transition["labels"])
             label_data = ({

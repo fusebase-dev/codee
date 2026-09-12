@@ -1211,6 +1211,11 @@ def shell(content: rx.Component) -> rx.Component:
             "--codee-subtle-icon": rx.color_mode_cond("#8e99b0", "#6e7a94"),
             "--codee-warning-background": rx.color_mode_cond("#fff5ed", "#33200f"),
             "--codee-warning-border": rx.color_mode_cond("#e26128", "#f5854a"),
+            # Yellow marks the statuses waiting on a person rather than on
+            # Codee, kept clear of the orange warning pair so a hand-off does
+            # not read as something having gone wrong.
+            "--codee-human-background": rx.color_mode_cond("#fdf4c8", "#3a3211"),
+            "--codee-human-border": rx.color_mode_cond("#d1a207", "#e8c33c"),
             # Tint reserved for in-flight work, so a live run reads at a glance.
             "--codee-running-background": rx.color_mode_cond("#eff4fd", "#14203a"),
             "--codee-running-glow": rx.color_mode_cond(
@@ -2482,34 +2487,49 @@ app = rx.App(
         # No `position` here: React Flow places nodes with `position: absolute`
         # and a bare `transform`, so overriding it drops the node into normal
         # flow and shifts every sibling's static position.
-        ".workflow-node--unhandled": {
-            "background": "var(--codee-warning-background)",
-            "border": "2px dashed var(--codee-warning-border)",
+        ".workflow-node--human": {
+            "background": "var(--codee-human-background)",
+            "border": "2px solid var(--codee-human-border)",
+            "cursor": "help",
         },
-        ".workflow-node--unhandled::after": {
-            "content": "'No issue trigger skill for this status'",
+        # The sentence comes from the node's own `--codee-human-action`; the
+        # fallback covers a graph generated before the agent was asked for one.
+        ".workflow-node--human::after": {
+            "content": (
+                "var(--codee-human-action, 'A person moves this status "
+                "forward: no issue-trigger skill handles it.')"
+            ),
             "position": "absolute",
             "bottom": "calc(100% + 8px)",
             "left": "50%",
             "transform": "translateX(-50%)",
             "background": "var(--codee-surface)",
-            "border": "1px solid var(--codee-warning-border)",
+            "border": "1px solid var(--codee-human-border)",
             "border_radius": "4px",
             "box_shadow": "0 8px 24px rgba(0, 0, 0, 0.28)",
             "color": "var(--codee-text)",
             "font_family": "IBM Plex Sans, sans-serif",
             "font_size": "0.75rem",
             "font_weight": "500",
+            "line_height": "1.45",
             "padding": "0.35rem 0.55rem",
-            "white_space": "nowrap",
+            "text_align": "left",
+            "white_space": "normal",
+            "width": "max-content",
+            "max_width": "18rem",
             "opacity": "0",
             "pointer_events": "none",
             "transition": "opacity 0.12s ease",
             "z_index": "5",
         },
-        ".workflow-node--unhandled:hover::after": {"opacity": "1"},
+        ".workflow-node--human:hover::after": {"opacity": "1"},
         ".react-flow__edge.workflow-edge": {
             "cursor": "pointer",
+        },
+        # A person's arrow names no skill, so clicking it opens nothing: only
+        # the hover tooltip has anything to say about it.
+        ".react-flow__edge.workflow-edge--human": {
+            "cursor": "help",
         },
         ".workflow-route-node .react-flow__handle": {
             "border": "0",

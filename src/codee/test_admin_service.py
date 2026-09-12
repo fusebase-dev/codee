@@ -13,7 +13,8 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION, AdminService,
+    MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION,
+    WORKFLOW_HUMAN_EDGE_COLOR, AdminService,
     _remove_redundant_skill_transitions, azure_oauth, normalize_work_items,
     parse_skill, repository_name)
 from codee_main_context.context import (
@@ -936,6 +937,205 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 if "workflow-node--human" in node.get("className", "")
             ]
             self.assertEqual(flagged, ["In Progress"])
+
+    def test_generate_workflow_carries_the_human_action_to_the_node(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to In Progress when work starts.\n"
+            )
+            agent = Mock()
+            agent.run.return_value = (
+                '{"statuses":["Ready","In Progress","Done"],"transitions":['
+                '{"source":"Ready","target":"In Progress","label":"develop",'
+                '"evidence":"Move the issue to In Progress when work starts."}],'
+                '"final_statuses":["Done"],"human_actions":[{'
+                '"status":"In Progress","action":"Finish the developer\'s '
+                'work and move the story on."}]}'
+            )
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow()["story"]
+
+            node = next(
+                node for node in workflow["nodes"]
+                if node["data"]["label"] == "In Progress"
+            )
+            self.assertEqual(
+                node["data"]["humanAction"],
+                "Finish the developer's work and move the story on.",
+            )
+            # Quoted for CSS, with the apostrophe escaped so it cannot end the
+            # string the tooltip rule reads.
+            self.assertEqual(
+                node["style"]["--codee-human-action"],
+                "'Finish the developer\\'s work and move the story on.'",
+            )
+            self.assertTrue(all(
+                "style" not in node
+                for node in workflow["nodes"]
+                if node["data"]["label"] in ("Ready", "Done")
+            ))
+
+    def test_generate_workflow_draws_a_human_transition_in_yellow(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "planner"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: planner\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Planning]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the story to Plan review when the plan is posted.\n"
+                "Never move the story to Ready for development yourself. "
+                "Approving the plan is a human decision.\n"
+            )
+            agent = Mock()
+            agent.run.return_value = (
+                '{"statuses":["Planning","Plan review","Ready for development"],'
+                '"transitions":[{"source":"Planning","target":"Plan review",'
+                '"label":"planner","evidence":"Move the story to Plan review '
+                'when the plan is posted."}],"final_statuses":[],'
+                '"human_actions":[{"status":"Plan review",'
+                '"action":"Approve the plan."}],'
+                '"human_transitions":[{"source":"Plan review",'
+                '"target":"Ready for development","evidence":"Never move the '
+                'story to Ready for development yourself."}]}'
+            )
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow()["story"]
+
+            labels = {node["id"]: node["data"]["label"]
+                      for node in workflow["nodes"]}
+            by_pair = {
+                (labels[edge["source"]], labels[edge["target"]]): edge
+                for edge in workflow["edges"]
+            }
+            human = by_pair[("Plan review", "Ready for development")]
+            self.assertEqual(
+                human["style"]["stroke"], WORKFLOW_HUMAN_EDGE_COLOR)
+            self.assertEqual(
+                human["markerEnd"]["color"], WORKFLOW_HUMAN_EDGE_COLOR)
+            self.assertIn("workflow-edge--human", human["className"])
+            # A person's arrow names no skill, so the click menu stays empty,
+            # but the quote behind it still explains the move on hover.
+            self.assertEqual(human["data"]["skills"], [])
+            self.assertEqual(
+                human["data"]["reasons"],
+                ["Never move the story to Ready for development yourself."],
+            )
+            skill_edge = by_pair[("Planning", "Plan review")]
+            self.assertEqual(skill_edge["style"]["stroke"], "#167d5a")
+            self.assertNotIn("workflow-edge--human", skill_edge["className"])
+            self.assertEqual(workflow["warnings"], [
+                "No final human-handoff status is defined in the issue skill workflow.",
+            ])
+
+    def test_generate_workflow_rejects_a_human_transition_a_skill_makes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to In Progress when work starts.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","In Progress"],"transitions":[],'
+                '"final_statuses":[],"human_actions":[],'
+                '"human_transitions":[{"source":"Ready","target":"In Progress",'
+                '"evidence":"Move the issue to In Progress when work starts."}]}',
+                '{"statuses":["Ready","In Progress"],"transitions":[],'
+                '"final_statuses":[],"human_actions":[],'
+                '"human_transitions":[]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow()
+
+            self.assertEqual(agent.run.call_count, 2)
+            self.assertIn(
+                "human transition source Ready is an entry status of a skill",
+                agent.run.call_args.args[0],
+            )
+
+    def test_generate_workflow_rejects_a_human_action_for_an_unknown_status(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "develop"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: develop\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move the issue to In Progress when work starts.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","In Progress"],"transitions":[],'
+                '"final_statuses":[],"human_actions":[{"status":"Blocked",'
+                '"action":"Unblock the story."}]}',
+                '{"statuses":["Ready","In Progress"],"transitions":[],'
+                '"final_statuses":[],"human_actions":[]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                service.generate_workflow()
+
+            self.assertEqual(agent.run.call_count, 2)
+            self.assertIn(
+                "each human action must name a declared status",
+                agent.run.call_args.args[0],
+            )
 
     def test_generate_workflow_returns_empty_without_issue_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
