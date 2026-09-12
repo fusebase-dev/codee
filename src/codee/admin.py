@@ -182,6 +182,11 @@ class AdminState(rx.State):
     edge_menu_skills: list[str] = []
     edge_menu_left: str = "0px"
     edge_menu_top: str = "0px"
+    # The hovered transition's evidence quotes, shown next to the pointer so
+    # an arrow can explain itself without being clicked.
+    edge_tooltip_reasons: list[str] = []
+    edge_tooltip_left: str = "0px"
+    edge_tooltip_top: str = "0px"
 
     tasks_provider: str = "jira"
     coding_agent: str = "claude_code"
@@ -603,9 +608,24 @@ class AdminState(rx.State):
         self.edge_menu_skills = skills
         self.edge_menu_left = f"{round(x)}px"
         self.edge_menu_top = f"{round(y)}px"
+        # The menu opens where the tooltip sits; leaving both up stacks two
+        # panels on the same arrow.
+        self.edge_tooltip_reasons = []
 
     def close_edge_menu(self) -> None:
         self.edge_menu_skills = []
+
+    def show_edge_tooltip(
+        self, reasons: list[str], x: float, y: float
+    ) -> None:
+        if self.edge_menu_skills:
+            return
+        self.edge_tooltip_reasons = reasons
+        self.edge_tooltip_left = f"{round(x) + EDGE_TOOLTIP_OFFSET}px"
+        self.edge_tooltip_top = f"{round(y) + EDGE_TOOLTIP_OFFSET}px"
+
+    def hide_edge_tooltip(self) -> None:
+        self.edge_tooltip_reasons = []
 
     def edit_workflow_skill(self, label: str) -> Any:
         self.edge_menu_skills = []
@@ -1071,6 +1091,8 @@ class AdminState(rx.State):
 ACCENT = "var(--codee-accent)"
 ACCENT_DEEP = "var(--codee-accent-deep)"
 BORDER = "1px solid var(--codee-border)"
+# Keeps the transition tooltip clear of the pointer it follows.
+EDGE_TOOLTIP_OFFSET = 14
 MUTED = "var(--codee-muted)"
 SURFACE = "var(--codee-surface)"
 PAGE_BACKGROUND = "var(--codee-page-background)"
@@ -1824,6 +1846,42 @@ def edge_menu_item(skill: rx.Var) -> rx.Component:
     )
 
 
+def edge_tooltip_reason(reason: rx.Var) -> rx.Component:
+    return rx.text(reason, size="2", color="var(--codee-text)")
+
+
+def workflow_edge_tooltip() -> rx.Component:
+    """Why the hovered transition exists: the skill text it was read from."""
+    return rx.cond(
+        AdminState.edge_tooltip_reasons.length() > 0,
+        rx.vstack(
+            rx.text(
+                "Transition reason",
+                size="1",
+                color=MUTED,
+                font_weight="600",
+                text_transform="uppercase",
+                letter_spacing="0.06em",
+            ),
+            rx.foreach(AdminState.edge_tooltip_reasons, edge_tooltip_reason),
+            position="fixed",
+            left=AdminState.edge_tooltip_left,
+            top=AdminState.edge_tooltip_top,
+            z_index="39",
+            spacing="1",
+            padding="0.5rem 0.65rem",
+            max_width="26rem",
+            background=SURFACE,
+            border=BORDER,
+            border_radius="6px",
+            box_shadow="0 8px 24px rgba(0, 0, 0, 0.28)",
+            # The pointer has to stay on the arrow: a tooltip that catches it
+            # would swallow the hover and flicker itself away.
+            pointer_events="none",
+        ),
+    )
+
+
 def workflow_edge_menu() -> rx.Component:
     """Context menu anchored to the last clicked transition arrow."""
     return rx.cond(
@@ -1873,6 +1931,8 @@ def workflow_section(section: WorkflowSection) -> rx.Component:
                     nodes,
                     edges,
                     on_edge_click=AdminState.open_edge_menu,
+                    on_edge_mouse_enter=AdminState.show_edge_tooltip,
+                    on_edge_mouse_leave=AdminState.hide_edge_tooltip,
                     on_pane_click=AdminState.close_edge_menu,
                 ),
                 spacing="4",
@@ -1946,6 +2006,7 @@ def workflow_page() -> rx.Component:
             ),
         ),
         workflow_edge_menu(),
+        workflow_edge_tooltip(),
         align="start",
         width="100%",
     ))

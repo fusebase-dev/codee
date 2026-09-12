@@ -486,7 +486,17 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 workflow["edges"][2]["style"]["strokeDasharray"], "8 6")
             self.assertEqual(workflow["edges"][2]["target"], route_node["id"])
             self.assertEqual(workflow["edges"][2]["label"], "review")
+            self.assertEqual(
+                workflow["edges"][2]["data"]["reasons"],
+                ["When fixes are needed, move the issue to Ready."],
+            )
             self.assertEqual(workflow["edges"][3]["source"], route_node["id"])
+            # Both halves of a routed transition explain themselves: the
+            # pointer can land on either one.
+            self.assertEqual(
+                workflow["edges"][3]["data"]["reasons"],
+                workflow["edges"][2]["data"]["reasons"],
+            )
             self.assertEqual(workflow["edges"][3]["target"], "status-0")
             self.assertNotIn("label", workflow["edges"][3])
             self.assertNotIn("markerEnd", workflow["edges"][2])

@@ -97,7 +97,7 @@ WORKFLOW_NODE_CENTER_OFFSET = 110
 WORKFLOW_CACHE_FILE = "workflow.json"
 # Bumped whenever the stored graph gains a field the page reads, so a
 # cache written by an older Codee is regenerated instead of rendered.
-WORKFLOW_CACHE_VERSION = 1
+WORKFLOW_CACHE_VERSION = 2
 
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
@@ -778,10 +778,16 @@ class AdminService:
                 "source": transition["source"],
                 "target": transition["target"],
                 "labels": [],
+                "reasons": [],
             })
             if (transition["label"]
                     and transition["label"] not in grouped["labels"]):
                 grouped["labels"].append(transition["label"])
+            # The quote the agent had to supply for the transition to be
+            # accepted, kept so the graph can say why the arrow is there.
+            if (transition["evidence"]
+                    and transition["evidence"] not in grouped["reasons"]):
+                grouped["reasons"].append(transition["evidence"])
         triggered = {status.casefold()
                      for skill in skills for status in skill.statuses}
         final = {status.casefold() for status in final_statuses}
@@ -827,7 +833,10 @@ class AdminService:
             is_long_forward = target_order > source_order + 1
             color = "#d97706" if is_return else "#167d5a"
             edge_data = {
-                "data": {"skills": transition["labels"]},
+                "data": {
+                    "skills": transition["labels"],
+                    "reasons": transition["reasons"],
+                },
                 "type": "smoothstep",
                 "animated": is_return,
                 "className": (
