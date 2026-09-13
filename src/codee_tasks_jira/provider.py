@@ -1,4 +1,5 @@
 from typing import Callable
+from urllib.parse import quote
 
 import requests
 
@@ -129,6 +130,12 @@ class JiraTasksProvider(AbstractTasksProvider):
         extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"JIRA {self._base_url} "
                 f"(project {self._project}, types {types}{extra})")
+
+    def task_url(self, key: str) -> str:
+        """JIRA's own browse link, which resolves an issue key from any project."""
+        if not (self._base_url and key):
+            return ""
+        return f"{self._base_url.rstrip('/')}/browse/{quote(key, safe='')}"
 
     def mcp_server(self) -> McpServer | None:
         """mcp-atlassian, wired to the same account the executor polls with.

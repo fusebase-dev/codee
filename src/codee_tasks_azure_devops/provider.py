@@ -166,6 +166,18 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return (f"Azure DevOps {self._config.organization_url} "
                 f"(all projects, connected as {account}, types {types}{extra})")
 
+    def task_url(self, key: str) -> str:
+        """The organization-level editor link for one work item.
+
+        Work items are numbered per organization rather than per project, so
+        this resolves any of them without having to know which project it lives
+        in — the same reason the queries here name no project. A key that is not
+        a work item id gets no link: it belongs to another provider.
+        """
+        if not (self._config.organization_url and key.isdigit()):
+            return ""
+        return f"{self._config.organization_url}/_workitems/edit/{key}"
+
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
 

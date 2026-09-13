@@ -152,6 +152,15 @@ class AbstractTasksProvider(ABC):
         return (f"Connected to {self.describe()}. "
                 f"Pulled {len(tasks)} task(s): {preview}{more}")
 
+    def task_url(self, key: str) -> str:
+        """Where a human opens this task in the backend's own UI.
+
+        Empty when the provider cannot address it — no configuration to build a
+        link out of, or a key that is not one of its own. A caller that shows
+        the key prints it as plain text then, rather than linking nowhere.
+        """
+        return ""
+
     def mcp_server(self) -> McpServer | None:
         """The MCP server a coding agent needs to reach this provider's backend.
 

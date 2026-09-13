@@ -758,6 +758,34 @@ class AzureDevOpsWorkItemTypesTest(unittest.TestCase):
         get.assert_not_called()
 
 
+class AzureDevOpsWorkItemUrlTest(unittest.TestCase):
+    """Where a human opens a work item the dashboard is showing a run for."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.context = CodeeMainContext(data_dir=Path(self._temporary.name))
+
+    def _provider(self, organization_url: str = "https://dev.azure.com/acme"):
+        return AzureDevOpsTasksProvider(
+            _settings(organization_url=organization_url), self.context)
+
+    def test_a_work_item_id_links_to_the_organization_editor(self) -> None:
+        # No project in the path: ids are unique across the organization.
+        self.assertEqual(self._provider().task_url("41337"),
+                         "https://dev.azure.com/acme/_workitems/edit/41337")
+
+    def test_a_trailing_slash_does_not_double_up(self) -> None:
+        self.assertEqual(self._provider("https://dev.azure.com/acme/").task_url("7"),
+                         "https://dev.azure.com/acme/_workitems/edit/7")
+
+    def test_another_provider_s_key_gets_no_link(self) -> None:
+        self.assertEqual(self._provider().task_url("NIM-44025"), "")
+
+    def test_no_organization_means_no_link(self) -> None:
+        self.assertEqual(self._provider("").task_url("41337"), "")
+
+
 def main():
     print("OK")
 

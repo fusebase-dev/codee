@@ -415,6 +415,30 @@ class JiraMcpServerTest(unittest.TestCase):
         self.assertIsNone(JiraTasksProvider(settings).mcp_check_steps("x"))
 
 
+class JiraIssueUrlTest(unittest.TestCase):
+    """Where a human opens an issue the dashboard is showing a run for."""
+
+    def _provider(self, base_url: str = "https://acme.atlassian.net"):
+        return JiraTasksProvider(
+            Settings(credentials={"jira": {"base_url": base_url}}))
+
+    def test_an_issue_key_links_to_the_browse_page(self) -> None:
+        # Browse resolves a key from any project, which is what the poll spans.
+        self.assertEqual(self._provider().task_url("NIM-44025"),
+                         "https://acme.atlassian.net/browse/NIM-44025")
+
+    def test_a_trailing_slash_does_not_double_up(self) -> None:
+        self.assertEqual(
+            self._provider("https://acme.atlassian.net/").task_url("NIM-1"),
+            "https://acme.atlassian.net/browse/NIM-1")
+
+    def test_no_base_url_means_no_link(self) -> None:
+        self.assertEqual(self._provider("").task_url("NIM-1"), "")
+
+    def test_no_key_means_no_link(self) -> None:
+        self.assertEqual(self._provider().task_url(""), "")
+
+
 def main():
     print("OK")
 

@@ -81,11 +81,45 @@ class ActiveJob(BaseModel):
     message: str
     elapsed_label: str
     viewer_url: str
+    # The prompt up to the work item it names, so the row can print that part
+    # as a link; the whole prompt when there is nothing to link.
+    prompt_prefix: str = ""
+    # The work item an issue-triggered run was started for, and where the tasks
+    # provider shows it. Both empty unless the provider can address it.
+    task_key: str = ""
+    task_url: str = ""
     # Who is doing the work: the coding agent's display name, and the model the
     # triggering skill asked for. ``model`` is empty when the skill named none,
     # which the row reads as the agent running on its own default.
     agent: str = ""
     model: str = ""
+
+
+def _active_job(job: dict[str, Any]) -> ActiveJob:
+    """One in-flight run as its dashboard row reads it.
+
+    The prompt is split around the work item the run was triggered for, so the
+    row can print that part as a link into the tasks provider and still read as
+    the single line the agent was handed. Only a work item the provider can
+    address is split off — and only while the truncated prompt still ends with
+    it, so a long prompt cut mid-key stays plain text rather than linking to
+    half a key.
+    """
+    message = (job.get("message") or "(no prompt)")[:140]
+    key = job.get("task_key") or ""
+    url = job.get("task_url") or ""
+    linked = bool(url) and message.rstrip().endswith(key)
+    return ActiveJob(
+        message=message,
+        prompt_prefix=message.rstrip()[:-len(key)] if linked else message,
+        task_key=key if linked else "",
+        task_url=url if linked else "",
+        elapsed_label=job["elapsed_label"],
+        viewer_url=(SERVICE.session_viewer.format(session_id=job["session_id"])
+                    if SERVICE.session_viewer and job.get("session_id") else ""),
+        agent=job.get("agent") or "",
+        model=job.get("model") or "",
+    )
 
 
 class CheckResult(BaseModel):
@@ -571,17 +605,7 @@ class AdminState(rx.State):
 
     def _refresh_dashboard(self) -> None:
         dashboard = SERVICE.dashboard()
-        self.active_jobs = [
-            ActiveJob(
-                message=(job.get("message") or "(no prompt)")[:140],
-                elapsed_label=job["elapsed_label"],
-                viewer_url=(SERVICE.session_viewer.format(session_id=job["session_id"])
-                            if SERVICE.session_viewer and job.get("session_id") else ""),
-                agent=job.get("agent") or "",
-                model=job.get("model") or "",
-            )
-            for job in dashboard["active"]
-        ]
+        self.active_jobs = [_active_job(job) for job in dashboard["active"]]
         self.total_runs = dashboard["counts"]["total"]
         self.last_24h_runs = dashboard["counts"]["last_24h"]
         self.hourly_runs = dashboard["hourly"]
@@ -1399,13 +1423,30 @@ def running_agent_line(job: ActiveJob) -> rx.Component:
     )
 
 
+def active_prompt(job: ActiveJob) -> rx.Component:
+    """The prompt the run was given, with the work item it names linked.
+
+    The link opens the item in the tasks provider in a new tab, so following it
+    never takes the dashboard — and the live list it is drawing — off screen.
+    """
+    return rx.text(
+        job.prompt_prefix,
+        rx.cond(
+            job.task_url != "",
+            rx.link(job.task_key, href=job.task_url, is_external=True,
+                    color=ACCENT, text_decoration="underline"),
+        ),
+        font_weight="600", font_family=MONO, font_size="0.9rem",
+        width="100%", overflow="hidden", text_overflow="ellipsis",
+        white_space="nowrap", custom_attrs={"title": job.message},
+    )
+
+
 def active_job_row(job: ActiveJob) -> rx.Component:
     return rx.flex(
         live_dot(),
         rx.vstack(
-            rx.text(job.message, font_weight="600", font_family=MONO, font_size="0.9rem",
-                    width="100%", overflow="hidden", text_overflow="ellipsis",
-                    white_space="nowrap", custom_attrs={"title": job.message}),
+            active_prompt(job),
             running_agent_line(job),
             spacing="1",
             align="start",

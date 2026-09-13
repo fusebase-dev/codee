@@ -17,8 +17,9 @@ from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee.admin_service import (
     MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION,
     WORKFLOW_HUMAN_EDGE_COLOR, AdminService, WorkflowGeneration,
-    _remove_redundant_skill_transitions, azure_oauth, normalize_work_items,
-    parse_skill, repository_name)
+    _remove_redundant_skill_transitions, azure_oauth, issue_prompt_task,
+    normalize_work_items, parse_skill, repository_name)
+from codee.lib import runs_db
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
     save_settings)
@@ -2624,6 +2625,114 @@ class RemoveRedundantSkillTransitionsTest(unittest.TestCase):
         retained = _remove_redundant_skill_transitions(transitions)
 
         self.assertEqual(len(retained), 3)
+
+
+class IssuePromptTaskTest(unittest.TestCase):
+    """Which prompts name a work item the dashboard can link."""
+
+    def test_an_issue_trigger_prompt_names_its_work_item(self) -> None:
+        self.assertEqual(
+            issue_prompt_task("/story-planner NIM-44025"), "NIM-44025")
+
+    def test_a_numeric_key_is_a_work_item_too(self) -> None:
+        # Azure DevOps numbers its work items rather than keying them.
+        self.assertEqual(issue_prompt_task("/task-developer 41337"), "41337")
+
+    def test_a_prompt_with_no_work_item_names_none(self) -> None:
+        self.assertEqual(issue_prompt_task("/daily-report"), "")
+
+    def test_a_sentence_mentioning_a_key_is_not_a_trigger_prompt(self) -> None:
+        # A typed prompt may mention anything; only the shape the executor
+        # writes means "this run is about that work item".
+        self.assertEqual(
+            issue_prompt_task("Please look at NIM-44025 when you can"), "")
+        self.assertEqual(
+            issue_prompt_task("/story-planner NIM-44025 and NIM-2"), "")
+
+    def test_an_empty_prompt_names_none(self) -> None:
+        self.assertEqual(issue_prompt_task(""), "")
+        self.assertEqual(issue_prompt_task(None), "")
+
+
+class DashboardWorkItemLinkTest(unittest.TestCase):
+    """A live run says where the work item it was triggered for can be read."""
+
+    JIRA_CREDENTIALS = {
+        "base_url": "https://acme.atlassian.net",
+        "account_email": "agent@acme.test",
+        "api_token": "token",
+        "project": "CORE",
+    }
+
+    def _service(self, root: Path, credentials: dict | None = None,
+                 provider: str = "jira") -> AdminService:
+        service = AdminService.__new__(AdminService)
+        service.root = root
+        service.data_dir = root / ".codee"
+        service.data_dir.mkdir()
+        settings = Settings(
+            tasks_provider=TasksProvider(provider),
+            credentials={provider: credentials if credentials is not None
+                         else self.JIRA_CREDENTIALS})
+        service.context = CodeeMainContext(
+            data_dir=service.data_dir, settings=settings)
+        save_settings(service.data_dir, settings)
+        return service
+
+    def _active(self, service: AdminService, message: str) -> dict:
+        runs_db.start_job("sid-1", message, main_context=service.context)
+        return service.dashboard()["active"][0]
+
+    def test_a_jira_run_links_its_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            job = self._active(service, "/story-planner NIM-44025")
+
+            self.assertEqual(job["task_key"], "NIM-44025")
+            self.assertEqual(job["task_url"],
+                             "https://acme.atlassian.net/browse/NIM-44025")
+
+    def test_an_azure_devops_run_links_its_work_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory),
+                {"organization_url": "https://dev.azure.com/acme"},
+                provider="azure_devops")
+
+            job = self._active(service, "/task-developer 41337")
+
+            self.assertEqual(
+                job["task_url"],
+                "https://dev.azure.com/acme/_workitems/edit/41337")
+
+    def test_a_prompt_naming_no_work_item_gets_no_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            job = self._active(service, "/daily-report")
+
+            self.assertEqual((job["task_key"], job["task_url"]), ("", ""))
+
+    def test_an_unconfigured_provider_leaves_the_run_unlinked(self) -> None:
+        # The live list is what the dashboard is for: no link beats no list.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory), {})
+
+            job = self._active(service, "/story-planner NIM-44025")
+
+            self.assertEqual(job["task_key"], "NIM-44025")
+            self.assertEqual(job["task_url"], "")
+
+    def test_the_rest_of_the_row_is_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            job = self._active(service, "/story-planner NIM-44025")
+
+            self.assertEqual(job["session_id"], "sid-1")
+            self.assertEqual(job["message"], "/story-planner NIM-44025")
+            self.assertTrue(job["elapsed_label"])
 
 
 if __name__ == "__main__":

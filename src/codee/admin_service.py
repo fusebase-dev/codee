@@ -715,6 +715,20 @@ def _remove_redundant_skill_transitions(
     return retained
 
 
+# An issue-triggered run is launched with the skill slug and the work item it
+# was started for and nothing else ("/story-planner NIM-44025"), so a prompt of
+# exactly that shape names a task. Matched rather than searched for: a prompt
+# someone typed may mention anything, and a word that merely looks like a key
+# must not turn into a link to a task that doesn't exist.
+ISSUE_PROMPT_RE = re.compile(r"/\S+[ \t]+(\S+)\s*\Z")
+
+
+def issue_prompt_task(message: str) -> str:
+    """The work item an issue-triggered prompt names, empty when it names none."""
+    match = ISSUE_PROMPT_RE.fullmatch((message or "").strip())
+    return match.group(1) if match else ""
+
+
 class AdminService:
     """Synchronous local operations used by Reflex event handlers."""
 
@@ -1838,14 +1852,43 @@ class AdminService:
             raise RuntimeError(f"{message}: {detail}")
 
     def dashboard(self) -> dict[str, Any]:
+        task_url = self._task_url()
+        active = []
+        for job in runs_db.active_jobs(main_context=self.context):
+            task = issue_prompt_task(job.get("message"))
+            active.append({**job,
+                           "elapsed_label": runs_db.fmt_elapsed(job["elapsed"]),
+                           "task_key": task,
+                           "task_url": task_url(task)})
         return {
-            "active": [
-                {**job, "elapsed_label": runs_db.fmt_elapsed(job["elapsed"])}
-                for job in runs_db.active_jobs(main_context=self.context)
-            ],
+            "active": active,
             "counts": runs_db.counts(main_context=self.context),
             "hourly": runs_db.runs_by_hour(main_context=self.context),
         }
+
+    def _task_url(self) -> Callable[[str], str]:
+        """How to link a work item key, per the configured tasks provider.
+
+        Built once per refresh rather than once per row, because the dashboard
+        redraws every second while anything is running. A provider that cannot
+        be built — none configured yet — links nothing rather than failing the
+        refresh: the live list is the part of the page that matters.
+        """
+        # Nothing is logged when this fails: the refresh it belongs to runs
+        # once a second, and a provider that cannot be built stays that way
+        # until someone changes it in Settings, where the failure is reported.
+        try:
+            provider = build_tasks_provider(self.context.settings)
+        except Exception:  # noqa: BLE001 - no provider just means no link
+            return lambda key: ""
+
+        def url(key: str) -> str:
+            try:
+                return provider.task_url(key) if key else ""
+            except Exception:  # noqa: BLE001 - as above
+                return ""
+
+        return url
 
     def recent_runs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         return runs_db.recent_runs(limit, offset, main_context=self.context)
