@@ -1,5 +1,6 @@
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,11 +50,19 @@ class AbstractCodingAgent(ABC):
         return bool(cls.CLI_COMMAND) and shutil.which(cls.CLI_COMMAND) is not None
 
     @abstractmethod
-    def run(self, user_message: str, session_id: str, model: str = "") -> str:
+    def run(self, user_message: str, session_id: str, model: str = "",
+            on_session_id: Callable[[str], None] | None = None) -> str:
         """Run the agent with the message in ``session_id`` and return its text.
 
         ``model`` is the skill's ``model:`` frontmatter, or empty for the agent's
         default. Agents that read the frontmatter themselves may ignore it.
+
+        ``on_session_id`` is called with the session the agent actually ran
+        under, as early as that is known. Most agents are handed one and run
+        under it, so they answer immediately; Codex mints its own and answers
+        once its CLI says which. The dashboard links a running agent's session
+        to a viewer with it, so an agent that reported nothing would be linked
+        by an id its CLI never saw.
 
         Must raise on any failure so callers can retry (SQS keeps the message,
         cron doesn't mark the slot done, email keeps the ``.eml``).

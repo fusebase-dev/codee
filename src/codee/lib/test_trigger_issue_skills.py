@@ -41,6 +41,28 @@ class IssueTriggeredSkillsTest(unittest.TestCase):
             self.assertEqual(models,
                              {"with-model": "claude-opus-5", "without-model": ""})
 
+    def test_reads_the_agent_frontmatter_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._skill(
+                root, "with-agent",
+                "name: With agent\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\nx-codee-agent: codex\n",
+            )
+            self._skill(
+                root, "without-agent",
+                "name: Without agent\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: task\n",
+            )
+
+            agents = {skill.slug: skill.agent
+                      for skill in find_issue_triggered_skills(root)}
+
+            self.assertEqual(agents,
+                             {"with-agent": "codex", "without-agent": ""})
+
     def test_loads_valid_issue_type_and_rejects_invalid_skills(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

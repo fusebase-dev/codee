@@ -16,7 +16,15 @@ This page is where you change any of it afterwards, and where Azure DevOps is co
 
 ## Coding agent configuration
 
-Codee supports Claude Code and Github Copilot coding agents. You need to select one of them.
+Codee supports Claude Code, Github Copilot and Codex coding agents. You need to select one of them.
+
+### Default agent
+
+The agent every skill runs on unless it names one of its own. A skill picks a different
+one in its **Agent** field, which is saved as `x-codee-agent` in its frontmatter — so a
+repository can keep most of its work on one agent and hand a single skill to another.
+Changing the default here moves every skill that names no agent; it never overrides a
+skill that does.
 
 ### Max parallel tasks
 
@@ -135,6 +143,11 @@ Clicking it pulls tasks exactly the way Codee does when it polls: same account, 
 
 When you have set up a task provider you will have button `Setup MCP Server` activated. In order to work for Codee you should also click
 this button. That will configure mcp server for the selected provider in `.mcp.json` file.
+
+`.mcp.json` is written in the shape every supported agent can use: Claude Code reads the `mcpServers` section, Github Copilot the
+`servers` one. Codex reads neither — it keeps its servers in its own `config.toml` — so Codee hands the servers from `.mcp.json` to the
+`codex` CLI on each run instead. Either way `.mcp.json` stays the one place a server is configured, and nothing is written into your
+machine-wide agent config.
 
 ### Verifiying tasks provider connection
 

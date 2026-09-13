@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from codee_agent_abstract.provider import AgentModel
 from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
@@ -203,6 +204,26 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
 
             self.assertEqual(skills[0]["issue_status"], "Ready, In progress")
             self.assertEqual(skills[0]["issue_type"], "story")
+
+    def test_list_skills_includes_the_agent_and_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            for slug, frontmatter in (
+                ("nightly", "name: nightly\nx-codee-agent: Codex\n"
+                            "model: gpt-6-astra\n"),
+                ("plain", "name: plain\n"),
+            ):
+                (skills_dir / slug).mkdir()
+                (skills_dir / slug / "SKILL.md").write_text(
+                    f"---\n{frontmatter}---\nBody\n")
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = skills_dir
+
+            rows = {skill["slug"]: (skill["agent"], skill["model"])
+                    for skill in service.list_skills()}
+
+            self.assertEqual(rows, {"nightly": ("codex", "gpt-6-astra"),
+                                    "plain": ("", "")})
 
     def test_save_issue_trigger_writes_required_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1431,6 +1452,76 @@ class AdminServiceSkillModelTest(unittest.TestCase):
 
             self.assertEqual(service.load_skill("nightly")["model"], "")
 
+    def test_save_writes_the_agent_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "", "agent": "codex",
+                    "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertEqual(frontmatter["x-codee-agent"], "codex")
+
+    def test_an_empty_agent_is_left_out_of_the_frontmatter(self) -> None:
+        # No agent means the default one from Settings, not an empty code.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "", "agent": "  ",
+                    "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertNotIn("x-codee-agent", frontmatter)
+
+    def test_an_agent_codee_cannot_run_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push") as write:
+                saved, _, message, _ = service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "", "agent": "cursor",
+                    "body": "Body",
+                })
+
+            self.assertFalse(saved)
+            self.assertIn("cursor", message)
+            write.assert_not_called()
+
+    def test_load_returns_the_agent_and_keeps_it_out_of_extras(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(
+                skills_dir, "name: nightly\nx-codee-agent: Claude Code\n")
+
+            skill = service.load_skill("nightly")
+
+            # Normalized to the stored code, so the editor's picker can show it.
+            self.assertEqual(skill["agent"], "claude_code")
+            self.assertEqual(skill["extra"], "")
+
+    def test_load_reports_no_agent_when_the_skill_names_an_unknown_one(self) -> None:
+        # What the executor does with it too: run the skill on the default agent.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(
+                skills_dir, "name: nightly\nx-codee-agent: cursor\n")
+
+            self.assertEqual(service.load_skill("nightly")["agent"], "")
+
 
 class AdminServiceSkillExtraFrontmatterTest(unittest.TestCase):
     def _service(self, skills_dir: Path, frontmatter: str) -> AdminService:
@@ -1543,6 +1634,34 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
         self.assertEqual(first, [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
         self.assertEqual(second, first)
         list_models.assert_called_once()
+
+    def test_a_skills_own_agent_is_asked_instead_of_the_default(self) -> None:
+        service = self._service(CodingAgent.CLAUDE_CODE)
+
+        with patch.object(CodexAgent, "list_models",
+                          return_value=[AgentModel("gpt-6-astra", "GPT-6 Astra")]), \
+                patch.object(ClaudeCodeAgent, "list_models") as claude_models:
+            models = service.list_agent_models("codex")
+
+        self.assertEqual(models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra"}])
+        claude_models.assert_not_called()
+
+    def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
+        service = self._service(CodingAgent.CLAUDE_CODE)
+
+        with patch.object(ClaudeCodeAgent, "list_models",
+                          return_value=[AgentModel("claude-opus-5", "Claude Opus 5")]):
+            self.assertEqual(service.list_agent_models("cursor"),
+                             [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
+
+    def test_every_agent_codee_can_run_is_offered(self) -> None:
+        service = self._service(CodingAgent.CLAUDE_CODE)
+
+        self.assertEqual(service.list_agents(), [
+            {"code": "claude_code", "name": "Claude Code"},
+            {"code": "github_copilot", "name": "GitHub Copilot"},
+            {"code": "codex", "name": "Codex"},
+        ])
 
     def test_an_agent_that_cannot_be_asked_yields_an_empty_list(self) -> None:
         service = self._service(CodingAgent.GITHUB_COPILOT)

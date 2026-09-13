@@ -37,6 +37,7 @@ class TasksProvider(str, Enum):
 class CodingAgent(str, Enum):
     CLAUDE_CODE = "claude_code"
     GITHUB_COPILOT = "github_copilot"
+    CODEX = "codex"
 
 
 @dataclass(frozen=True)

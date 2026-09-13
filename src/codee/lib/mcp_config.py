@@ -6,6 +6,11 @@ servers out of ``mcpServers`` and infers a stdio transport from the presence of
 out. Neither minds the other's key, so one file carrying both sections is
 readable by both agents and the project keeps a single place to look.
 
+Codex reads neither: its servers live in ``[mcp_servers]`` in its own
+``config.toml``, and the project file reaches it only when something lifts the
+servers out and hands them over per run. :func:`read_mcp_servers` is that way
+back out, so the file stays the one place a server is configured.
+
 This translation lives here rather than in the tasks providers on purpose: a
 provider knows which server speaks to its backend, and nothing about which agent
 will be told to run it.
@@ -87,6 +92,41 @@ def find_mcp_server(root: Path, name: str) -> dict | None:
     except (OSError, ValueError):
         return None
     return entry if isinstance(entry, dict) else None
+
+
+def read_mcp_servers(root: Path) -> dict[str, dict]:
+    """Every server the project has configured, keyed by name.
+
+    Each entry is normalized to ``command``/``args``/``env``, which is all a
+    stdio server is; an agent that wants another shape translates from there.
+    Only the Claude Code section is read, for the same reason
+    :func:`find_mcp_server` reads it: the two are written together.
+
+    A missing or broken file counts as "nothing configured" rather than raising.
+    This is asked on the way into an agent run, where no server at all is a
+    normal answer and a file that needs fixing is reported by the settings page.
+    """
+    path = mcp_file(root)
+    try:
+        section = _section(_load(path), CLAUDE_CODE_KEY, path)
+    except (OSError, ValueError):
+        return {}
+
+    servers = {}
+    for name, entry in section.items():
+        # Anything without a command is not a stdio server — an HTTP one, or a
+        # half-written entry — and there is nothing to launch either way.
+        if not isinstance(entry, dict) or not entry.get("command"):
+            continue
+        args = entry.get("args")
+        env = entry.get("env")
+        servers[str(name)] = {
+            "command": str(entry["command"]),
+            "args": [str(arg) for arg in args] if isinstance(args, list) else [],
+            "env": ({str(key): str(value) for key, value in env.items()}
+                    if isinstance(env, dict) else {}),
+        }
+    return servers
 
 
 def write_mcp_server(root: Path, server: McpServer) -> Path:

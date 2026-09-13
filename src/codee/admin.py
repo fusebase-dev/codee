@@ -18,8 +18,21 @@ from codee_main_context.context import (
 SERVICE = AdminService()
 
 RUNS_PAGE_SIZE = 20
+# The agents a skill can be run by, as the editor's picker lists them. Built
+# once: which agents exist is decided by this build, not by the settings.
+DEFAULT_AGENT_OPTION = "Default agent"
+AGENT_NAMES = {agent["code"]: agent["name"] for agent in SERVICE.list_agents()}
+AGENT_CODES = {name: code for code, name in AGENT_NAMES.items()}
+AGENT_OPTIONS = [DEFAULT_AGENT_OPTION, *AGENT_NAMES.values()]
 # How often the workflow page picks up the lines the generation reported.
 WORKFLOW_PROGRESS_INTERVAL = 0.5
+
+
+def _skill_summary(skill: dict[str, str]) -> SkillSummary:
+    """One listing row, with its agent named the way the editor's picker does."""
+    return SkillSummary(**{
+        **skill,
+        "agent": AGENT_NAMES.get(skill["agent"], DEFAULT_AGENT_OPTION)})
 
 
 def _save_toast(persisted: bool, pushed: bool, message: str) -> Any:
@@ -34,6 +47,10 @@ class SkillSummary(BaseModel):
     name: str
     description: str
     type: str
+    # The agent as the card names it, so always filled in: a skill that names
+    # none is run by the default one, which is worth saying on the card.
+    agent: str = ""
+    model: str = ""
     issue_status: str = ""
     issue_type: str = ""
 
@@ -138,6 +155,8 @@ class AdminState(rx.State):
     skill_name: str = ""
     skill_description: str = ""
     skill_model: str = ""
+    # The agent code the skill declares, empty for the default agent.
+    skill_agent: str = ""
     skill_type: str = "knowledge"
     skill_cron: str = "0 0 * * *"
     skill_email: str = ""
@@ -257,6 +276,20 @@ class AdminState(rx.State):
         ]
 
     @rx.var
+    def skill_agent_label(self) -> str:
+        """The picker's label for the agent the skill declares."""
+        return AGENT_NAMES.get(self.skill_agent, DEFAULT_AGENT_OPTION)
+
+    @rx.var
+    def skill_agent_hint(self) -> str:
+        """What the picked agent means for the skill, under the select."""
+        if not self.skill_agent:
+            return ("Runs on the default agent from Settings, so changing that "
+                    "setting moves this skill too.")
+        return (f"Saved as x-codee-agent: {self.skill_agent} in the skill "
+                "frontmatter.")
+
+    @rx.var
     def skill_model_label(self) -> str:
         """Friendly name of the selected model, falling back to the raw code."""
         if not self.skill_model:
@@ -296,6 +329,20 @@ class AdminState(rx.State):
     def set_skill_type(self, value: str) -> None:
         self.skill_type = value
 
+    def set_skill_agent(self, label: str) -> Any:
+        """Pick the agent the skill runs on, and re-fetch its model catalog.
+
+        The model goes back to the agent's default: model ids belong to one
+        agent, so the one that was picked names nothing on the new one.
+        """
+        agent = AGENT_CODES.get(label, "")
+        if agent == self.skill_agent:
+            return None
+        self.skill_agent = agent
+        self.skill_model = ""
+        self.model_query = ""
+        return AdminState.load_agent_models
+
     def set_model_query(self, value: str) -> None:
         self.model_query = value
 
@@ -306,21 +353,27 @@ class AdminState(rx.State):
 
     @rx.event(background=True)
     async def load_agent_models(self) -> None:
-        """Fetch the configured agent's catalog off the event loop.
+        """Fetch the catalog of the agent this skill runs on, off the event loop.
 
         Asking an agent can mean spawning its CLI, so this runs in the
         background while the skill list renders; the picker still accepts a
         hand-typed model code if the list never arrives.
+
+        A fetch whose agent has been picked away from while it was in flight
+        drops its answer: the newer pick has one of its own coming, and the
+        catalogs of two agents share no model ids to confuse.
         """
         async with self:
-            if self.models_loading:
-                return
+            agent = self.skill_agent
+            self.agent_models = []
             self.models_loading = True
         try:
-            models = await asyncio.to_thread(SERVICE.list_agent_models)
+            models = await asyncio.to_thread(SERVICE.list_agent_models, agent)
         except Exception:
             models = []
         async with self:
+            if self.skill_agent != agent:
+                return
             self.agent_models = [ModelOption(**model) for model in models]
             self.models_loading = False
 
@@ -349,7 +402,7 @@ class AdminState(rx.State):
         self.skill_extra_enabled = value
 
     def load_skills(self) -> None:
-        self.skills = [SkillSummary(**skill)
+        self.skills = [_skill_summary(skill)
                        for skill in SERVICE.list_skills()]
         # The editor's issue-type picker offers the work items Settings
         # configures, so a work item added there is selectable right away.
@@ -358,19 +411,22 @@ class AdminState(rx.State):
     def create_skill(self) -> Any:
         saved, pushed, message, slug = SERVICE.create_skill(
             self.new_skill_name)
-        if saved:
-            self.new_skill_name = ""
-            self.load_skills()
-            self.edit_skill(slug)
-        return _save_toast(saved, pushed, message)
+        toast = _save_toast(saved, pushed, message)
+        if not saved:
+            return toast
+        self.new_skill_name = ""
+        self.load_skills()
+        return [self.edit_skill(slug), toast]
 
-    def edit_skill(self, slug: str) -> None:
+    def edit_skill(self, slug: str) -> Any:
+        """Open one skill in the editor, and load the models its agent offers."""
         skill = SERVICE.load_skill(slug)
         self.editing_agents = False
         self.selected_skill = skill["slug"]
         self.skill_name = skill["name"]
         self.skill_description = skill["description"]
         self.skill_model = skill["model"]
+        self.skill_agent = skill["agent"]
         self.model_query = ""
         self.skill_type = skill["type"]
         self.skill_cron = skill["cron"]
@@ -381,6 +437,9 @@ class AdminState(rx.State):
         self.skill_body = skill["body"]
         self.skill_extra = skill["extra"]
         self.skill_extra_enabled = bool(skill["extra"])
+        # The catalog on screen belongs to whichever skill was open before this
+        # one, and only this agent's models can be picked for this skill.
+        return AdminState.load_agent_models
 
     def close_skill(self) -> None:
         self.selected_skill = ""
@@ -391,6 +450,7 @@ class AdminState(rx.State):
             "name": self.skill_name,
             "description": self.skill_description,
             "model": self.skill_model,
+            "agent": self.skill_agent,
             "type": self.skill_type,
             "cron": self.skill_cron,
             "email": self.skill_email,
@@ -634,14 +694,14 @@ class AdminState(rx.State):
         if not slug:
             return rx.toast.error(f"No skill found for transition '{label}'")
         self.load_skills()
-        self.edit_skill(slug)
-        return rx.redirect("/skills")
+        return [self.edit_skill(slug), rx.redirect("/skills")]
 
     def load_coding_agent(self) -> None:
-        """Refresh the agent the sidebar keys off, on every page load.
+        """Refresh the configured agent for the pages that branch on it.
 
-        Without this the default sticks until a page that reads settings is
-        opened, so the Sessions link shows for Github Copilot.
+        Only the Memory page needs this on its own: the agent decides whether
+        memory lives in the repository or in a GitHub account. Everywhere else
+        it arrives with the rest of the settings.
         """
         self.coding_agent = SERVICE.load_settings().coding_agent.value
 
@@ -1167,8 +1227,11 @@ def shell(content: rx.Component) -> rx.Component:
                         nav_link("Repositories", "folder-git-2",
                                  "/repositories"),
                         nav_link("Runs", "history", "/runs"),
+                        # Shown for whatever agent is configured: the viewer is
+                        # pointed at by CODEE_SESSION_VIEWER_URL, and every agent
+                        # now reports the session it actually ran under.
                         rx.cond(
-                            AdminState.coding_agent == "claude_code",
+                            AdminState.session_viewer != "",
                             nav_link("Sessions", "key-round", "/sessions"),
                         ),
                         nav_link("Settings", "settings", "/settings"),
@@ -1391,6 +1454,13 @@ def skill_card(skill: SkillSummary) -> rx.Component:
                       rx.badge(skill.type, color_scheme="blue", variant="soft"), width="100%"),
             rx.text(skill.description, color=MUTED, font_size="0.9rem", min_height="2.7rem",
                     overflow="hidden"),
+            rx.hstack(
+                rx.icon("bot", size=14, color=SUBTLE_ICON),
+                rx.text(skill.agent, color=MUTED, font_size="0.82rem"),
+                rx.cond(skill.model != "",
+                        rx.code(skill.model, font_size="0.72rem",
+                                color_scheme="gray")),
+                spacing="2", align="center", width="100%"),
             rx.cond(
                 skill.issue_status != "",
                 rx.hstack(
@@ -1487,6 +1557,19 @@ def model_option_row(option: ModelOption) -> rx.Component:
             on_click=AdminState.choose_model(option.id)))
 
 
+def agent_picker() -> rx.Component:
+    """Which agent runs this skill, or the default one from Settings.
+
+    The model picker beside it lists that agent's models, so picking here
+    decides what can be picked there.
+    """
+    return field(
+        "Agent",
+        rx.select(AGENT_OPTIONS, value=AdminState.skill_agent_label,
+                  on_change=AdminState.set_skill_agent, width="100%"),
+        rx.text(AdminState.skill_agent_hint, color=MUTED, font_size="0.82rem"))
+
+
 def model_picker() -> rx.Component:
     """Searchable model select that also accepts a model code typed by hand.
 
@@ -1547,7 +1630,7 @@ def model_picker() -> rx.Component:
         ),
         rx.text(
             rx.cond(AdminState.skill_model == "",
-                    "Runs on whatever the coding agent defaults to.",
+                    "Runs on whatever that agent defaults to.",
                     rx.fragment("Saved as ", rx.code(AdminState.skill_model),
                                 " in the skill frontmatter.")),
             color=MUTED, font_size="0.82rem"))
@@ -1592,7 +1675,9 @@ def skill_editor() -> rx.Component:
         field("Description", rx.text_area(value=AdminState.skill_description,
                                           on_change=AdminState.set_skill_description,
                                           width="100%", min_height="5rem")),
-        model_picker(),
+        rx.grid(agent_picker(), model_picker(),
+                columns=rx.breakpoints(initial="1", md="2"), gap="1rem",
+                align="start", width="100%"),
         rx.cond(AdminState.skill_type == "cron trigger",
                 field("Cron expression", rx.input(value=AdminState.skill_cron,
                                                   on_change=AdminState.set_skill_cron, width="100%"),
@@ -1627,8 +1712,7 @@ def skill_editor() -> rx.Component:
                                    placeholder="allowed-tools: Bash",
                                    width="100%", min_height="7rem",
                                    font_family="IBM Plex Mono, monospace"),
-                      rx.text("YAML lines written into the frontmatter as they are. "
-                              "Leave out the fields that already have their own control above.",
+                      rx.text("YAML lines written into the frontmatter as they are.",
                               color=MUTED, font_size="0.82rem"))),
             spacing="3", align="start", width="100%"),
         field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
@@ -2021,7 +2105,7 @@ def workflow_page() -> rx.Component:
 def sessions_page() -> rx.Component:
     return shell(rx.vstack(
         page_header(
-            "Sessions", "Open the configured Claude Code session viewer."),
+            "Sessions", "Open the configured coding agent session viewer."),
         rx.cond(AdminState.session_viewer != "",
                 rx.link(rx.button(rx.icon("external-link", size=16), "Open session viewer"),
                         href=AdminState.session_viewer, is_external=True),
@@ -2409,13 +2493,20 @@ def settings_page() -> rx.Component:
             "Settings", ""),
         rx.box(
             rx.heading("Coding agent", size="4", margin_bottom="1rem"),
-            rx.grid(
-                field("Agent", rx.select(["claude_code", "github_copilot"], value=AdminState.coding_agent,
-                                         on_change=AdminState.set_coding_agent, width="100%")),
-                field("Max parallel tasks", rx.input(value=AdminState.max_parallel_agents,
-                                                     on_change=AdminState.set_max_parallel_agents,
-                                                     type="number", min=1, width="100%")),
-                columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%"),
+            rx.vstack(
+                field("Default agent",
+                      rx.select(["claude_code", "github_copilot", "codex"],
+                                value=AdminState.coding_agent,
+                                on_change=AdminState.set_coding_agent,
+                                width="100%"),
+                      rx.text("Runs every skill that does not name its own "
+                              "agent in x-codee-agent.",
+                              color=MUTED, font_size="0.82rem")),
+                field("Max parallel tasks",
+                      rx.input(value=AdminState.max_parallel_agents,
+                               on_change=AdminState.set_max_parallel_agents,
+                               type="number", min=1, width="100%")),
+                spacing="4", width="100%"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         rx.box(
             rx.heading("Tasks provider", size="4", margin_bottom="1rem"),
@@ -2597,20 +2688,18 @@ app = rx.App(
     api_transformer=api_app,
 )
 app.add_page(dashboard_page, route="/", title="Dashboard | Codee",
-             on_load=[AdminState.load_coding_agent, AdminState.poll_dashboard])
+             on_load=AdminState.poll_dashboard)
 app.add_page(skills_page, route="/skills", title="Skills | Codee",
-             on_load=[AdminState.load_coding_agent, AdminState.load_skills,
-                      AdminState.load_agent_models])
+             on_load=[AdminState.load_skills, AdminState.load_agent_models])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",
-             on_load=[AdminState.load_coding_agent, AdminState.load_workflow])
+             on_load=AdminState.load_workflow)
 app.add_page(memory_page, route="/memory", title="Memory | Codee",
              on_load=AdminState.load_memories)
 app.add_page(repositories_page, route="/repositories",
              title="Repositories | Codee",
-             on_load=[AdminState.load_coding_agent,
-                      AdminState.load_repositories])
+             on_load=AdminState.load_repositories)
 app.add_page(runs_page, route="/runs", title="Runs | Codee",
-             on_load=[AdminState.load_coding_agent, AdminState.load_runs])
+             on_load=AdminState.load_runs)
 app.add_page(sessions_page, route="/sessions",
              title="Sessions | Codee", on_load=AdminState.load_settings)
 app.add_page(settings_page, route="/settings",

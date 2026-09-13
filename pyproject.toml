@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "Denis Kibalko", email = "denis.kibalko@nimbusweb.me" },
 ]
-keywords = ["ai", "agent", "jira", "azure-devops", "claude-code", "github-copilot", "automation"]
+keywords = ["ai", "agent", "jira", "azure-devops", "claude-code", "github-copilot", "codex", "automation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -76,6 +76,7 @@ module-name = [
     "codee_agent_abstract",
     "codee_agent_claude_code",
     "codee_agent_github_copilot",
+    "codee_agent_codex",
     "codee_tasks_abstract",
     "codee_tasks_jira",
     "codee_tasks_azure_devops",

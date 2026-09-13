@@ -31,6 +31,9 @@ class IssueTriggeredSkill:
     statuses: tuple[str, ...]
     issue_type: str
     model: str = ""
+    # The agent this skill asks to be run by (``x-codee-agent``), empty when it
+    # names none and the default agent from Settings should drive it.
+    agent: str = ""
 
 
 def find_issue_triggered_skills(
@@ -87,6 +90,7 @@ def find_issue_triggered_skills(
             statuses=statuses,
             issue_type=issue_type,
             model=str(metadata.get("model", "")).strip(),
+            agent=str(metadata.get("x-codee-agent", "") or "").strip(),
         ))
     return skills
 

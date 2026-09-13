@@ -21,7 +21,8 @@ from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
-from codee.coding_agents import CODING_AGENTS, build_coding_agent
+from codee.coding_agents import (
+    CODING_AGENTS, agent_label, build_coding_agent, resolve_agent_code)
 from codee.lib import runs_db
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
@@ -56,6 +57,7 @@ MANAGED = {
     "model",
     "disable-model-invocation",
     "cron",
+    "x-codee-agent",
     "x-codee-trigger",
     "x-codee-issue-status",
     "x-codee-issue-type",
@@ -298,6 +300,12 @@ def parse_extra_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 def build_skill(frontmatter: dict[str, Any], extra: dict[str, Any], body: str) -> str:
     return f"---\n{dump_frontmatter({**frontmatter, **extra})}---\n\n{body.lstrip()}\n"
+
+
+def _agent_code(value: Any) -> str:
+    """A skill's ``x-codee-agent`` as a canonical agent code, or "" for none."""
+    agent = resolve_agent_code(str(value or ""))
+    return agent.value if agent else ""
 
 
 def _format_issue_status(value: Any) -> str:
@@ -604,7 +612,11 @@ class AdminService:
         self.memory_index = self.memory_dir / "MEMORY.md"
         self.repositories_dir = self.root / REPOSITORIES_DIR
         self.data_dir = data_dir(self.root)
-        self.session_viewer = os.environ.get("CODEE_SESSION_VIEWER_URL", "")
+        # Stripped so a value that is only whitespace counts as unset: it is
+        # what decides whether the Sessions page is offered at all, and a
+        # blank one would offer a link that goes nowhere.
+        self.session_viewer = os.environ.get(
+            "CODEE_SESSION_VIEWER_URL", "").strip()
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -667,6 +679,8 @@ class AdminService:
                 "name": str(frontmatter.get("name", path.parent.name)),
                 "description": str(frontmatter.get("description", "")),
                 "type": infer_skill_type(frontmatter),
+                "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
+                "model": str(frontmatter.get("model", "") or "").strip(),
                 "issue_status": _format_issue_status(
                     frontmatter.get("x-codee-issue-status", [])
                 ),
@@ -676,13 +690,28 @@ class AdminService:
             })
         return skills
 
-    def list_agent_models(self) -> list[dict[str, str]]:
-        """Models the configured coding agent offers, for the skill editor's picker.
+    def list_agents(self) -> list[dict[str, str]]:
+        """Every agent Codee can run, for the pickers that choose between them.
+
+        Not filtered by what is installed: the setup wizard asks that question
+        of the machine it runs on, while a skill's agent is checked into the
+        repository and may well name one that only the executor's host has.
+        """
+        return [{"code": agent.value, "name": agent_label(agent)}
+                for agent in CODING_AGENTS]
+
+    def list_agent_models(self, agent: str = "") -> list[dict[str, str]]:
+        """Models one coding agent offers, for the skill editor's picker.
+
+        ``agent`` is the skill's ``x-codee-agent``; an empty one — or one that
+        names no agent Codee can run — is answered for the default agent from
+        Settings, which is what would run that skill.
 
         Best-effort: an agent that can't be asked yields an empty list and the
         editor falls back to a hand-typed model id.
         """
-        agent_key = self.context.settings.coding_agent
+        agent_key = (resolve_agent_code(agent)
+                     or self.context.settings.coding_agent)
         with self._models_lock:
             models = self._models_cache.get(agent_key)
             if models is None:
@@ -1320,6 +1349,12 @@ class AdminService:
         return {"nodes": nodes, "edges": edges, "warnings": warnings}
 
     def load_skill(self, slug: str) -> dict[str, str]:
+        """One skill's editable fields, as the admin UI's editor shows them.
+
+        ``agent`` comes back as the canonical agent code, and empty when the
+        skill names no agent Codee can run — the same reading the executor
+        takes, which runs such a skill on the default agent from Settings.
+        """
         path = self.skills_dir / slug / "SKILL.md"
         frontmatter, body = parse_skill(path.read_text())
         extra = {key: value for key, value in frontmatter.items()
@@ -1329,6 +1364,7 @@ class AdminService:
             "name": str(frontmatter.get("name", slug)),
             "description": str(frontmatter.get("description", "")),
             "model": str(frontmatter.get("model", "") or ""),
+            "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
             "type": infer_skill_type(frontmatter),
             "cron": str(frontmatter.get("x-codee-cron", frontmatter.get("cron", "0 0 * * *"))),
             "email": str(frontmatter.get("x-codee-email-address", "")),
@@ -1371,8 +1407,14 @@ class AdminService:
             "name": name,
             "description": skill["description"],
         }
-        # Left out entirely when unset, so the skill keeps running on whatever
-        # the agent defaults to rather than on an empty model id.
+        # Both are left out entirely when unset, so the skill keeps running on
+        # the default agent and whatever model that agent defaults to, rather
+        # than on an empty agent code or model id.
+        agent = skill.get("agent", "").strip()
+        if agent:
+            if resolve_agent_code(agent) is None:
+                return False, False, f"{agent} is not an agent Codee can run", old_slug
+            frontmatter["x-codee-agent"] = agent
         model = skill.get("model", "").strip()
         if model:
             frontmatter["model"] = model

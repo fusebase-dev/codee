@@ -165,10 +165,45 @@ class CronSkillTests(unittest.TestCase):
             "Handle this message.\n\nmessage body",
         )
 
+    def test_the_skills_agent_is_handed_to_the_runner(self):
+        # x-codee-agent decides which agent runs the skill, so the trigger has
+        # to carry it through alongside the model.
+        calls = []
+
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
+            calls.append((model, agent))
+            return "done"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            skill_dir = skills_dir / "daily-check"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: Daily Check\n"
+                "disable-model-invocation: true\n"
+                "cron: 15 10 * * *\n"
+                "model: gpt-6-astra\n"
+                "x-codee-agent: codex\n"
+                "---\n\n"
+                "Run the daily check.\n"
+            )
+
+            trigger_cron_skills(run_claude,
+                                now=datetime(2026, 6, 7, 10, 15),
+                                skills_dir=skills_dir,
+                                state_file=root / "state.json",
+                                main_context=_ctx(root))
+
+        self.assertEqual(calls, [("gpt-6-astra", "codex")])
+
     def test_reconcile_runs_due_skill_once_per_minute(self):
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -202,7 +237,8 @@ class CronSkillTests(unittest.TestCase):
         # the next tick within the catch-up window runs it again.
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append(session_id)
             if len(calls) == 1:
                 raise RuntimeError("over limit")
@@ -250,7 +286,8 @@ class CronSkillTests(unittest.TestCase):
     def test_reconcile_catches_up_missed_minute(self):
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -307,7 +344,8 @@ class CronSkillTests(unittest.TestCase):
         # it should only seed a baseline so future misses are caught.
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -342,7 +380,8 @@ class CronSkillTests(unittest.TestCase):
     def test_force_run_fires_off_schedule_then_clears(self):
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append(session_id)
             return "done"
 
@@ -382,7 +421,8 @@ class CronSkillTests(unittest.TestCase):
     def test_force_run_stays_queued_when_run_fails(self):
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append(session_id)
             raise RuntimeError("over limit")
 
@@ -413,7 +453,8 @@ class CronSkillTests(unittest.TestCase):
     def test_reconcile_passes_the_skill_model_to_the_agent(self):
         calls = []
 
-        def run_claude(message: str, session_id: str, model: str = "") -> str:
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append(model)
             return "done"
 
@@ -451,7 +492,8 @@ class CronSkillTests(unittest.TestCase):
         )
         sqs_source = FakeSqsMessageSource([message])
 
-        def run_claude(user_message: str, session_id: str, model: str = "") -> str:
+        def run_claude(user_message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             calls.append((user_message, session_id))
             return "done"
 
@@ -483,7 +525,8 @@ class CronSkillTests(unittest.TestCase):
         self.assertEqual(sqs_source.deleted, [message])
 
     def test_reconcile_survives_unconfigured_aws_client(self):
-        def run_claude(user_message: str, session_id: str, model: str = "") -> str:
+        def run_claude(user_message: str, session_id: str, model: str = "",
+                       agent: str = "") -> str:
             raise AssertionError("should not run without an SQS client")
 
         with tempfile.TemporaryDirectory() as temp_dir:

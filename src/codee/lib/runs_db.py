@@ -3,6 +3,7 @@
 Fail-safe by design: recording a run must never break the trigger that called it
 (FR-009), and reading never raises on an empty/missing DB (FR-006).
 """
+import threading
 from datetime import datetime, timedelta, timezone
 
 from codee_main_context.context import CodeeMainContext
@@ -11,6 +12,30 @@ from codee_database.database import get_db_connection
 
 _COLUMNS = ("id", "skill_name", "trigger_type", "session_id", "status", "error",
             "started_at", "message")
+
+# Codee names a session before the agent runs, but not every agent runs under
+# the name it was given: Codex mints its own thread id and reports it back mid
+# run. Recording the id Codee chose would leave the dashboard linking a session
+# viewer to something the agent's CLI never saw, so the reported id is noted
+# here on the way past and swapped in when the run is written. Kept in memory
+# rather than in a column: the mapping matters only between the start of a run
+# and the row that closes it, both of which happen in this process.
+_agent_sessions: dict[str, str] = {}
+_agent_sessions_lock = threading.Lock()
+
+
+def note_agent_session(session_id: str, agent_session_id: str) -> None:
+    """Remember that ``session_id``'s agent actually ran under another id."""
+    if not agent_session_id or agent_session_id == session_id:
+        return
+    with _agent_sessions_lock:
+        _agent_sessions[session_id] = agent_session_id
+
+
+def agent_session(session_id: str) -> str:
+    """The id the agent ran under, consuming the note. Falls back to the given one."""
+    with _agent_sessions_lock:
+        return _agent_sessions.pop(session_id, session_id)
 
 
 def init(main_context: CodeeMainContext) -> None:
@@ -50,6 +75,7 @@ def record_run(skill_name, trigger_type, session_id, status, error=None, started
     """Insert one run row. Never raises to the caller (FR-009)."""
     try:
         init(main_context)
+        session_id = agent_session(session_id)
         if started_at is None:
             started_at = datetime.now(timezone.utc).isoformat()
         with get_db_connection(main_context) as conn:
@@ -123,6 +149,23 @@ def start_job(session_id, message, started_at=None, *,
     except Exception as exc:  # ponytail: a logging miss must never abort the run
         print(f"[runs_db] Failed to start job {session_id}: {exc}")
         return None
+
+
+def set_job_session(job_id, session_id, *, main_context: CodeeMainContext) -> None:
+    """Point an in-flight job at the session its agent actually opened.
+
+    Only Codex needs this, and only while it is running: the dashboard builds a
+    session-viewer link out of this column, and the row is gone the moment the
+    run ends. No-op on None, like the rest of the job bookkeeping.
+    """
+    if job_id is None:
+        return
+    try:
+        with get_db_connection(main_context) as conn:
+            conn.execute("UPDATE active_jobs SET session_id = ? WHERE id = ?",
+                         (session_id, job_id))
+    except Exception as exc:  # ponytail: bookkeeping must never abort the run
+        print(f"[runs_db] Failed to set session for job {job_id}: {exc}")
 
 
 def finish_job(job_id, *, main_context: CodeeMainContext) -> None:

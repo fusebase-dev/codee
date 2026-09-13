@@ -2,8 +2,9 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
     CodingAgent, Settings, TasksProvider, save_settings)
@@ -150,6 +151,65 @@ class RefreshConfigTest(unittest.TestCase):
             executor._refresh_config()
 
         self.assertIs(executor.coding_agent, agent)
+
+
+class AgentForSkillTest(unittest.TestCase):
+    """``x-codee-agent`` picks the agent; everything else gets the default one."""
+
+    def setUp(self) -> None:
+        original_settings = executor.context.settings
+        original_agent = executor.coding_agent
+        self.addCleanup(
+            lambda: setattr(executor.context, "settings", original_settings))
+        self.addCleanup(lambda: setattr(executor, "coding_agent",
+                                        original_agent))
+        executor.context.settings = Settings(
+            coding_agent=CodingAgent.CLAUDE_CODE)
+        executor.coding_agent = executor._build_coding_agent(
+            executor.context.settings)
+
+    def test_a_skill_that_names_no_agent_runs_on_the_default_one(self) -> None:
+        self.assertIs(executor._agent_for_skill(""), executor.coding_agent)
+
+    def test_a_skill_that_names_the_default_agent_reuses_it(self) -> None:
+        self.assertIs(executor._agent_for_skill("claude_code"),
+                      executor.coding_agent)
+
+    def test_a_skill_that_names_another_agent_gets_that_one(self) -> None:
+        self.assertIsInstance(executor._agent_for_skill("codex"), CodexAgent)
+
+    def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
+        # A typo in frontmatter must not fail the poll forever; the work still
+        # gets done by the configured agent.
+        self.assertIs(executor._agent_for_skill("cursor"),
+                      executor.coding_agent)
+
+
+class RunAgentSelectionTest(unittest.TestCase):
+    """The agent a run lands on is the one the triggering skill asked for."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        original_data_dir = executor.context.data_dir
+        self.addCleanup(
+            lambda: setattr(executor.context, "data_dir", original_data_dir))
+        executor.context.data_dir = Path(self._temporary.name)
+
+    def test_the_skills_agent_and_model_reach_the_agent(self) -> None:
+        agent = Mock()
+        agent.run.return_value = "done"
+        agent.describe.return_value = "CodexAgent"
+
+        with patch.object(executor, "_agent_for_skill",
+                          return_value=agent) as chosen:
+            reply = executor._run_agent("/nightly", "sid-1", "gpt-6-astra",
+                                        "codex")
+
+        self.assertEqual(reply, "done")
+        chosen.assert_called_once_with("codex")
+        self.assertEqual(agent.run.call_args.args[:3],
+                         ("/nightly", "sid-1", "gpt-6-astra"))
 
 
 class RunTaskLoggingTest(unittest.TestCase):

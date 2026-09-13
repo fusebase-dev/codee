@@ -11,7 +11,7 @@ from codee_main_context.context import project_root, skills_dir as default_skill
 REPO_ROOT = project_root()
 SKILLS_DIR = default_skills_dir(REPO_ROOT)
 
-RunClaude = Callable[[str, str, str], str]
+RunClaude = Callable[[str, str, str, str], str]
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class AwsSqsTriggeredSkill:
     queue: str
     body: str
     model: str
+    agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ def trigger_aws_sqs_skills(
         session_id = str(uuid.uuid4())
         prompt = render_aws_sqs_prompt(skill.body, message.content)
         try:
-            response = run_claude(prompt, session_id, skill.model)
+            response = run_claude(prompt, session_id, skill.model, skill.agent)
             print(
                 f"[aws_sqs_skills] Claude response for {skill.name} ({len(response)} chars)")
             sqs_message_source.delete(message)
@@ -128,6 +129,7 @@ def find_aws_sqs_triggered_skills(skills_dir: Path = SKILLS_DIR) -> list[AwsSqsT
                 queue=queue,
                 body=body.strip(),
                 model=metadata.get("model", "").strip(),
+                agent=metadata.get("x-codee-agent", "").strip(),
             )
         )
     return skills

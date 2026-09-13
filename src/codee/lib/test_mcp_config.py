@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codee.lib.mcp_config import find_mcp_server, mcp_file, write_mcp_server
+from codee.lib.mcp_config import (
+    find_mcp_server, mcp_file, read_mcp_servers, write_mcp_server)
 from codee_tasks_abstract.provider import McpServer
 
 
@@ -128,6 +129,51 @@ class FindMcpServerTest(unittest.TestCase):
                 json.dumps({"mcpServers": {"mcp-atlassian": {"command": "uvx"}}}))
 
             self.assertIsNotNone(find_mcp_server(root, "mcp-atlassian"))
+
+
+class ReadMcpServersTest(unittest.TestCase):
+    """Codex reads no project file, so its servers are read back out of this one."""
+
+    def test_it_returns_what_was_written_in_the_shape_a_server_has(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_mcp_server(root, SERVER)
+
+            self.assertEqual(read_mcp_servers(root), {"mcp-atlassian": {
+                "command": "uvx",
+                "args": ["mcp-atlassian"],
+                "env": {"JIRA_URL": "https://acme.atlassian.net"},
+            }})
+
+    def test_a_hand_written_entry_is_filled_in_rather_than_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mcp_file(root).write_text(
+                json.dumps({"mcpServers": {"playwright": {"command": "npx"}}}))
+
+            self.assertEqual(read_mcp_servers(root), {
+                "playwright": {"command": "npx", "args": [], "env": {}}})
+
+    def test_an_entry_with_nothing_to_launch_is_left_out(self) -> None:
+        # An HTTP server, or one somebody started writing and never finished.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mcp_file(root).write_text(json.dumps({"mcpServers": {
+                "remote": {"url": "https://acme.example/mcp"},
+                "broken": "npx",
+            }}))
+
+            self.assertEqual(read_mcp_servers(root), {})
+
+    def test_a_missing_or_broken_file_reads_as_no_servers(self) -> None:
+        # This is asked on the way into an agent run, which a file nobody has
+        # fixed yet should not fail.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(read_mcp_servers(root), {})
+
+            mcp_file(root).write_text("{not json")
+            self.assertEqual(read_mcp_servers(root), {})
 
 
 if __name__ == "__main__":

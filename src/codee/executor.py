@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, STORY_ISSUE_TYPE, Settings,
@@ -16,6 +17,7 @@ from codee_main_context.context import (
 from codee_main_context.logging import configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
+from codee.coding_agents import resolve_agent_code
 from codee.lib import runs_db
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -29,11 +31,13 @@ log = get_logger(__name__)
 context = CodeeMainContext(data_dir=data_dir())
 context.settings = load_settings(context.data_dir)
 
-# Concrete coding agents, keyed by the agent selected in settings. Each agent
-# initializes itself from the settings, so nothing here is agent-specific.
+# Concrete coding agents, keyed by the agent a skill names or Settings
+# defaults to. Each agent initializes itself from the settings, so nothing here
+# is agent-specific.
 _CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
     CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
     CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
+    CodingAgent.CODEX: CodexAgent,
 }
 
 POLL_INTERVAL = 60  # 1 minute
@@ -80,16 +84,49 @@ def _get_or_create_session(sessions: dict[str, str], task_id: str) -> str:
     return sessions[task_id]
 
 
-def _build_coding_agent(settings: Settings) -> AbstractCodingAgent:
-    agent = _CODING_AGENTS.get(settings.coding_agent)
-    if agent is None:
+def _build_coding_agent(settings: Settings,
+                        agent: CodingAgent | None = None) -> AbstractCodingAgent:
+    """One agent instance, defaulting to the one Settings selects.
+
+    ``agent`` is what a skill asked for in ``x-codee-agent``. Building is cheap
+    — an agent holds its settings and its working directory and spawns its CLI
+    per run — so a skill that names one gets a fresh instance rather than the
+    long-lived default.
+    """
+    implementation = _CODING_AGENTS.get(agent or settings.coding_agent)
+    if implementation is None:
         raise ValueError(
-            f"unsupported coding agent: {settings.coding_agent.value}")
-    return agent(settings, REPO_ROOT)
+            f"unsupported coding agent: {(agent or settings.coding_agent).value}")
+    return implementation(settings, REPO_ROOT)
+
+
+def _agent_for_skill(agent_code: str) -> AbstractCodingAgent:
+    """The agent a skill's ``x-codee-agent`` names, or the configured default.
+
+    A skill that names no agent is run by the default one Settings selects —
+    the instance the executor already holds. So is a skill that names an agent
+    this build cannot run: the name is reported once per run and the work still
+    gets done, which beats failing every poll over a typo in frontmatter.
+    """
+    if not agent_code:
+        return coding_agent
+    agent = resolve_agent_code(agent_code)
+    if agent is None:
+        log.warning("x-codee-agent: %r names no agent Codee can run; using the "
+                    "default agent (%s).", agent_code,
+                    context.settings.coding_agent.value)
+        return coding_agent
+    implementation = _CODING_AGENTS.get(agent)
+    if implementation is not None and isinstance(coding_agent, implementation):
+        # It named the default agent, so the instance we already hold is it.
+        return coding_agent
+    return _build_coding_agent(context.settings, agent)
 
 
 tasks_provider: AbstractTasksProvider = build_tasks_provider(context.settings)
 
+# The default agent, kept for the life of the process. A skill that names its
+# own through ``x-codee-agent`` is run by one built for that run instead.
 coding_agent: AbstractCodingAgent = _build_coding_agent(context.settings)
 
 
@@ -130,7 +167,8 @@ def _refresh_config() -> None:
         except Exception as exc:
             log.error("Failed to apply new coding agent settings: %s", exc)
         else:
-            log.info("Reloaded coding agent: %s", settings.coding_agent.value)
+            log.info("Reloaded default coding agent: %s",
+                     settings.coding_agent.value)
 
     if settings.max_parallel_agents != previous.max_parallel_agents:
         # The pool is sized once and may have work in flight, so this one still
@@ -198,18 +236,36 @@ def _pull_latest_code() -> bool:
     return True
 
 
-def _run_agent(user_message: str, session_id: str, model: str = "") -> str:
-    """Run the configured coding agent and return its response text.
+def _run_agent(user_message: str, session_id: str, model: str = "",
+               agent_code: str = "") -> str:
+    """Run the skill's coding agent and return its response text.
 
     ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
-    that can't be told which model to use ignore it. Wraps the agent run in job
-    tracking; the agent itself raises on any failure so callers can retry.
+    that can't be told which model to use ignore it. ``agent_code`` comes from
+    its ``x-codee-agent:`` frontmatter and picks which agent runs at all, empty
+    for the default one. Wraps the agent run in job tracking; the agent itself
+    raises on any failure so callers can retry.
     """
+    agent = _agent_for_skill(agent_code)
     job_id = runs_db.start_job(session_id, user_message, main_context=context)
-    log.debug("job %s started: session=%s message=%r model=%r",
-              job_id, session_id, user_message, model)
+    log.debug("job %s started: session=%s message=%r model=%r agent=%s",
+              job_id, session_id, user_message, model, agent.describe())
+
+    def opened(agent_session_id: str) -> None:
+        """Record the session the agent actually opened, if it isn't ours.
+
+        Claude Code and Copilot run under the id they were handed and this
+        changes nothing. Codex names its own, and both the live dashboard row
+        and the run this ends up writing should carry that name instead.
+        """
+        if agent_session_id == session_id:
+            return
+        log.debug("job %s runs under agent session %s", job_id, agent_session_id)
+        runs_db.note_agent_session(session_id, agent_session_id)
+        runs_db.set_job_session(job_id, agent_session_id, main_context=context)
+
     try:
-        return coding_agent.run(user_message, session_id, model)
+        return agent.run(user_message, session_id, model, opened)
     finally:
         log.debug("job %s finished", job_id)
         try:
@@ -222,7 +278,7 @@ def _run_agent(user_message: str, session_id: str, model: str = "") -> str:
 
 
 def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
-              model: str = "") -> None:
+              model: str = "", agent_code: str = "") -> None:
     """Pool worker: run one task's coding agent, then release its in-flight slot.
 
     Logs the outcome to the runs table like the cron/email/sqs triggers do, so
@@ -232,7 +288,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
     """
     started_at = datetime.now(timezone.utc).isoformat()
     try:
-        response = _run_agent(message, session_id, model)
+        response = _run_agent(message, session_id, model, agent_code)
         log.info("Agent response for %s (%d chars): %s",
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
@@ -252,7 +308,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
 
 
 def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
-                 model: str = "") -> bool:
+                 model: str = "", agent_code: str = "") -> bool:
     """Hand a task to the agent pool unless one is already in flight for it.
 
     Returns True if submitted, False if skipped as a duplicate. Only the main
@@ -266,7 +322,7 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
         _inflight.add(task_id)
         depth = len(_inflight)
     _agent_pool.submit(_run_task, task_id, message,
-                       session_id, skill_name, model)
+                       session_id, skill_name, model, agent_code)
     log.info("Submitted %s to agent pool (%d in flight/queued, max %d).",
              task_id, depth, MAX_PARALLEL_AGENTS)
     return True
@@ -347,7 +403,8 @@ def run_once() -> None:
         log.info("Processing %s (%s, %s): %s  session-id=%s",
                  task_id, status, issue_type, summary, session_id)
 
-        _submit_task(task_id, message, session_id, skill.name, skill.model)
+        _submit_task(task_id, message, session_id, skill.name,
+                     skill.model, skill.agent)
 
 
 def main() -> None:

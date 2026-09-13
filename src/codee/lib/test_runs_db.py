@@ -198,3 +198,55 @@ def test_migration_adds_message_column_without_data_loss(tmp_path):
     # New writes carry message; the upgraded DB round-trips it.
     runs_db.record_run("new", "cron", "sid-new", "succeeded", message="m", main_context=ctx)
     assert runs_db.recent_runs(main_context=ctx)[0]["message"] == "m"
+
+
+# The agent Codee names a session for is not always the agent that runs under
+# that name: Codex mints its own thread id and reports it back mid-run.
+
+def test_set_job_session_repoints_a_live_job(tmp_path):
+    ctx = _ctx(tmp_path)
+    job_id = runs_db.start_job("codee-sid", "/do-it CORE-1", main_context=ctx)
+
+    runs_db.set_job_session(job_id, "codex-thread", main_context=ctx)
+
+    assert runs_db.active_jobs(main_context=ctx)[0]["session_id"] == "codex-thread"
+
+
+def test_set_job_session_is_a_no_op_without_a_job(tmp_path):
+    runs_db.set_job_session(None, "codex-thread", main_context=_ctx(tmp_path))
+
+
+def test_set_job_session_never_raises_on_bad_path(tmp_path):
+    runs_db.set_job_session(1, "codex-thread", main_context=_bad_ctx(tmp_path))
+
+
+def test_a_noted_agent_session_is_what_the_run_records(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.note_agent_session("codee-sid", "codex-thread")
+
+    runs_db.record_run("skill-a", "issue", "codee-sid", "succeeded",
+                       main_context=ctx)
+
+    assert runs_db.recent_runs(main_context=ctx)[0]["session_id"] == "codex-thread"
+
+
+def test_the_note_is_consumed_so_a_later_run_keeps_its_own_id(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.note_agent_session("codee-sid", "codex-thread")
+    runs_db.record_run("skill-a", "issue", "codee-sid", "succeeded",
+                       main_context=ctx)
+
+    runs_db.record_run("skill-b", "issue", "codee-sid", "succeeded",
+                       main_context=ctx)
+
+    assert [r["session_id"] for r in runs_db.recent_runs(main_context=ctx)] == [
+        "codee-sid", "codex-thread"]
+
+
+def test_an_agent_that_ran_under_the_given_id_notes_nothing(tmp_path):
+    # Claude Code and Copilot are told which session to use, so there is no
+    # second id and nothing to swap in.
+    runs_db.note_agent_session("codee-sid", "codee-sid")
+    runs_db.note_agent_session("codee-sid", "")
+
+    assert runs_db.agent_session("codee-sid") == "codee-sid"

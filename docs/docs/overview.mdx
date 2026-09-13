@@ -7,7 +7,7 @@ slug: /
 
 Codee is an AI teammate that works on tasks in your issue tracker.
 
-Codee uses AI agents such as Claude Code and GitHub Copilot. It does not try to reinvent what they already do best: working with code, context management, MCP and other things. At its core, Codee has a [skills](https://agentskills.io) system.
+Codee uses AI agents such as Claude Code, GitHub Copilot and Codex. It does not try to reinvent what they already do best: working with code, context management, MCP and other things. At its core, Codee has a [skills](https://agentskills.io) system.
 
 ## How it works
 
@@ -38,5 +38,20 @@ argument-hint: <STORY_ID>
 This means that this skill will be triggered on a work item with type `story` (`x-codee-issue-type`) in statuses `AI Ready for development` and `AI In Progress` (`x-codee-issue-status`).
 
 Codee will run this skill for a specific task like this: `/story-developer TSK-4192`.
+
+### Choosing an agent per skill
+
+A skill can also say which agent runs it, and on which model:
+
+```yaml
+x-codee-agent: codex
+model: gpt-6-astra
+```
+
+`x-codee-agent` takes an agent code — `claude_code`, `github_copilot` or `codex` — and
+`model` a model id that agent offers. Leave `x-codee-agent` out and the skill runs on the
+[default agent](./configuration#default-agent) from Settings; leave `model` out and it runs
+on whatever that agent defaults to. Both are editable in the Codee UI, where the model
+picker lists the models of the agent the skill is set to.
 
 Skills live in the `.claude/skills` folder and can be checked into your repo. They can be created/modified either as files in your favorite editor or in the Codee UI.

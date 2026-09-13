@@ -4,6 +4,7 @@ import queue
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
@@ -76,7 +77,12 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             log.warning("Could not read the copilot model catalog: %s", exc)
             return []
 
-    def run(self, user_message: str, session_id: str, model: str = "") -> str:
+    def run(self, user_message: str, session_id: str, model: str = "",
+            on_session_id: Callable[[str], None] | None = None) -> str:
+        # The session is ours to name and the CLI is told to use it, so the
+        # answer is known before the run starts.
+        if on_session_id:
+            on_session_id(session_id)
         cmd = [
             self.CLI_COMMAND,
             "-p", user_message,
