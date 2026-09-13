@@ -558,6 +558,31 @@ class TasksProviderTest(unittest.TestCase):
 
         self.assertTrue(verified)
         self.assertIn("11 Fix the thing", message)
+        self.assertIn(
+            "WIQL: SELECT [System.Id] FROM WorkItems "
+            "WHERE [System.WorkItemType] IN ('User Story', 'Task') "
+            "AND [System.State] IN ('Ready') "
+            "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, "
+            "[System.CreatedDate] ASC",
+            message)
+
+    def test_an_empty_check_prints_the_custom_filter_in_the_raw_wiql(self) -> None:
+        self._connect()
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.task_filters = {
+            "azure_devops": "[Custom.Assistant] = 'Codee Agent User Account'"}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   return_value=_response({"workItems": []})):
+            verified, message = provider.verify_connection(["Ready"])
+
+        self.assertTrue(verified)
+        self.assertIn("No tasks are waiting for it right now.", message)
+        self.assertIn(
+            "AND ([Custom.Assistant] = 'Codee Agent User Account') ORDER BY",
+            message)
 
     def test_a_rejected_query_reports_what_azure_devops_said(self) -> None:
         self._connect()
@@ -604,7 +629,7 @@ class AzureDevOpsMcpTest(unittest.TestCase):
 
         self.assertEqual(server.name, "ado")
         self.assertEqual(server.command, "npx")
-        self.assertEqual(server.args, ["-y", "@azure-devops/mcp", "acme",
+        self.assertEqual(server.args, ["-y", "@azure-devops/mcp@2.8.0", "acme",
                                        "--authentication", "azcli"])
         # It signs in through `az login`, so it carries no credentials of ours.
         self.assertEqual(server.env, {})

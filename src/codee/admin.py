@@ -2823,9 +2823,7 @@ def task_filter_setting() -> rx.Component:
                          rows="2", width="100%")),
         hint=rx.text("Optional. Added to every task query as one more AND "
                      "condition, on top of the work items above. Leave it "
-                     "empty to pick up everything they match. The poll does "
-                     "not filter on an assignee — put one here if you want "
-                     "one.",
+                     "empty to pick up everything they match.",
                      color=MUTED, font_size="0.8rem"))
 
 
@@ -2848,7 +2846,8 @@ def tasks_check_row(check: CheckResult) -> rx.Component:
                     color=rx.cond(check.status == "waiting", MUTED, TEXT)),
             rx.cond(
                 check.message != "",
-                rx.text(check.message, color=MUTED, font_size="0.8rem")),
+                rx.text(check.message, color=MUTED, font_size="0.8rem",
+                        white_space="pre-wrap", overflow_wrap="anywhere")),
             spacing="1", align="start", width="100%"),
         spacing="2", align="start", width="100%")
 

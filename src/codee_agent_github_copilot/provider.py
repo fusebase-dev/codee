@@ -108,16 +108,20 @@ class GitHubCopilotAgent(AbstractCodingAgent):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.TIMEOUT_SECONDS,
                 cwd=self._cwd,
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError("Copilot CLI timed out after 2 hours")
 
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         log.debug("copilot exited %d (%d bytes stdout, %d bytes stderr)",
-                  result.returncode, len(result.stdout), len(result.stderr))
+                  result.returncode, len(stdout), len(stderr))
 
-        reply, outcome, errors = _parse_events(result.stdout)
+        reply, outcome, errors = _parse_events(stdout)
 
         # Raise on any non-success so callers retry. A run that fails before the
         # session starts (bad model, no auth) exits non-zero with nothing on
@@ -125,22 +129,22 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         if result.returncode != 0:
             raise RuntimeError(
                 f"Copilot CLI exited {result.returncode}: "
-                f"{_detail(errors, result.stderr)}"
+                f"{_detail(errors, stderr)}"
             )
         if outcome is None:
             # Not the JSONL we know how to read — hand back whatever it printed
             # rather than failing a run that the CLI itself called successful.
             log.warning(
                 "copilot produced no result event; returning raw output")
-            return result.stdout
+            return stdout
         if outcome.get("exitCode"):
             raise RuntimeError(
                 f"Copilot run errored (exit code {outcome['exitCode']}): "
-                f"{_detail(errors, result.stderr)}"
+                f"{_detail(errors, stderr)}"
             )
         if not reply:
             raise RuntimeError(
-                f"Copilot run produced no response: {_detail(errors, result.stderr)}"
+                f"Copilot run produced no response: {_detail(errors, stderr)}"
             )
         return reply
 
@@ -158,6 +162,8 @@ def _fetch_acp_models() -> list[AgentModel]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         cwd=Path.cwd(),
     )

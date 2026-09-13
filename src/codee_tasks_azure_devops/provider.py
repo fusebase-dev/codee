@@ -44,8 +44,10 @@ _FIELDS = [
 _PRIORITY_NAMES = {1: "Highest", 2: "High", 3: "Medium", 4: "Low"}
 
 # Microsoft's own Azure DevOps MCP server, run from npm through `npx` so
-# nothing has to be installed alongside it.
-MCP_SERVER_PACKAGE = "@azure-devops/mcp"
+# nothing has to be installed alongside it. Version 2.8.0 keeps work item
+# creation compatible with coding agents that stringify the consolidated
+# write tool's fields parameter introduced in 2.9.0.
+MCP_SERVER_PACKAGE = "@azure-devops/mcp@2.8.0"
 
 # Ceiling the WIQL query is capped at, matching the JIRA provider's page size.
 _MAX_TASKS = 50
@@ -177,6 +179,13 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         if not (self._config.organization_url and key.isdigit()):
             return ""
         return f"{self._config.organization_url}/_workitems/edit/{key}"
+
+    def verify_connection(self, statuses: list[str]) -> tuple[bool, str]:
+        """Pull tasks and include the exact WIQL in a successful check."""
+        verified, message = super().verify_connection(statuses)
+        if not verified:
+            return verified, message
+        return verified, f"{message}\n\nWIQL: {self._build_wiql(statuses)}"
 
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
