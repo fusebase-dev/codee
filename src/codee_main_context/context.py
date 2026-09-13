@@ -124,6 +124,16 @@ class Settings:
     # Read it through :func:`work_item_types`, never directly — what is stored
     # here may predate a Codee work item that has since become mandatory.
     work_item_types: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Whether the executor rotates between the connected Claude accounts when
+    # the current one runs into its session or weekly usage limit. Off by
+    # default: an installation that never opens this setting keeps using
+    # whatever ``~/.claude/.credentials.json`` already holds, untouched.
+    #
+    # Only the switch is here. The accounts themselves are completed sign-ins —
+    # access tokens, refresh tokens, the email each was granted by — and live
+    # in SQLite (codee_database.claude_code_accounts) for the same reason the
+    # OAuth tokens do: this file is rewritten by the admin UI on every save.
+    claude_code_rotate_keys: bool = False
     # An extra clause every task query is narrowed by, keyed by provider value.
     # Written in the provider's own query language — JQL for JIRA, WIQL for
     # Azure DevOps — so it is kept per provider like the credentials are, and
@@ -155,6 +165,8 @@ def load_settings(data_dir: Path) -> Settings:
                 credentials=data.get("credentials", {}),
                 work_item_types=data.get("work_item_types", {}),
                 task_filters=data.get("task_filters", {}),
+                claude_code_rotate_keys=bool(
+                    data.get("claude_code_rotate_keys", False)),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
         except (json.JSONDecodeError, OSError, KeyError, ValueError):
             pass
@@ -175,6 +187,7 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "credentials": settings.credentials,
         "work_item_types": settings.work_item_types,
         "task_filters": settings.task_filters,
+        "claude_code_rotate_keys": settings.claude_code_rotate_keys,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"
     temp = path.with_name(path.name + ".tmp")

@@ -20,6 +20,10 @@ from codee.admin_service import (
     _remove_redundant_skill_transitions, azure_oauth, issue_prompt_task,
     normalize_work_items, parse_skill, repository_name)
 from codee.lib import runs_db
+from codee_agent_claude_code import oauth as claude_oauth
+from codee_agent_claude_code.account import AccountUnavailable
+from codee_agent_claude_code.usage import Usage, UsageUnavailable
+from codee_database import claude_code_accounts
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
     save_settings)
@@ -152,6 +156,317 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
                                    "bug": "Bug"})
 
             self.assertEqual(service.issue_types(), ("story", "task", "bug"))
+
+
+class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
+    """Connecting, listing and disconnecting the accounts rotation runs on."""
+
+    TOKENS = claude_oauth.Tokens(
+        access_token="access-1", refresh_token="refresh-1",
+        expires_at=1789300823639, refresh_expires_at=1791303745639,
+        scopes=("user:profile", "user:inference"), subscription_type="max")
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        self.directory = Path(self._temporary.name)
+        self.service = AdminService.__new__(AdminService)
+        self.service.data_dir = self.directory
+        self.service.context = CodeeMainContext(data_dir=self.directory)
+        self.service.context.settings = Settings(claude_code_rotate_keys=True)
+        # Built by hand rather than through __init__, like the other service
+        # tests, so the usage cache has to be set up by hand too.
+        self.service._usage_cache = (None, 0.0)
+        self.service._usage_lock = threading.Lock()
+
+    def _connect(self, label: str = "one@example.com",
+                 tokens: claude_oauth.Tokens | None = None) -> tuple[bool, str]:
+        authorization = self.service.start_claude_code_authorization()
+        with patch("codee.admin_service.claude_oauth.exchange_code",
+                   return_value=tokens or self.TOKENS), \
+                patch("codee.admin_service.fetch_account", return_value=label):
+            return self.service.complete_claude_code_authorization(
+                f"the-code#{authorization.state}", authorization)
+
+    def test_a_completed_sign_in_becomes_a_named_account(self) -> None:
+        # Naming it is most of the point: a list of accounts nobody can tell
+        # apart is no better than a list of masked keys.
+        connected, message = self._connect("one@example.com")
+
+        self.assertTrue(connected)
+        self.assertIn("one@example.com", message)
+        accounts = self.service.claude_code_accounts()
+        self.assertEqual([account.label for account in accounts],
+                         ["one@example.com"])
+        self.assertEqual(accounts[0].subscription, "max")
+
+    def test_the_first_account_connected_is_the_one_in_use(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+
+        accounts = self.service.claude_code_accounts()
+
+        self.assertEqual([account.in_use for account in accounts],
+                         [True, False])
+
+    def test_accounts_are_listed_in_the_order_they_were_connected(self) -> None:
+        # That order is the order rotation works through them, so what the user
+        # reads top to bottom is what will actually happen.
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        self._connect("three@example.com")
+
+        self.assertEqual(
+            [account.label for account in self.service.claude_code_accounts()],
+            ["one@example.com", "two@example.com", "three@example.com"])
+
+    def test_the_tokens_are_stored_and_never_reach_the_page(self) -> None:
+        # The page model carries no token at all: it only has to say which
+        # account this is and whether it is live.
+        self._connect()
+
+        listed = self.service.claude_code_accounts()[0]
+        stored = claude_code_accounts.accounts(self.service.context)[0]
+
+        self.assertFalse(hasattr(listed, "access_token"))
+        self.assertEqual(stored.access_token, "access-1")
+        self.assertEqual(stored.refresh_token, "refresh-1")
+        self.assertEqual(stored.expires_at, 1789300823639)
+        # Kept so the page can say when an account has to be signed in again,
+        # and so the executor knows to stop trying to renew it.
+        self.assertEqual(stored.refresh_expires_at, 1791303745639)
+
+    def test_a_code_from_a_different_sign_in_is_refused(self) -> None:
+        # The verifier about to redeem it belongs to this sign-in; a code from
+        # another one would be redeemed against the wrong challenge.
+        authorization = self.service.start_claude_code_authorization()
+
+        with patch("codee.admin_service.claude_oauth.exchange_code") as exchange:
+            connected, message = self.service.complete_claude_code_authorization(
+                "the-code#some-other-state", authorization)
+
+        exchange.assert_not_called()
+        self.assertFalse(connected)
+        self.assertIn("different sign-in", message)
+
+    def test_a_bare_code_without_the_state_is_accepted(self) -> None:
+        # The page prints code and state joined, but a user who copied only the
+        # first half has still copied a usable code.
+        authorization = self.service.start_claude_code_authorization()
+
+        with patch("codee.admin_service.claude_oauth.exchange_code",
+                   return_value=self.TOKENS), \
+                patch("codee.admin_service.fetch_account",
+                      return_value="one@example.com"):
+            connected, _ = self.service.complete_claude_code_authorization(
+                "the-code", authorization)
+
+        self.assertTrue(connected)
+
+    def test_nothing_pasted_is_refused_before_any_round_trip(self) -> None:
+        authorization = self.service.start_claude_code_authorization()
+
+        with patch("codee.admin_service.claude_oauth.exchange_code") as exchange:
+            connected, message = self.service.complete_claude_code_authorization(
+                "   ", authorization)
+
+        exchange.assert_not_called()
+        self.assertFalse(connected)
+        self.assertIn("Paste", message)
+
+    def test_a_refused_code_says_so_and_connects_nothing(self) -> None:
+        authorization = self.service.start_claude_code_authorization()
+
+        with patch("codee.admin_service.claude_oauth.exchange_code",
+                   side_effect=claude_oauth.OAuthApiError("code was refused")):
+            connected, message = self.service.complete_claude_code_authorization(
+                f"the-code#{authorization.state}", authorization)
+
+        self.assertFalse(connected)
+        self.assertIn("code was refused", message)
+        self.assertEqual(self.service.claude_code_accounts(), [])
+
+    def test_an_account_whose_profile_cannot_be_read_is_still_connected(self) -> None:
+        # A name is worth having but it is not the credential; refusing the
+        # sign-in over it would throw away a working account.
+        authorization = self.service.start_claude_code_authorization()
+
+        with patch("codee.admin_service.claude_oauth.exchange_code",
+                   return_value=self.TOKENS), \
+                patch("codee.admin_service.fetch_account",
+                      side_effect=AccountUnavailable("no route")):
+            connected, _ = self.service.complete_claude_code_authorization(
+                f"the-code#{authorization.state}", authorization)
+
+        self.assertTrue(connected)
+        self.assertEqual(len(self.service.claude_code_accounts()), 1)
+
+    def test_disconnecting_the_account_in_use_repoints_to_the_first(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        second = self.service.claude_code_accounts()[1]
+        claude_code_accounts.set_current_account(second.id, self.service.context)
+
+        self.service.disconnect_claude_code_account(second.id)
+
+        accounts = self.service.claude_code_accounts()
+        self.assertEqual([account.label for account in accounts],
+                         ["one@example.com"])
+        self.assertTrue(accounts[0].in_use)
+
+    def test_disconnecting_an_account_forgets_its_tokens(self) -> None:
+        self._connect()
+        account = self.service.claude_code_accounts()[0]
+
+        self.service.disconnect_claude_code_account(account.id)
+
+        self.assertEqual(claude_code_accounts.accounts(self.service.context), [])
+
+    def test_switching_rotation_off_forgets_which_account_is_in_use(self) -> None:
+        # So switching it back on later starts from the top rather than from
+        # whatever a run before the change left behind.
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        second = self.service.claude_code_accounts()[1]
+        claude_code_accounts.set_current_account(second.id, self.service.context)
+
+        self.service.save_settings("jira", "claude_code", 3, {}, None, "", False)
+
+        self.assertEqual(
+            claude_code_accounts.current_account_id(self.service.context), 0)
+
+    def test_switching_rotation_on_picks_the_first_account(self) -> None:
+        self.service.context.settings = Settings(claude_code_rotate_keys=False)
+        self._connect("one@example.com")
+
+        self.service.save_settings("jira", "claude_code", 3, {}, None, "", True)
+
+        self.assertTrue(self.service.claude_code_accounts()[0].in_use)
+
+    def test_an_account_past_its_refresh_window_is_flagged_on_the_page(self) -> None:
+        # Nothing else on the page would ever tell the user: rotation just
+        # skips it, silently, on the day they need it most.
+        expired = claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=1, refresh_expires_at=1)
+        self._connect("one@example.com", tokens=expired)
+
+        listed = self.service.claude_code_accounts()[0]
+
+        self.assertTrue(listed.needs_reconnect)
+
+    def test_a_healthy_account_is_not_flagged(self) -> None:
+        far_future = int((time.time() + 30 * 24 * 3600) * 1000)
+        self._connect("one@example.com", tokens=claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=far_future,
+            refresh_expires_at=far_future))
+
+        self.assertFalse(self.service.claude_code_accounts()[0].needs_reconnect)
+
+    def test_an_account_with_no_known_window_is_not_flagged(self) -> None:
+        # Zero means the API never said, which is not the same as expired.
+        self._connect("one@example.com", tokens=claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=1, refresh_expires_at=0))
+
+        self.assertFalse(self.service.claude_code_accounts()[0].needs_reconnect)
+
+    def test_each_account_reports_both_of_its_windows(self) -> None:
+        self._connect("one@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 12.0,
+                                              "seven_day": 70.0},
+                      resets_at={"five_hour": "2026-09-13T14:10:00+00:00",
+                                 "seven_day": "2026-09-16T09:00:00+00:00"})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage", return_value=usage):
+            measured = self.service.claude_code_account_usage()
+
+        self.assertEqual(measured[0].session_percent, 12.0)
+        self.assertEqual(measured[0].weekly_percent, 70.0)
+        self.assertEqual(measured[0].weekly_resets, "2026-09-16T09:00:00+00:00")
+        self.assertEqual(measured[0].usage_error, "")
+
+    def test_the_reading_is_cached_rather_than_taken_every_redraw(self) -> None:
+        # The dashboard redraws every second; without this that would be a
+        # request per account per second for a number that moves over hours.
+        self._connect("one@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 1.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      return_value=usage) as fetch:
+            self.service.claude_code_account_usage()
+            self.service.claude_code_account_usage()
+
+        fetch.assert_called_once()
+
+    def test_a_token_that_has_aged_out_is_renewed_before_it_is_asked(self) -> None:
+        # An account waiting its turn holds an expired token and would report
+        # itself rejected rather than report its allowance.
+        self._connect("one@example.com")
+
+        with patch("codee.admin_service.ensure_fresh",
+                   side_effect=lambda a, c: a) as renew, \
+                patch("codee.admin_service.fetch_usage",
+                      return_value=Usage(limited=False, windows={}, resets_at={})):
+            self.service.claude_code_account_usage()
+
+        renew.assert_called_once()
+
+    def test_an_account_whose_usage_cannot_be_read_says_so_on_its_own_row(self) -> None:
+        # And the others still draw: one unreachable account must not blank the
+        # whole widget.
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        good = Usage(limited=False, windows={"five_hour": 5.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      side_effect=[UsageUnavailable("connection reset"), good]):
+            measured = self.service.claude_code_account_usage()
+
+        self.assertIn("connection reset", measured[0].usage_error)
+        self.assertEqual(measured[0].session_percent, -1.0)
+        self.assertEqual(measured[1].session_percent, 5.0)
+
+    def test_an_account_needing_a_new_sign_in_is_not_asked_at_all(self) -> None:
+        # There is nothing to ask with, and the row already says what to do.
+        self._connect("one@example.com", tokens=claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=1, refresh_expires_at=1))
+
+        with patch("codee.admin_service.fetch_usage") as fetch:
+            measured = self.service.claude_code_account_usage()
+
+        fetch.assert_not_called()
+        self.assertTrue(measured[0].needs_reconnect)
+        self.assertIn("connected again", measured[0].usage_error)
+
+    def test_the_account_in_use_is_marked_in_the_reading(self) -> None:
+        # What the widget highlights; without it the list says nothing about
+        # which subscription is actually doing the work.
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      return_value=Usage(limited=False, windows={}, resets_at={})):
+            measured = self.service.claude_code_account_usage()
+
+        self.assertEqual([account.in_use for account in measured], [True, False])
+
+    def test_no_accounts_means_no_requests(self) -> None:
+        with patch("codee.admin_service.fetch_usage") as fetch:
+            self.assertEqual(self.service.claude_code_account_usage(), [])
+
+        fetch.assert_not_called()
+
+    def test_the_sign_in_url_is_the_claude_code_oauth_client(self) -> None:
+        # Same client and same scopes as `claude /login`, which is what makes
+        # the resulting token able to answer whose account it is.
+        url = self.service.start_claude_code_authorization().url
+
+        self.assertIn(claude_oauth.CLIENT_ID, url)
+        self.assertIn("code_challenge_method=S256", url)
+        self.assertIn("user%3Aprofile", url)
 
 
 class AdminServiceWorkItemTypesTest(unittest.TestCase):

@@ -119,6 +119,37 @@ class SettingsFileTest(unittest.TestCase):
             self.assertEqual(settings.task_filters, {})
             self.assertEqual(task_filter(settings), "")
             self.assertEqual(codee_issue_types(settings), ("story", "task"))
+            # Rotation stays off for an installation that predates it, so the
+            # credentials file it is signed in with is left alone.
+            self.assertFalse(settings.claude_code_rotate_keys)
+
+
+class ClaudeCodeRotationSettingTest(unittest.TestCase):
+    """The switch that decides whether Codee writes the credentials file at all."""
+
+    def test_rotation_is_off_by_default(self) -> None:
+        self.assertFalse(Settings().claude_code_rotate_keys)
+
+    def test_the_switch_survives_a_save_and_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            save_settings(directory, Settings(claude_code_rotate_keys=True))
+
+            self.assertTrue(load_settings(directory).claude_code_rotate_keys)
+
+    def test_no_account_credentials_are_written_to_settings(self) -> None:
+        # The accounts are completed sign-ins — access and refresh tokens —
+        # and belong in SQLite with the other OAuth credentials, not in a file
+        # the admin UI rewrites on every save.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            save_settings(directory, Settings(claude_code_rotate_keys=True))
+
+            stored = json.loads((directory / "settings.json").read_text())
+
+            self.assertEqual(
+                [key for key in stored if key.startswith("claude_code")],
+                ["claude_code_rotate_keys"])
 
 
 if __name__ == "__main__":

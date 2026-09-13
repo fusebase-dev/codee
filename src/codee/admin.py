@@ -26,6 +26,15 @@ AGENT_CODES = {name: code for code, name in AGENT_NAMES.items()}
 AGENT_OPTIONS = [DEFAULT_AGENT_OPTION, *AGENT_NAMES.values()]
 # How often the workflow page picks up the lines the generation reported.
 WORKFLOW_PROGRESS_INTERVAL = 0.5
+# How often the dashboard asks for the accounts' allowances. The service caches
+# the answer for longer still; this only decides how soon a fresh cache is
+# picked up. Allowance moves over hours, so neither number needs to be small.
+USAGE_POLL_INTERVAL = 30
+# Whether this machine has the Claude Code CLI, and so whether the settings
+# page offers its access keys at all. Asked once: an agent does not get
+# installed or uninstalled under a running Codee, and the answer shapes the
+# page rather than anything the user can change on it.
+CLAUDE_CODE_AVAILABLE = SERVICE.claude_code_available()
 
 
 def _skill_summary(skill: dict[str, str]) -> SkillSummary:
@@ -33,6 +42,23 @@ def _skill_summary(skill: dict[str, str]) -> SkillSummary:
     return SkillSummary(**{
         **skill,
         "agent": AGENT_NAMES.get(skill["agent"], DEFAULT_AGENT_OPTION)})
+
+
+def _usage_row(account: Any) -> "ClaudeAccount":
+    """One account's dashboard row, with its percentages rounded to whole numbers.
+
+    Rounded here rather than in the service because it is a presentation
+    choice: the meter takes an integer, and nobody reads an allowance to a
+    decimal place. A window that was never read keeps its -1.
+    """
+    return ClaudeAccount(**{
+        **account.__dict__,
+        "session_percent": _percent(account.session_percent),
+        "weekly_percent": _percent(account.weekly_percent)})
+
+
+def _percent(value: float) -> int:
+    return -1 if value < 0 else round(value)
 
 
 def _save_toast(persisted: bool, pushed: bool, message: str) -> Any:
@@ -60,6 +86,37 @@ class ModelOption(BaseModel):
 
     id: str
     name: str
+
+
+class ClaudeAccount(BaseModel):
+    """One connected Claude account as the settings page lists it.
+
+    No token in sight: the page needs to say which account this is and whether
+    it is the one in use, and nothing more. A credential that never leaves the
+    server cannot leak from the browser.
+    """
+
+    id: int
+    # The email the sign-in was granted by. Only empty for an account whose
+    # profile could not be read when it was connected.
+    label: str
+    subscription: str = ""
+    # The one the executor is running Claude Code on right now, per SQLite.
+    # It just answers "which of these is live?", which is the first thing
+    # anyone looking at this list wants to know.
+    in_use: bool = False
+    # The account's refresh token has run out, so nothing can renew it and
+    # rotation skips it. The only thing on this row the user has to act on.
+    needs_reconnect: bool = False
+    # Percent of each window already spent, and when each comes back. Whole
+    # numbers, because that is what the meter takes and what anyone reads off
+    # it. -1 means the usage was never read, which has to draw differently
+    # from zero.
+    session_percent: int = -1
+    weekly_percent: int = -1
+    session_resets: str = ""
+    weekly_resets: str = ""
+    usage_error: str = ""
 
 
 class MemoryEntry(BaseModel):
@@ -230,6 +287,13 @@ class AdminState(rx.State):
     # leave the page frozen on the numbers it last wrote.
     dashboard_watch: int = 0
 
+    # The accounts with their allowance, for the dashboard widget. Separate
+    # from ``claude_code_accounts``, which the settings page fills without a
+    # network call: this one costs a request per account and is refreshed on a
+    # slow loop of its own.
+    claude_account_usage: list[ClaudeAccount] = []
+    claude_usage_loading: bool = False
+
     runs: list[RunRecord] = []
     runs_has_more: bool = False
     runs_loading: bool = False
@@ -257,6 +321,18 @@ class AdminState(rx.State):
     tasks_provider: str = "jira"
     coding_agent: str = "claude_code"
     max_parallel_agents: str = "3"
+    # Whether the executor runs Claude Code on the connected accounts instead
+    # of leaving ~/.claude/.credentials.json alone.
+    claude_code_rotate_keys: bool = False
+    claude_code_accounts: list[ClaudeAccount] = []
+    # The sign-in in flight, if any: the page shows the URL to open and waits
+    # for the code. The verifier behind it is backend-only — it is what proves
+    # the code was redeemed by whoever asked for it, so it never goes to the
+    # browser.
+    claude_code_authorize_url: str = ""
+    _claude_code_authorization: Any = None
+    claude_code_auth_code: str = ""
+    claude_code_connecting: bool = False
     jira_base_url: str = ""
     jira_account_email: str = ""
     jira_api_token: str = ""
@@ -603,6 +679,19 @@ class AdminState(rx.State):
                 self.load_repositories()
         yield rx.toast.success(message) if added else rx.toast.error(message)
 
+    def load_dashboard_page(self) -> Any:
+        """Everything the dashboard needs, in the order it needs it.
+
+        The setting is read first and on the main thread: the usage poll starts
+        only when rotation is on, and a background event listed alongside would
+        start before this one committed and find the flag still false.
+        """
+        self.claude_code_rotate_keys = SERVICE.load_settings(
+        ).claude_code_rotate_keys
+        if not self.claude_code_rotate_keys:
+            self.claude_account_usage = []
+        return [AdminState.poll_dashboard, AdminState.poll_claude_account_usage]
+
     def _refresh_dashboard(self) -> None:
         dashboard = SERVICE.dashboard()
         self.active_jobs = [_active_job(job) for job in dashboard["active"]]
@@ -636,6 +725,42 @@ class AdminState(rx.State):
                     # end the poll; the next tick draws the numbers again.
                     print(f"[admin] Failed to refresh dashboard: {error}")
             await asyncio.sleep(1)
+
+    @rx.event(background=True)
+    async def poll_claude_account_usage(self) -> None:
+        """Keep the dashboard's account allowances current while it is on screen.
+
+        A loop of its own rather than a line in the dashboard poll: that one
+        redraws every second off the local database, and this is a network
+        round trip per connected account. It follows the same watch, so it ends
+        when the dashboard does instead of polling Anthropic behind another
+        page.
+        """
+        async with self:
+            watch = self.dashboard_watch
+            enabled = self.claude_code_rotate_keys
+        if not enabled:
+            return
+        while True:
+            async with self:
+                if self.dashboard_watch != watch or self.active_route != "/":
+                    return
+                self.claude_usage_loading = not self.claude_account_usage
+
+            try:
+                measured = await asyncio.to_thread(
+                    SERVICE.claude_code_account_usage)
+            except Exception as error:  # noqa: BLE001 - one bad read must not
+                # end the loop; the next pass draws the numbers again.
+                print(f"[admin] Failed to read Claude account usage: {error}")
+                measured = None
+
+            async with self:
+                self.claude_usage_loading = False
+                if measured is not None:
+                    self.claude_account_usage = [_usage_row(account)
+                                                 for account in measured]
+            await asyncio.sleep(USAGE_POLL_INTERVAL)
 
     def _fetch_runs_page(self, offset: int) -> list[RunRecord]:
         """One page of runs. Reads one row past the page to learn whether more exist."""
@@ -767,6 +892,9 @@ class AdminState(rx.State):
         self.tasks_provider = settings.tasks_provider.value
         self.coding_agent = settings.coding_agent.value
         self.max_parallel_agents = str(settings.max_parallel_agents)
+        self.claude_code_rotate_keys = settings.claude_code_rotate_keys
+        self._cancel_claude_code_sign_in()
+        self.load_claude_code_accounts()
         jira = settings.credentials.get("jira", {})
         azure = settings.credentials.get("azure_devops", {})
         self.jira_base_url = jira.get("base_url", "")
@@ -966,6 +1094,79 @@ class AdminState(rx.State):
 
     def set_max_parallel_agents(self, value: str) -> None:
         self.max_parallel_agents = value
+
+    def set_claude_code_rotate_keys(self, value: bool) -> None:
+        self.claude_code_rotate_keys = value
+
+    def load_claude_code_accounts(self) -> None:
+        self.claude_code_accounts = [ClaudeAccount(**account.__dict__)
+                                     for account in SERVICE.claude_code_accounts()]
+
+    def start_claude_code_sign_in(self) -> Any:
+        """Open a sign-in: send the browser off to it, and wait for the code.
+
+        The machine running Codee may have no browser of its own — it is a
+        server as often as a laptop — so the URL is also shown, to be opened
+        wherever the user actually is, and the code comes back by hand. That is
+        the flow ``claude /login`` falls back to, and the only one Anthropic
+        will redirect to a page rather than to a callback Codee cannot host.
+        """
+        authorization = SERVICE.start_claude_code_authorization()
+        self._claude_code_authorization = authorization
+        self.claude_code_authorize_url = authorization.url
+        self.claude_code_auth_code = ""
+        return rx.redirect(authorization.url, is_external=True)
+
+    def set_claude_code_auth_code(self, value: str) -> None:
+        self.claude_code_auth_code = value
+
+    def cancel_claude_code_sign_in(self) -> None:
+        self._cancel_claude_code_sign_in()
+
+    def _cancel_claude_code_sign_in(self) -> None:
+        """Drop the sign-in in flight, verifier included."""
+        self._claude_code_authorization = None
+        self.claude_code_authorize_url = ""
+        self.claude_code_auth_code = ""
+        self.claude_code_connecting = False
+
+    @rx.event(background=True)
+    async def finish_claude_code_sign_in(self) -> Any:
+        """Redeem the pasted code and add the account it yields.
+
+        In the background because it is two network round trips — the exchange,
+        then asking whose account the token is — and neither should freeze the
+        settings page while it happens.
+        """
+        async with self:
+            if self.claude_code_connecting:
+                return
+            authorization = self._claude_code_authorization
+            if authorization is None:
+                yield rx.toast.error("Start the sign-in first")
+                return
+            pasted = self.claude_code_auth_code
+            self.claude_code_connecting = True
+
+        try:
+            connected, message = await asyncio.to_thread(
+                SERVICE.complete_claude_code_authorization, pasted, authorization)
+        except Exception as error:  # noqa: BLE001 - never leave the page spinning
+            connected, message = False, f"{type(error).__name__}: {error}"
+
+        async with self:
+            self.claude_code_connecting = False
+            if connected:
+                # The code is single-use, so a sign-in that worked is over
+                # whether or not the user closes the box.
+                self._cancel_claude_code_sign_in()
+                self.load_claude_code_accounts()
+        yield rx.toast.success(message) if connected else rx.toast.error(message)
+
+    def disconnect_claude_code_account(self, account_id: int) -> Any:
+        SERVICE.disconnect_claude_code_account(account_id)
+        self.load_claude_code_accounts()
+        return rx.toast.success("Account disconnected")
 
     def set_jira_base_url(self, value: str) -> None:
         self.jira_base_url = value
@@ -1198,7 +1399,11 @@ class AdminState(rx.State):
             self._credentials(),
             work_items,
             self._task_filter(),
+            self.claude_code_rotate_keys,
         )
+        # Saving is what picks the first account when rotation has just been
+        # switched on, so the badge has to be redrawn from what that decided.
+        self.load_claude_code_accounts()
         return ""
 
     def save_settings(self) -> Any:
@@ -1523,10 +1728,114 @@ def running_panel() -> rx.Component:
     )
 
 
+def usage_meter(label: str, percent: rx.Var, resets: rx.Var) -> rx.Component:
+    """One window's allowance: how much is gone, and when it comes back.
+
+    A bar rather than a number alone, because the only question anyone asks of
+    this is "how close is it?" — and an amber-then-red bar answers that before
+    the percentage is read.
+    """
+    known = percent >= 0
+    return rx.vstack(
+        rx.hstack(
+            rx.text(label, color=MUTED, font_size="0.75rem"),
+            rx.spacer(),
+            rx.text(rx.cond(known, percent.to_string() + "%", "\u2014"),
+                    font_size="0.75rem", font_family=MONO,
+                    color=rx.cond(percent >= 100, "var(--red-11)", TEXT)),
+            spacing="2", align="center", width="100%"),
+        rx.progress(
+            value=rx.cond(known, percent, 0), max=100, size="1",
+            color_scheme=rx.cond(percent >= 100, "red",
+                                 rx.cond(percent >= 80, "amber", "green")),
+            width="100%"),
+        # Only worth the line when the window is actually under pressure: a
+        # reset time on an account at 4% is noise.
+        rx.cond(
+            (resets != "") & (percent >= 80),
+            rx.text("resets " + resets, color=MUTED, font_size="0.68rem"),
+            rx.fragment()),
+        spacing="1", width="100%")
+
+
+def claude_account_usage_row(account: ClaudeAccount) -> rx.Component:
+    """One account on the dashboard: who it is, and what it has left."""
+    return rx.box(
+        rx.hstack(
+            rx.cond(account.in_use, live_dot("0.45rem"), rx.fragment()),
+            rx.text(rx.cond(account.label != "", account.label,
+                            "Account " + account.id.to_string()),
+                    font_size="0.85rem",
+                    font_weight=rx.cond(account.in_use, "600", "400"),
+                    color=rx.cond(account.in_use, ACCENT, TEXT),
+                    overflow="hidden", text_overflow="ellipsis",
+                    white_space="nowrap"),
+            rx.cond(account.in_use,
+                    rx.badge("in use", color_scheme="green", variant="soft",
+                             flex_shrink="0"),
+                    rx.fragment()),
+            rx.cond(account.needs_reconnect,
+                    rx.badge("sign in again", color_scheme="amber",
+                             variant="soft", flex_shrink="0"),
+                    rx.fragment()),
+            rx.spacer(),
+            spacing="2", align="center", width="100%",
+            margin_bottom="0.6rem"),
+        rx.cond(
+            account.usage_error != "",
+            rx.text(account.usage_error, color=MUTED, font_size="0.75rem",
+                    font_style="italic"),
+            rx.grid(
+                usage_meter("Session", account.session_percent,
+                            account.session_resets),
+                usage_meter("This week", account.weekly_percent,
+                            account.weekly_resets),
+                columns=rx.breakpoints(initial="1", sm="2"), gap="1rem",
+                width="100%")),
+        padding="0.85rem",
+        border=rx.cond(account.in_use, f"1px solid {ACCENT}", BORDER),
+        background=rx.cond(account.in_use, RUNNING_BACKGROUND,
+                           PAGE_BACKGROUND),
+        width="100%")
+
+
+def claude_accounts_panel() -> rx.Component:
+    """What each connected Claude account has left, and which one is live.
+
+    Only on the page when rotation is on — with it off there is one account and
+    it is whatever the machine is signed in as, which this panel could not name
+    and would have nothing to say about.
+    """
+    return rx.box(
+        rx.hstack(
+            rx.heading("Claude accounts", size="4"),
+            rx.cond(AdminState.claude_usage_loading,
+                    rx.spinner(size="1"), rx.fragment()),
+            spacing="3", align="center", width="100%",
+            margin_bottom="0.9rem"),
+        rx.cond(
+            AdminState.claude_account_usage,
+            rx.vstack(rx.foreach(AdminState.claude_account_usage,
+                                 claude_account_usage_row),
+                      spacing="2", width="100%"),
+            rx.hstack(
+                rx.icon("circle-user-round", size=16, color=SUBTLE_ICON),
+                rx.text(rx.cond(AdminState.claude_usage_loading,
+                                "Reading each account's allowance\u2026",
+                                "No accounts connected yet."), color=MUTED),
+                spacing="2", align="center")),
+        padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
+
+
 def dashboard_page() -> rx.Component:
     return shell(rx.vstack(
         page_header(
             "Dashboard", "Run activity and live coding-agent sessions."),
+        # First, because it is the only part of this page that answers "what is
+        # happening right now"; the counts and the chart are history.
+        running_panel(),
+        rx.cond(AdminState.claude_code_rotate_keys,
+                claude_accounts_panel(), rx.fragment()),
         rx.grid(
             rx.box(rx.text("Total runs", color=MUTED), rx.heading(AdminState.total_runs, size="8"),
                    padding="1.25rem", background=SURFACE, border=BORDER),
@@ -1534,7 +1843,6 @@ def dashboard_page() -> rx.Component:
                    padding="1.25rem", background=SURFACE, border=BORDER),
             running_tile(),
             columns=rx.breakpoints(initial="1", sm="2", lg="3"), gap="1rem", width="100%"),
-        running_panel(),
         rx.box(
             rx.heading("Last 24 hours by hour",
                        size="4", margin_bottom="1rem"),
@@ -2576,6 +2884,126 @@ def tasks_verification() -> rx.Component:
         spacing="3", width="100%")
 
 
+def claude_account_row(account: ClaudeAccount) -> rx.Component:
+    """One connected account: who it is, whether it is live, and disconnect."""
+    return rx.hstack(
+        rx.icon("circle-user-round", size=16, color=MUTED, flex_shrink="0"),
+        rx.text(rx.cond(account.label != "", account.label,
+                        "Account " + account.id.to_string()),
+                font_size="0.85rem", overflow="hidden",
+                text_overflow="ellipsis", white_space="nowrap"),
+        rx.cond(account.subscription != "",
+                rx.badge(account.subscription, color_scheme="gray",
+                         variant="soft", flex_shrink="0"),
+                rx.fragment()),
+        rx.cond(account.in_use,
+                rx.badge("in use", color_scheme="green", variant="soft",
+                         flex_shrink="0"),
+                rx.fragment()),
+        # Said out loud rather than left to a silent skip: an account that can
+        # no longer renew itself is one the user has to sign in again, and
+        # nothing else on this page would ever tell them.
+        rx.cond(account.needs_reconnect,
+                rx.badge("sign in again", color_scheme="amber",
+                         variant="soft", flex_shrink="0",
+                         title="This account's session has expired. "
+                               "Disconnect it and connect it again."),
+                rx.fragment()),
+        rx.spacer(),
+        # Icon-only, so it needs a name of its own: without one a screen reader
+        # announces identical "button"s down the column.
+        rx.button(rx.icon("trash-2", size=14), type="button",
+                  variant="ghost", color_scheme="red",
+                  aria_label="Disconnect " + account.label,
+                  title="Disconnect this account",
+                  on_click=lambda: AdminState.disconnect_claude_code_account(
+                      account.id)),
+        spacing="3", align="center", width="100%",
+        padding="0.45rem 0.7rem", border=BORDER, background=PAGE_BACKGROUND)
+
+
+def claude_code_sign_in() -> rx.Component:
+    """The box that appears while a sign-in is waiting for its code.
+
+    Anthropic prints the code on its own page rather than redirecting anywhere
+    Codee could listen, so the last step is a copy and paste. The URL is shown
+    as well as opened: the machine running Codee is often a server with no
+    browser, and the page has to be openable from wherever the user is.
+    """
+    return rx.vstack(
+        rx.text("Approve the sign-in in the page that opened, then paste the "
+                "code it shows back here.", font_size="0.82rem"),
+        rx.text("If nothing opened, copy this link into a browser:",
+                color=MUTED, font_size="0.8rem"),
+        rx.code(AdminState.claude_code_authorize_url, font_size="0.72rem",
+                color_scheme="gray", style={"word_break": "break-all"},
+                width="100%"),
+        rx.hstack(
+            rx.input(value=AdminState.claude_code_auth_code,
+                     on_change=AdminState.set_claude_code_auth_code,
+                     placeholder="Paste the code from that page",
+                     type="password", flex="1", min_width="0"),
+            rx.button(
+                rx.cond(AdminState.claude_code_connecting,
+                        rx.spinner(size="2"), rx.icon("check", size=16)),
+                rx.cond(AdminState.claude_code_connecting,
+                        "Connecting\u2026", "Connect"),
+                type="button", disabled=AdminState.claude_code_connecting,
+                on_click=AdminState.finish_claude_code_sign_in),
+            rx.button("Cancel", type="button", variant="soft",
+                      disabled=AdminState.claude_code_connecting,
+                      on_click=AdminState.cancel_claude_code_sign_in),
+            spacing="3", align="center", width="100%"),
+        spacing="3", width="100%", padding="0.85rem",
+        border=BORDER, background=PAGE_BACKGROUND)
+
+
+def claude_code_accounts_setting() -> rx.Component:
+    """The connected accounts, and the button that connects another.
+
+    Only drawn while the option is on: with it off Codee never touches the
+    credentials file, and a list of accounts under a switched-off setting reads
+    as something that is in use.
+    """
+    return rx.vstack(
+        rx.cond(
+            AdminState.claude_code_accounts,
+            rx.vstack(rx.foreach(AdminState.claude_code_accounts,
+                                 claude_account_row),
+                      spacing="2", width="100%"),
+            rx.callout("Connect at least one account, or Codee will leave "
+                       "Claude Code signed in as it already is.",
+                       icon="circle-alert", size="1", color_scheme="amber",
+                       width="100%")),
+        rx.cond(
+            AdminState.claude_code_authorize_url != "",
+            claude_code_sign_in(),
+            rx.button(rx.icon("plus", size=16), "Connect a Claude account",
+                      type="button", variant="outline",
+                      on_click=AdminState.start_claude_code_sign_in)),
+        spacing="3", width="100%")
+
+
+def claude_code_setting() -> rx.Component:
+    """Rotating Claude Code between subscriptions as each one runs out.
+
+    Only on the page when the CLI is installed: the accounts are written into
+    Claude Code's own credentials file, so on a machine running Copilot or
+    Codex alone this would configure something that can never happen.
+    """
+    return rx.box(
+        rx.heading("Claude Code", size="4", margin_bottom="1rem"),
+        rx.vstack(
+            rx.checkbox("Use specified accounts - Auto accounts rotate",
+                        checked=AdminState.claude_code_rotate_keys,
+                        on_change=AdminState.set_claude_code_rotate_keys,
+                        size="2"),
+            rx.cond(AdminState.claude_code_rotate_keys,
+                    claude_code_accounts_setting(), rx.fragment()),
+            spacing="3", align="start", width="100%"),
+        padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
+
+
 def settings_page() -> rx.Component:
     jira = TasksProvider.JIRA
     jira_fields = rx.vstack(
@@ -2616,6 +3044,10 @@ def settings_page() -> rx.Component:
                                type="number", min=1, width="100%")),
                 spacing="4", width="100%"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
+        # Decided when the page is built rather than with an rx.cond, because
+        # which agents a machine has is not state: there is no event that could
+        # ever flip it, and nothing on the page should be able to.
+        claude_code_setting() if CLAUDE_CODE_AVAILABLE else rx.fragment(),
         rx.box(
             rx.heading("Tasks provider", size="4", margin_bottom="1rem"),
             field("Provider", rx.select(["jira", "azure_devops"], value=AdminState.tasks_provider,
@@ -2817,7 +3249,7 @@ app = rx.App(
     api_transformer=api_app,
 )
 app.add_page(dashboard_page, route="/", title="Dashboard | Codee",
-             on_load=AdminState.poll_dashboard)
+             on_load=AdminState.load_dashboard_page)
 app.add_page(skills_page, route="/skills", title="Skills | Codee",
              on_load=[AdminState.load_skills, AdminState.load_agent_models])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",

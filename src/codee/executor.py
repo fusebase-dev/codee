@@ -18,7 +18,7 @@ from codee_main_context.logging import configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
 from codee.coding_agents import resolve_agent_code
-from codee.lib import runs_db
+from codee.lib import claude_key_rotation, runs_db
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
 from codee.lib.trigger_email_skills import trigger_email_skills
@@ -418,6 +418,10 @@ def main() -> None:
                     "idle until it is set up in Settings (no restart needed)")
 
     runs_db.clear_active_jobs(context)  # purge rows left by a previous process
+    # Before the first tick: the thread's own first check puts the configured
+    # key into Claude Code's credentials file, so an agent launched by that
+    # tick already runs on the key Codee thinks it is running on.
+    claude_key_rotation.start(context)
 
     log.info("Starting the main loop (ticking every %ss)...", POLL_INTERVAL)
     log.info("Tasks provider: %s", tasks_provider.describe())

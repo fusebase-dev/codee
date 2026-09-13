@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -16,14 +17,20 @@ from urllib.parse import urlparse
 import yaml
 from dotenv import load_dotenv
 
-from codee_database import oauth_tokens
+from codee_database import claude_code_accounts, oauth_tokens
 from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_claude_code import oauth as claude_oauth
+from codee_agent_claude_code.account import AccountUnavailable, fetch_account
+from codee_agent_claude_code.provider import ClaudeCodeAgent
+from codee_agent_claude_code.usage import (
+    SESSION_WINDOW, WEEKLY_WINDOW, UsageUnavailable, fetch_usage)
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
 from codee.coding_agents import (
     CODING_AGENTS, agent_label, build_coding_agent, resolve_agent_code)
 from codee.lib import runs_db
+from codee.lib.claude_key_rotation import ensure_fresh
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -116,6 +123,41 @@ WORKFLOW_CACHE_FILE = "workflow.json"
 # inference changes what it draws, so a cache written by an older Codee is
 # regenerated instead of rendered.
 WORKFLOW_CACHE_VERSION = 5
+
+# How long the dashboard's account usage stands before it is asked for again.
+# The page redraws every second and the answer moves over hours, so anything
+# shorter would be a request per account per second for a number that has not
+# changed.
+USAGE_CACHE_SECONDS = 60
+
+
+@dataclass(frozen=True)
+class ConnectedAccount:
+    """One connected Claude account, as the settings page lists it.
+
+    Carries no token: the page only ever needs to say which account this is and
+    whether it is the one in use, and a credential that never leaves the server
+    cannot leak from the browser.
+    """
+
+    id: int
+    label: str
+    subscription: str = ""
+    in_use: bool = False
+    # Percent of the rolling session window and the weekly one already spent,
+    # and when each comes back. -1 means "not read": an account whose usage
+    # could not be asked for has to read differently from one sitting at zero.
+    session_percent: float = -1.0
+    weekly_percent: float = -1.0
+    session_resets: str = ""
+    weekly_resets: str = ""
+    # Why its usage could not be read, when it could not be.
+    usage_error: str = ""
+    # True once the refresh token has run out: the account cannot renew itself
+    # any more and has to be signed in again. The one thing on this row the
+    # user has to act on, so it is the one thing besides the email worth
+    # carrying to the page.
+    needs_reconnect: bool = False
 
 
 @dataclass(frozen=True)
@@ -762,6 +804,11 @@ class AdminService:
         # answer is cached per agent for the life of the process.
         self._models_cache: dict[CodingAgent, list[AgentModel]] = {}
         self._models_lock = threading.Lock()
+        # The last account usage read, and when. Shared by every visitor to the
+        # dashboard, because it is a property of the accounts rather than of
+        # whoever is looking at them.
+        self._usage_cache: tuple[list[Any] | None, float] = (None, 0.0)
+        self._usage_lock = threading.Lock()
 
     def _git_push(self, message: str) -> tuple[bool, str]:
         # AGENTS.md is only staged once it exists, so git add never fails on it.
@@ -1950,6 +1997,7 @@ class AdminService:
         credentials: dict[str, str],
         work_items: dict[str, str] | None = None,
         task_filter: str = "",
+        claude_code_rotate_keys: bool = False,
     ) -> None:
         current = self.context.settings
         all_credentials = dict(current.credentials)
@@ -1970,9 +2018,175 @@ class AdminService:
             credentials=all_credentials,
             work_item_types=all_work_items,
             task_filters=all_task_filters,
+            claude_code_rotate_keys=claude_code_rotate_keys,
             max_parallel_agents=max(1, max_parallel_agents),
         )
         save_settings(self.data_dir, self.context.settings)
+        self._reconcile_claude_code_account()
+
+    def claude_code_available(self) -> bool:
+        """Whether this machine has the Claude Code CLI at all.
+
+        What decides if the settings page offers the account rotation section:
+        the accounts are written into Claude Code's own credentials file, so on
+        a machine running only Copilot or Codex the section would configure
+        something that can never happen.
+        """
+        return ClaudeCodeAgent.is_installed()
+
+    def claude_code_accounts(self) -> list[ConnectedAccount]:
+        """The connected accounts, in rotation order, for the settings page."""
+        try:
+            current = claude_code_accounts.current_account_id(self.context)
+            now = int(datetime.now(timezone.utc).timestamp() * 1000)
+            return [ConnectedAccount(id=account.id, label=account.label,
+                                     subscription=account.subscription_type,
+                                     in_use=account.id == current,
+                                     needs_reconnect=account.needs_reconnect(now))
+                    for account in claude_code_accounts.accounts(self.context)]
+        except Exception as error:  # noqa: BLE001 - the list must not break the page
+            print(f"[admin] Failed to read the connected Claude Code accounts: "
+                  f"{error}")
+            return []
+
+    def claude_code_account_usage(self) -> list[ConnectedAccount]:
+        """The connected accounts with each one's remaining allowance.
+
+        One network round trip per account, so it is cached for
+        :data:`USAGE_CACHE_SECONDS` — the dashboard redraws every second and
+        must not turn that into a request per second per account.
+
+        Tokens are renewed first where they need it: an account that has been
+        waiting its turn is holding an expired one and would report itself
+        rejected rather than report its allowance.
+
+        Never raises. A widget that cannot read one account's usage says so on
+        that row and still draws the others.
+        """
+        listed = self.claude_code_accounts()
+        if not listed:
+            return []
+        now = time.monotonic()
+        with self._usage_lock:
+            cached, fetched_at = self._usage_cache
+            if cached is not None and now - fetched_at < USAGE_CACHE_SECONDS:
+                return cached
+
+        measured = [self._account_usage(account) for account in listed]
+        with self._usage_lock:
+            self._usage_cache = (measured, time.monotonic())
+        return measured
+
+    def _account_usage(self, listed: ConnectedAccount) -> ConnectedAccount:
+        """One account's row, with its windows filled in where they could be read."""
+        if listed.needs_reconnect:
+            return replace(listed, usage_error="needs to be connected again")
+        try:
+            stored = {account.id: account for account
+                      in claude_code_accounts.accounts(self.context)}[listed.id]
+        except Exception as error:  # noqa: BLE001 - drawn as unreadable, not raised
+            return replace(listed, usage_error=str(error))
+        try:
+            account = ensure_fresh(stored, self.context)
+            usage = fetch_usage(account.access_token)
+        except UsageUnavailable as error:
+            return replace(listed, usage_error=str(error))
+        except Exception as error:  # noqa: BLE001
+            return replace(listed, usage_error=f"{type(error).__name__}: {error}")
+        windows = usage.windows or {}
+        resets = usage.resets_at or {}
+        return replace(
+            listed,
+            session_percent=windows.get(SESSION_WINDOW, -1.0),
+            weekly_percent=windows.get(WEEKLY_WINDOW, -1.0),
+            session_resets=resets.get(SESSION_WINDOW, ""),
+            weekly_resets=resets.get(WEEKLY_WINDOW, ""))
+
+    def start_claude_code_authorization(self) -> claude_oauth.Authorization:
+        """Begin a sign-in: the URL to open, and the secrets its code needs.
+
+        Nothing is stored yet. The authorization is held by the page that
+        started it and handed back to :meth:`complete_claude_code_authorization`,
+        because a sign-in only means anything to the visit that began it — and a
+        verifier parked on disk would outlive the browser tab it belongs to.
+        """
+        return claude_oauth.start_authorization()
+
+    def complete_claude_code_authorization(
+        self, pasted: str, authorization: claude_oauth.Authorization,
+    ) -> tuple[bool, str]:
+        """Redeem what the user pasted back, and store the account it yields.
+
+        Returns whether it worked and a sentence to show either way. The
+        account is named by asking whose it is — which this flow's token can
+        answer and an inference-only one could not, and which is most of why
+        the sign-in is worth doing at all.
+        """
+        code, state = claude_oauth.split_code(pasted)
+        if not code:
+            return False, "Paste the code from the Anthropic page first"
+        # The page prints code and state together; a copy that included the
+        # state has to agree with the sign-in it came from, or the code belongs
+        # to a different authorization than the verifier about to redeem it.
+        if state and state != authorization.state:
+            return False, ("That code belongs to a different sign-in. Start "
+                           "again and use the code from the page it opens.")
+        try:
+            tokens = claude_oauth.exchange_code(
+                code, authorization.state, authorization.code_verifier)
+        except claude_oauth.OAuthApiError as error:
+            return False, f"Could not complete the sign-in: {error}"
+        except Exception as error:  # noqa: BLE001 - the UI must never see a traceback
+            return False, f"Could not complete the sign-in: {type(error).__name__}: {error}"
+
+        # Best-effort: an account that cannot be named is still an account that
+        # works, and the label can be filled in later.
+        try:
+            label = fetch_account(tokens.access_token)
+        except AccountUnavailable as error:
+            print(f"[admin] Connected a Claude Code account but could not read "
+                  f"its profile: {error}")
+            label = ""
+
+        account_id = claude_code_accounts.add_account(
+            label, tokens.access_token, tokens.refresh_token,
+            tokens.expires_at, " ".join(tokens.scopes),
+            tokens.subscription_type, self.context, tokens.refresh_expires_at)
+        self._reconcile_claude_code_account()
+        return True, (f"Connected {label}" if label
+                      else f"Connected account {account_id}")
+
+    def disconnect_claude_code_account(self, account_id: int) -> None:
+        """Forget one account, and repoint the rotation if it was the one in use."""
+        claude_code_accounts.remove_account(account_id, self.context)
+        self._reconcile_claude_code_account()
+
+    def _reconcile_claude_code_account(self) -> None:
+        """Point the current account at a connected one.
+
+        Two cases, both of which would otherwise leave the executor on an
+        account the user can no longer see: rotation is on and nothing has ever
+        been current, and the account that was current has just been
+        disconnected. Both land on the first one.
+
+        Rotation being off clears it, so switching back on later starts from the
+        top rather than from whatever a previous run left behind.
+
+        Best-effort: a change that landed must not be reported as failed
+        because this could not be written.
+        """
+        try:
+            accounts = claude_code_accounts.accounts(self.context)
+            if not self.context.settings.claude_code_rotate_keys or not accounts:
+                claude_code_accounts.clear_current_account(self.context)
+                return
+            current = claude_code_accounts.current_account_id(self.context)
+            if current not in [account.id for account in accounts]:
+                claude_code_accounts.set_current_account(accounts[0].id,
+                                                         self.context)
+        except Exception as error:  # noqa: BLE001
+            print(f"[admin] Failed to record the current Claude Code account: "
+                  f"{error}")
 
     def verify_tasks_connection(
         self,

@@ -30,6 +30,85 @@ skill that does.
 
 Codee can execute multiple tasks in parallel. Specify number of parallel tasks here.
 
+## Claude Code
+
+Only shown when the `claude` CLI is installed on the machine Codee runs on — the accounts
+are written into Claude Code's own credentials file, so there is nothing to configure
+without it.
+
+### Use specified accounts - Auto accounts rotate
+
+A Claude subscription is metered in two windows: a rolling session one and a weekly one.
+Once either is used up every run fails until it resets, which for an executor that polls
+around the clock means hours of tasks that simply do not get done.
+
+Switch this on and connect one account per subscription, and Codee carries on through it.
+A thread in the executor checks the current account's usage every five minutes and, when a
+window is full, signs Claude Code in as the next account that still has allowance. The
+list is used in order and wraps round, so the first account gets another turn once the
+last one fills up — by then its own window has usually reset.
+
+#### Connecting an account
+
+**Connect a Claude account** opens Anthropic's sign-in page. Approve it there, and the page
+prints a code; paste that back into Codee and the account appears in the list, named by the
+email it was granted by. The link is shown as well as opened, so the sign-in can be
+approved from whatever machine you are actually sitting at — the one running Codee is
+often a server with no browser.
+
+This is the same sign-in `claude /login` performs, and that matters rather than being a
+convenience. A token from `claude setup-token` carries the `user:inference` scope and
+nothing else, so it cannot be asked whose account it is or how much of its allowance is
+left — which are exactly the two questions rotation is built on. A session token from this
+flow carries both.
+
+#### What Codee writes
+
+Codee writes the whole `claudeAiOauth` section of `~/.claude/.credentials.json`: the access
+token, the refresh token beside it, the real expiry, the scopes and the plan. The refresh
+token is deliberately included — a session token is good for hours while an agent run can
+take two, so the CLI has to be able to renew it mid-run. Codee renews tokens itself too,
+before handing an account that has been out of rotation back to the CLI, and adopts a
+renewal the CLI made so the two never drift apart. Nothing else in that file is touched.
+
+Claude Code renews that token by itself, which is the point of handing it the refresh
+token — so the file is often newer than what Codee last stored. Codee therefore looks
+before it writes: on its first check after a restart, if the file holds a token for the
+account rotation has chosen, it adopts that one rather than overwriting it with its older
+copy. If something else has signed the machine in as a *different* account, the next check
+puts the rotation's account back: with this option on, that field is Codee's.
+
+#### Watching them from the Dashboard
+
+With this on, the Dashboard grows a **Claude accounts** panel under **Currently running**:
+one row per connected account, with a meter for the session window and one for the week,
+and the account currently doing the work lit up. The meters turn amber past 80% and red at
+the limit, and a window under pressure says when it resets. An account whose allowance
+cannot be read says so on its own row rather than blanking the panel.
+
+The reading is taken every half minute at most and cached, so having the Dashboard open
+does not turn into a request per account per redraw.
+
+#### Keeping the spare accounts alive
+
+A refresh token lasts on the order of a month, and every renewal extends it — so the
+account in rotation looks after itself. The ones waiting their turn do not, and a spare
+subscription that is only reached once the others are exhausted could sit untouched past
+its refresh window and be dead on exactly the day it was needed. Codee renews every
+connected account that has gone five days without one, whether or not it is in use.
+
+If an account does reach the end of its refresh window — Codee was stopped for a month,
+or the session was revoked from the Anthropic side — the list marks it **sign in again**.
+Rotation skips it rather than handing Claude Code a dead token; disconnect it and connect
+it again to bring it back.
+
+Leave the option off and Codee never touches the credentials file: Claude Code runs on
+whatever account the machine is signed in with.
+
+Accounts are credentials, so they are kept in Codee's SQLite database rather than in
+`settings.json` — the same place the Azure DevOps tokens live, and for the same reason.
+Only the on/off switch is in the settings file.
+
 ## Tasks provider configuration
 
 Jira and Azure Dev Ops currently supported. Choose one of them.
