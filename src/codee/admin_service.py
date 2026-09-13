@@ -627,6 +627,10 @@ def _node_with_agent_tooltip(
         if lines:
             lines.append("")
         lines.extend(_skill_run_summary(skill, default_agent))
+    # The models named under the status name on the node itself. Skills sharing
+    # an entry status often ask for the same one, so it is said once.
+    models = list(dict.fromkeys(
+        skill.model or WORKFLOW_DEFAULT_MODEL_LABEL for skill in handled))
     return {
         **node,
         "className": " ".join(
@@ -634,6 +638,7 @@ def _node_with_agent_tooltip(
         "style": {
             **(node.get("style") or {}),
             "--codee-agent-run": _css_lines(lines),
+            "--codee-node-model": _css_string(", ".join(models)),
         },
     }
 

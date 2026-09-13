@@ -3168,6 +3168,11 @@ app = rx.App(
             "border": "1px solid var(--codee-border)",
             "border_radius": "6px",
             "color": "var(--codee-text)",
+            # A column so the model line can sit under the status name. The
+            # status name is an anonymous flex item the node type renders, and
+            # the handles are absolutely positioned, so neither is disturbed.
+            "display": "flex",
+            "flex_direction": "column",
             "font_family": "IBM Plex Sans, sans-serif",
             "font_weight": "600",
             "min_width": "220px",
@@ -3196,6 +3201,18 @@ app = rx.App(
         # A status an issue-trigger skill picks up is worked by an agent, and
         # which agent and model that is only shows on the node itself.
         ".workflow-node--agent": {"cursor": "help"},
+        # The model working the status, under its name. `::after` is spoken for
+        # by the tooltip, so this is `::before` ordered past the status name,
+        # which as an anonymous flex item keeps the default order of 0.
+        ".workflow-node--agent::before": {
+            "content": "var(--codee-node-model, '')",
+            "order": "1",
+            "color": "var(--codee-muted)",
+            "font_size": "0.75rem",
+            "font_weight": "400",
+            "line_height": "1.3",
+            "margin_top": "0.15rem",
+        },
         # Several lines, so the rule keeps the `\A` breaks the node's
         # `--codee-agent-run` carries.
         ".workflow-node--agent::after": _workflow_node_tooltip(

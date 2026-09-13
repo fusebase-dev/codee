@@ -1773,6 +1773,20 @@ class AdminServiceWorkflowAgentTest(unittest.TestCase):
                 "'AI agent: Codex\\A Model: claude-opus-5\\A Skill: develop'",
             )
 
+    def test_the_model_is_written_on_the_node_under_the_status_name(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory),
+                "model: claude-opus-5\nx-codee-agent: codex\n")
+
+            nodes = self._story_nodes(service)
+
+            self.assertEqual(
+                nodes["Ready"]["style"]["--codee-node-model"],
+                "'claude-opus-5'",
+            )
+
     def test_a_skill_that_names_neither_falls_back_to_what_runs_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

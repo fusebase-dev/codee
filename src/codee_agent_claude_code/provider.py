@@ -16,6 +16,7 @@ log = get_logger(__name__)
 MODELS = [
     AgentModel("claude-opus-5", "Claude Opus 5"),
     AgentModel("claude-sonnet-5", "Claude Sonnet 5"),
+    AgentModel("claude-fable-5-1", "Claude Fable 5.1"),
     AgentModel("claude-fable-5", "Claude Fable 5"),
     AgentModel("claude-opus-4-8", "Claude Opus 4.8"),
     AgentModel("claude-opus-4-7", "Claude Opus 4.7"),
