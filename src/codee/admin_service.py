@@ -814,6 +814,12 @@ class AdminService:
         # instead of waiting on an earlier visit to report back.
         self._workflow_run = WorkflowGeneration()
         self._workflow_run_lock = threading.Lock()
+        # Whether the run in flight is itself a regeneration, and whether a
+        # regeneration was asked for while one was going. A run that is
+        # serving the cache is exactly what Regenerate asks to replace, so
+        # the request waits for it rather than being dropped.
+        self._workflow_run_force = False
+        self._workflow_force_pending = False
         # Asking an agent for its catalog can mean spawning its CLI, so the
         # answer is cached per agent for the life of the process.
         self._models_cache: dict[CodingAgent, list[AgentModel]] = {}
@@ -941,19 +947,30 @@ class AdminService:
         """
         with self._workflow_run_lock:
             if self._workflow_run.running:
+                # The run under way may be the one a page visit started,
+                # which answers from the cache. That is what Regenerate
+                # exists to replace, so the request is held and run next
+                # rather than swallowed by the run it cannot influence.
+                if force and not self._workflow_run_force:
+                    self._workflow_force_pending = True
                 return self._workflow_run
-            # Regenerating takes the graph off the screen: the point of
-            # asking for it again is to watch a new one being built.
-            self._workflow_run = WorkflowGeneration(
-                running=True,
-                workflow=None if force else self._workflow_run.workflow,
-            )
-            threading.Thread(
-                target=self._run_workflow_generation,
-                args=(force,),
-                daemon=True,
-            ).start()
-            return self._workflow_run
+            return self._begin_workflow_run(force)
+
+    def _begin_workflow_run(self, force: bool) -> WorkflowGeneration:
+        """Start a run. The caller holds ``_workflow_run_lock``."""
+        # Regenerating takes the graph off the screen: the point of
+        # asking for it again is to watch a new one being built.
+        self._workflow_run = WorkflowGeneration(
+            running=True,
+            workflow=None if force else self._workflow_run.workflow,
+        )
+        self._workflow_run_force = force
+        threading.Thread(
+            target=self._run_workflow_generation,
+            args=(force,),
+            daemon=True,
+        ).start()
+        return self._workflow_run
 
     def workflow_generation_status(self) -> WorkflowGeneration:
         """Where the run started by ``start_workflow_generation`` has got to."""
@@ -986,6 +1003,13 @@ class AdminService:
                               else workflow),
                     error=error,
                 )
+                self._workflow_run_force = False
+                # A regeneration asked for while this run was going starts
+                # here, under the same lock, so the page watching never sees
+                # the gap between the two runs and stops watching.
+                if self._workflow_force_pending:
+                    self._workflow_force_pending = False
+                    self._begin_workflow_run(True)
 
     def _report_workflow_progress(self, line: str) -> None:
         with self._workflow_run_lock:

@@ -39,6 +39,8 @@ def _generating_service() -> AdminService:
     service = AdminService.__new__(AdminService)
     service._workflow_run = WorkflowGeneration()
     service._workflow_run_lock = threading.Lock()
+    service._workflow_run_force = False
+    service._workflow_force_pending = False
     return service
 
 
@@ -1926,6 +1928,60 @@ class AdminServiceWorkflowGenerationTest(unittest.TestCase):
         self.assertFalse(failed.running)
         self.assertEqual(failed.error, "agent said no")
         self.assertIs(failed.workflow, generated)
+
+    def test_regenerating_during_a_run_is_not_dropped(self) -> None:
+        service = _generating_service()
+        gates = [threading.Event(), threading.Event()]
+        generated = _empty_workflow()
+        forced = []
+
+        def generate(force: bool, report) -> dict:
+            forced.append(force)
+            gates[len(forced) - 1].wait(5)
+            return generated
+
+        with patch.object(service, "generate_workflow", side_effect=generate):
+            # The page visit's own run answers from the cache, so a
+            # Regenerate arriving while it is going has to run afterwards
+            # rather than be swallowed by a run it cannot influence.
+            service.start_workflow_generation()
+            while not forced:
+                time.sleep(0.01)
+            service.start_workflow_generation(force=True)
+            gates[0].set()
+            deadline = time.monotonic() + 5
+            while len(forced) < 2 and time.monotonic() < deadline:
+                # The queued run takes over without the page ever seeing the
+                # run in flight stop, so it keeps watching.
+                self.assertTrue(service.workflow_generation_status().running)
+                time.sleep(0.01)
+            gates[1].set()
+            self._await(service)
+
+        self.assertEqual(forced, [False, True])
+
+    def test_regenerating_during_a_regeneration_does_not_run_twice(
+            self) -> None:
+        service = _generating_service()
+        release = threading.Event()
+
+        def generate(force: bool, report) -> dict:
+            report("working")
+            release.wait(5)
+            return _empty_workflow()
+
+        with patch.object(service, "generate_workflow",
+                          side_effect=generate) as generating:
+            service.start_workflow_generation(force=True)
+            while not service.workflow_generation_status().progress:
+                time.sleep(0.01)
+            # The fresh graph being built is already what the second click
+            # asks for; queueing another would cost a second agent run.
+            service.start_workflow_generation(force=True)
+            release.set()
+            self._await(service)
+
+        self.assertEqual(generating.call_count, 1)
 
     def test_a_run_that_failed_can_be_started_again(self) -> None:
         service = _generating_service()

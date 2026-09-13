@@ -302,6 +302,11 @@ class AdminState(rx.State):
     workflow_sections: list[WorkflowSection] = []
     workflow_error: str = ""
     workflow_loading: bool = False
+    # Whether a generation is in flight at all. Separate from the spinner that
+    # replaces the page, because a run started while a graph is on screen has
+    # to show somewhere too: a Regenerate that reports nothing reads as a
+    # button that does nothing.
+    workflow_running: bool = False
     # What the generation is doing right now, newest line last. Inferring a
     # graph is minutes of coding-agent work, so a bare spinner says too little.
     workflow_progress: list[str] = []
@@ -845,6 +850,7 @@ class AdminState(rx.State):
         ]
         # A graph already on screen stays there while the next run confirms
         # it; only a generation with nothing to show yet gets the spinner.
+        self.workflow_running = status.running
         self.workflow_loading = status.running and not self.workflow_sections
 
     def open_edge_menu(self, skills: list[str], x: float, y: float) -> None:
@@ -2466,6 +2472,45 @@ def workflow_progress_line(line: rx.Var[str]) -> rx.Component:
     )
 
 
+def workflow_running_banner() -> rx.Component:
+    """What a run is doing while the graph it will replace is still up.
+
+    Without it a generation started over an existing graph is invisible, and
+    the Regenerate button that starts one looks broken.
+    """
+    return rx.cond(
+        AdminState.workflow_running,
+        rx.hstack(
+            rx.spinner(size="2"),
+            rx.vstack(
+                rx.text("Generating the workflow...", size="2",
+                        font_weight="600"),
+                rx.foreach(AdminState.workflow_progress,
+                           workflow_running_line),
+                spacing="1",
+                align="start",
+                width="100%",
+            ),
+            spacing="3",
+            align="start",
+            width="100%",
+            padding="0.75rem",
+            border=BORDER,
+            border_radius="6px",
+            background=SURFACE,
+        ),
+    )
+
+
+def workflow_running_line(line: rx.Var[str]) -> rx.Component:
+    return rx.text(
+        line,
+        size="2",
+        color_scheme="gray",
+        white_space="pre-wrap",
+    )
+
+
 def workflow_page() -> rx.Component:
     return shell(rx.vstack(
         rx.flex(
@@ -2477,7 +2522,7 @@ def workflow_page() -> rx.Component:
                 rx.icon("refresh-cw", size=16),
                 "Regenerate",
                 variant="outline",
-                loading=AdminState.workflow_loading,
+                loading=AdminState.workflow_running,
                 on_click=AdminState.load_workflow(True),
             ),
             align="start",
@@ -2505,6 +2550,7 @@ def workflow_page() -> rx.Component:
                     width="100%",
                 ),
                 rx.vstack(
+                    workflow_running_banner(),
                     rx.foreach(AdminState.workflow_sections, workflow_section),
                     spacing="8",
                     width="100%",
