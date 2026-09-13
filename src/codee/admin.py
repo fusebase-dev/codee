@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from codee.admin_api import api_app
 from codee.admin_service import (
-    AGENTS_FILE, TASKS_CHECKS, AdminService, SKILL_TYPES, normalize_work_items)
+    AGENTS_FILE, TASKS_CHECKS, WORKFLOW_HIGHLIGHT_GROUPS, AdminService,
+    SKILL_TYPES, normalize_work_items)
 from codee.workflow_graph import workflow_graph
 from codee_main_context.context import (
     DEFAULT_ISSUE_TYPES, TasksProvider, credential_field)
@@ -2432,6 +2433,29 @@ def settings_page() -> rx.Component:
         spacing="5", align="start", width="100%"))
 
 
+# Lighting the hovered transition up has to be done per transition rather than
+# with a bare `:hover`: a long forward or a return arrow is drawn as two or
+# three separate edges routed through invisible waypoints, and hovering one
+# segment has to raise all of them. Each segment carries a `workflow-edge--gN`
+# group class, and these rules pair each group with a `:has()` test on the
+# canvas, so the whole group brightens while every other line fades back.
+def _workflow_edge_hover_styles() -> dict[str, dict[str, str]]:
+    styles: dict[str, dict[str, str]] = {}
+    for index in range(WORKFLOW_HIGHLIGHT_GROUPS):
+        group = f".workflow-edge--g{index}"
+        hovered = f".react-flow:has({group}:hover)"
+        styles[f"{hovered} .react-flow__edge:not({group})"] = {
+            "opacity": "0.13",
+        }
+        styles[f"{hovered} {group} .react-flow__edge-path"] = {
+            "stroke_width": "4 !important",
+            "stroke_dasharray": "10 8 !important",
+            "animation": "codee-edge-flow 0.6s linear infinite",
+            "filter": "drop-shadow(0 0 6px currentColor)",
+        }
+    return styles
+
+
 app = rx.App(
     style={
         "button:not(:disabled), [role='button']:not([aria-disabled='true'])": {
@@ -2449,6 +2473,11 @@ app = rx.App(
         },
         "@media (prefers-reduced-motion: reduce)": {
             ".codee-live-dot > *, .codee-breathe": {
+                "animation": "none !important",
+            },
+            # The hovered transition still thickens and the rest still fade;
+            # only the marching dashes stop.
+            ".react-flow__edge .react-flow__edge-path": {
                 "animation": "none !important",
             },
         },
@@ -2526,6 +2555,14 @@ app = rx.App(
         ".react-flow__edge.workflow-edge": {
             "cursor": "pointer",
         },
+        # Marching dashes along the hovered transition: with several arrows
+        # crossing the same stretch of canvas, the direction of travel is the
+        # thing a still line cannot show.
+        "@keyframes codee-edge-flow": {
+            "from": {"stroke_dashoffset": "18"},
+            "to": {"stroke_dashoffset": "0"},
+        },
+        **_workflow_edge_hover_styles(),
         # A person's arrow names no skill, so clicking it opens nothing: only
         # the hover tooltip has anything to say about it.
         ".react-flow__edge.workflow-edge--human": {

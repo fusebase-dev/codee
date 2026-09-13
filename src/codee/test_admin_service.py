@@ -481,8 +481,12 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertIs(workflow["edges"][2]["animated"], True)
             self.assertEqual(
                 workflow["edges"][2]["className"],
-                "workflow-edge workflow-edge--return",
+                "workflow-edge workflow-edge--return workflow-edge--g2",
             )
+            # Both halves of the return detour share the hover group, so
+            # hovering either one lights the whole arrow.
+            self.assertIn("workflow-edge--g2",
+                          workflow["edges"][3]["className"])
             self.assertEqual(
                 workflow["edges"][2]["style"]["strokeDasharray"], "8 6")
             self.assertEqual(workflow["edges"][2]["target"], route_node["id"])
@@ -596,6 +600,108 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertIn(
                 "do not emit a direct transition that bypasses it",
                 agent.run.call_args.args[0],
+            )
+
+    def test_generate_workflow_rejects_a_transition_that_moves_a_subtask(self) -> None:
+        """A story skill moves its subtasks too, and those are not story statuses."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "story-developer"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: story-developer\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move each subtask to Subtask Review once its pull request is open.\n"
+                "Move the story to CR Needed when every subtask is implemented.\n"
+            )
+            agent = Mock()
+            agent.run.side_effect = [
+                '{"statuses":["Ready","Subtask Review","CR Needed"],'
+                '"transitions":[{"source":"Ready","target":"Subtask Review",'
+                '"label":"story-developer","evidence":"Move each subtask to '
+                'Subtask Review once its pull request is open."}],'
+                '"final_statuses":["CR Needed"]}',
+                '{"statuses":["Ready","CR Needed"],'
+                '"transitions":[{"source":"Ready","target":"CR Needed",'
+                '"label":"story-developer","evidence":"Move the story to CR '
+                'Needed when every subtask is implemented."}],'
+                '"final_statuses":["CR Needed"]}',
+            ]
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow()["story"]
+
+            self.assertEqual(agent.run.call_count, 2)
+            self.assertIn(
+                "moves the subtask rather than the story",
+                agent.run.call_args.args[0],
+            )
+            self.assertIn(
+                "The graph is the lifecycle of the story work item alone",
+                agent.run.call_args_list[0].args[0],
+            )
+            self.assertEqual(
+                [node["data"]["label"] for node in workflow["nodes"]],
+                ["Ready", "CR Needed"],
+            )
+
+    def test_generate_workflow_drops_a_status_only_a_subtask_is_moved_to(self) -> None:
+        """A status no story sentence moves is left to the subtask's own graph."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "story-developer"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: story-developer\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n"
+                "Move each subtask to Subtask Review once its pull request is open.\n"
+                "Move the story to CR Needed when every subtask is implemented.\n"
+            )
+            agent = Mock()
+            agent.run.return_value = (
+                '{"statuses":["Ready","Subtask Review","CR Needed"],'
+                '"transitions":[{"source":"Ready","target":"CR Needed",'
+                '"label":"story-developer","evidence":"Move the story to CR '
+                'Needed when every subtask is implemented."}],'
+                '"final_statuses":["CR Needed"],'
+                '"human_actions":[{"status":"Subtask Review",'
+                '"action":"Review the pull request."}]}'
+            )
+            progress: list[str] = []
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow(
+                    report=progress.append)["story"]
+
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(
+                [node["data"]["label"] for node in workflow["nodes"]],
+                ["Ready", "CR Needed"],
+            )
+            self.assertIn(
+                "Left 1 status off the Story workflow, moved on another "
+                "work item: Subtask Review.",
+                progress,
             )
 
     def test_generate_workflow_retries_unsupported_transition(self) -> None:

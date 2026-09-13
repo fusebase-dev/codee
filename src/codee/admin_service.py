@@ -10,7 +10,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlparse
 
 import yaml
@@ -96,12 +96,17 @@ WORKFLOW_NODE_CENTER_OFFSET = 110
 # border. Edge colours have to be literals: React Flow builds an SVG arrow
 # marker per colour, keyed by the string, so a CSS variable cannot be used.
 WORKFLOW_HUMAN_EDGE_COLOR = "#d1a207"
+# How many transitions get a hover-highlight group class. The matching CSS is
+# one static rule per group, so the count is bounded; a workflow with more
+# transitions than this is unreadable long before the cap bites.
+WORKFLOW_HIGHLIGHT_GROUPS = 80
 # Inferring the workflow costs a coding-agent run, so the graph is kept in the
 # data directory and reused by later admin processes.
 WORKFLOW_CACHE_FILE = "workflow.json"
-# Bumped whenever the stored graph gains a field the page reads, so a
-# cache written by an older Codee is regenerated instead of rendered.
-WORKFLOW_CACHE_VERSION = 3
+# Bumped whenever the stored graph gains a field the page reads or the
+# inference changes what it draws, so a cache written by an older Codee is
+# regenerated instead of rendered.
+WORKFLOW_CACHE_VERSION = 5
 
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
@@ -350,6 +355,112 @@ def _human_action_values(value: Any) -> dict[str, str]:
     return actions
 
 
+# Words that name a work item other than the Codee work item whose graph is
+# being built, when a skill does not name that work item outright. A story
+# skill spends most of its text on the story's subtasks, and a subtask skill on
+# its parent, so a sentence that moves one of those describes a status on that
+# item's own graph.
+RELATED_WORK_ITEMS = {
+    "subtask": ("subtask", "subtasks", "sub-task", "sub-tasks"),
+    "child": ("child", "children"),
+    "parent": ("parent", "parents"),
+}
+# The verbs a skill changes a status with. Only what one of these moves counts
+# as another work item's: the names are ordinary English in these documents,
+# and "after the task is complete, move it to Review" is a story skill talking
+# about its own work, not about a task.
+MOVE_VERB_RE = re.compile(
+    r"(?<!\w)(?:move|moves|moved|moving|transition|transitions|transitioned|"
+    r"set|sets|put|puts|leave|leaves|left|return|returns|returned|send|sends|"
+    r"sent|mark|marks|marked|place|places|placed|advance|advances|advanced)"
+    r"(?!\w)",
+    re.IGNORECASE,
+)
+# Where the phrase naming what is moved ends: past "to" or "in" comes the
+# status, whose own name may contain a work item word ("Task Ready").
+MOVE_TARGET_WORDS = {"to", "into", "in", "onto", "back", "at"}
+WORD_RE = re.compile(r"[\w-]+")
+# How many words after the verb are still part of the phrase naming what moves.
+MOVE_WINDOW = 4
+
+
+def _work_item_terms(name: str) -> tuple[str, ...]:
+    """A work item's name and its plural, as skill prose writes them."""
+    if name.endswith("y"):
+        return (name, f"{name[:-1]}ies")
+    if name.endswith(("s", "x", "ch", "sh")):
+        return (name, f"{name}es")
+    return (name, f"{name}s")
+
+
+class _WorkItemScope:
+    """Tells what a skill moves this work item to from what it moves another to.
+
+    The skills for one work item are the only ones the graph is built from, but
+    their text still describes the items around it: a story skill says what
+    happens to the story's subtasks, and a subtask skill what happens to its
+    parent story. A status only those sentences move belongs on that item's
+    graph, so it is kept out of this one.
+
+    Naming another item is not on its own enough — "move the story to
+    `AI Ready for CR` once every subtask is implemented" moves the story, and
+    "task" in a story skill is as often the English word as the work item. It
+    has to be what the sentence says is moved.
+    """
+
+    def __init__(self, issue_type: str, issue_types: Iterable[str]) -> None:
+        own = _work_item_terms(issue_type.casefold())
+        others = {
+            other.casefold(): _work_item_terms(other.casefold())
+            for other in issue_types
+        } | dict(RELATED_WORK_ITEMS)
+        # A work item literally called "subtask" owns that word, so the generic
+        # names are only another item's when this item is not one of them.
+        others = {name: terms for name, terms in others.items()
+                  if not set(terms) & set(own)}
+        self.issue_type = issue_type
+        # The names as the prompt lists them: one per work item, no plurals.
+        self.other_names = sorted(others)
+        self._own = set(own)
+        self._others = {term for terms in others.values() for term in terms}
+        # "the subtask moves to Done" says what moves before naming the verb.
+        self._subject = re.compile(
+            r"(?<!\w)(" + "|".join(
+                re.escape(term) for term in sorted(
+                    self._own | self._others, key=len, reverse=True)
+            ) + r")(?:\s+\w+){0,2}?\s+(?:moves|moved|transitions|transitioned|"
+            r"returns|returned|goes|go)(?!\w)",
+            re.IGNORECASE,
+        )
+
+    def other_work_item(self, text: str) -> str:
+        """The other work item ``text`` moves, or "" when it moves this one.
+
+        "" is also the answer for a sentence that moves nothing nameable: an
+        unparsed phrasing keeps its status rather than losing it to a work
+        item the text never actually names.
+        """
+        moved = ""
+        for name in self._moved_items(text or ""):
+            if name in self._own:
+                return ""
+            moved = moved or name
+        return moved
+
+    def _moved_items(self, text: str) -> Iterator[str]:
+        """Every work item the text says something is moved to a status."""
+        for match in self._subject.finditer(text):
+            yield match.group(1).casefold()
+        for verb in MOVE_VERB_RE.finditer(text):
+            for word in WORD_RE.findall(text[verb.end():])[:MOVE_WINDOW]:
+                lowered = word.casefold()
+                if lowered in MOVE_TARGET_WORDS:
+                    break
+                if lowered in self._own or lowered in self._others:
+                    yield lowered
+                    break
+
+
 def _css_string(text: str) -> str:
     """Quote text for a CSS ``content`` value.
 
@@ -405,6 +516,40 @@ def _is_workflow(value: Any, issue_types: tuple[str, ...]) -> bool:
                 for key in ("nodes", "edges", "warnings"))
         for issue_type in issue_types
     )
+
+
+def _own_work_item_statuses(
+    statuses: list[str],
+    scope: _WorkItemScope,
+    known: set[str],
+    documents: Iterable[str],
+) -> tuple[list[str], list[str]]:
+    """Split declared statuses into this work item's and another item's.
+
+    A status every mention of which moves a different work item — the
+    subtask a story skill is working through, the parent a subtask skill
+    reports to — is that item's, however plausible it looks beside the rest.
+
+    ``known`` are the statuses that are this work item's whatever the prose
+    around them says: the ones its skills trigger on, which the frontmatter
+    settles, and the ends of the transitions whose evidence was already read
+    as moving this work item.
+    """
+    lines = [line for document in documents
+             for line in document.splitlines() if line.strip()]
+    own: list[str] = []
+    foreign: list[str] = []
+    for status in statuses:
+        if status.casefold() in known:
+            own.append(status)
+            continue
+        mentions = [line for line in lines
+                    if status.casefold() in line.casefold()]
+        if mentions and all(scope.other_work_item(line) for line in mentions):
+            foreign.append(status)
+        else:
+            own.append(status)
+    return own, foreign
 
 
 def _remove_redundant_skill_transitions(
@@ -663,6 +808,7 @@ class AdminService:
                 [skill for skill in skills if skill.issue_type == issue_type],
                 issue_type,
                 report,
+                issue_types,
             )
             for issue_type in issue_types
         }
@@ -672,8 +818,15 @@ class AdminService:
         skills: list[IssueTriggeredSkill],
         issue_type: str,
         report: Callable[[str], None] = lambda message: None,
+        issue_types: tuple[str, ...] = DEFAULT_ISSUE_TYPES,
     ) -> dict[str, Any]:
-        """Infer one status graph from skills for a single issue type."""
+        """Infer one status graph from skills for a single issue type.
+
+        The graph covers that work item alone. Its skills talk about the items
+        around it as well — a story skill about the story's subtasks, a
+        subtask skill about its parent — and a status only those sentences
+        name belongs on the other item's graph, so it is kept out of this one.
+        """
         if not skills:
             report(f"No issue-trigger skills for work item {issue_type.capitalize()}.")
             return {"nodes": [], "edges": [], "warnings": []}
@@ -692,8 +845,16 @@ class AdminService:
         # Every status a skill picks itself up in; anything else is a person's.
         triggered = {status.casefold()
                      for skill in skills for status in skill.statuses}
+        scope = _WorkItemScope(issue_type, issue_types)
+        other_items = ", ".join(scope.other_names)
         prompt = (
             f"Build the {issue_type} workflow represented by the issue-trigger skills below. "
+            f"The graph is the lifecycle of the {issue_type} work item alone. These "
+            f"skills also describe the work items around it ({other_items}): a status "
+            "a skill moves one of those to belongs on that work item's own workflow, "
+            f"so never list it here. Only include a status the {issue_type} itself is "
+            "moved to or waits in, and only where the skill text says the "
+            f"{issue_type} makes that move. "
             "The frontmatter statuses are entry points only; infer outgoing status "
             "transitions from the human instructions in each complete skill. Transitions "
             "must be defined directly in skill text or they do not exist. Never invent or "
@@ -710,8 +871,10 @@ class AdminService:
             "skill documents. Every transition must connect two listed statuses and its "
             "label must be the skill that defines it. Its source must be one of that "
             "skill's Entry statuses. evidence must be a verbatim quote from that same "
-            "skill which explicitly names the target status. statuses must contain "
-            "every status named in workflow instructions, even when no skill handles it. "
+            "skill which explicitly names the target status, and it must be a "
+            f"sentence that moves the {issue_type} rather than one of the other "
+            f"work items. statuses must contain every {issue_type} status named "
+            "in workflow instructions, even when no skill handles it. "
             "Preserve mandatory status changes in execution order. If a skill says work "
             "must start in an intermediate status before later moving to another status, "
             "emit consecutive transitions through that intermediate status and do not "
@@ -785,6 +948,12 @@ class AdminService:
                     if transition["target"].casefold() not in evidence.casefold():
                         raise ValueError(
                             f"transition evidence does not name its target for {skill.name}")
+                    other_item = scope.other_work_item(evidence)
+                    if other_item:
+                        raise ValueError(
+                            f"transition evidence from {skill.name} moves the "
+                            f"{other_item} rather than the {issue_type}, so "
+                            f"{transition['target']} is not a {issue_type} status")
                 final_statuses = _string_values(payload.get("final_statuses"))
                 if any(
                     status.casefold() not in declared_statuses
@@ -821,6 +990,12 @@ class AdminService:
                     if transition["target"].casefold() not in evidence.casefold():
                         raise ValueError(
                             "human transition evidence does not name its target")
+                    other_item = scope.other_work_item(evidence)
+                    if other_item:
+                        raise ValueError(
+                            f"human transition evidence moves the {other_item} "
+                            f"rather than the {issue_type}, so "
+                            f"{transition['target']} is not a {issue_type} status")
                 break
             except (json.JSONDecodeError, ValueError) as error:
                 validation_error = str(error)
@@ -836,6 +1011,30 @@ class AdminService:
                     f"Detected error in the workflow: {error}, "
                     f"asking agent to fix..."
                 )
+
+        # Every transition that got this far quotes a sentence moving this work
+        # item, so its statuses stay. A status with no such transition behind it
+        # only has the prose to vouch for it, and prose about a subtask is how
+        # the subtask's statuses end up on the story's graph.
+        moved = {status.casefold()
+                 for transition in transitions + human_transitions
+                 for status in (transition["source"], transition["target"])}
+        statuses, foreign_statuses = _own_work_item_statuses(
+            statuses, scope, triggered | moved,
+            dict.fromkeys(document for _, document in skill_documents.values()),
+        )
+        if foreign_statuses:
+            report(
+                f"Left {_count(len(foreign_statuses), 'status', 'statuses')} "
+                f"off the {issue_type.capitalize()} workflow, moved on another "
+                f"work item: {', '.join(foreign_statuses)}."
+            )
+            kept = {status.casefold() for status in statuses}
+            final_statuses = [status for status in final_statuses
+                              if status.casefold() in kept]
+            human_actions = {status: action
+                             for status, action in human_actions.items()
+                             if status in kept}
 
         transitions = _remove_redundant_skill_transitions(transitions)
         report(
@@ -951,11 +1150,21 @@ class AdminService:
                     ["workflow-edge"]
                     + (["workflow-edge--return"] if is_return else [])
                     + (["workflow-edge--human"] if is_human else [])
+                    # Every segment of a transition that is drawn as a detour
+                    # through route nodes carries the same group class, so
+                    # hovering any one of them lights the whole run of arrows
+                    # and dims the lines it crosses. Transitions past the cap
+                    # simply keep the plain hover treatment.
+                    + ([f"workflow-edge--g{index}"]
+                       if index < WORKFLOW_HIGHLIGHT_GROUPS else [])
                 ),
                 "markerEnd": {"type": "arrowclosed", "color": color},
                 "style": {
                     "stroke": color,
                     "strokeWidth": 2,
+                    # Only read by the hover rule's glow, which has no other
+                    # way to reach this edge's colour from a static stylesheet.
+                    "color": color,
                     **({"strokeDasharray": "8 6"} if is_return else {}),
                 },
             }
