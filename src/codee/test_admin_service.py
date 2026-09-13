@@ -15,14 +15,16 @@ from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
-    MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION,
+    MCP_CHECK, TASKS_CHECK, USAGE_CACHE_SECONDS,
+    USAGE_RATE_LIMIT_BACKOFF_SECONDS, WORKFLOW_CACHE_VERSION,
     WORKFLOW_HUMAN_EDGE_COLOR, AdminService, WorkflowGeneration,
     _remove_redundant_skill_transitions, azure_oauth, issue_prompt_task,
     normalize_work_items, parse_skill, repository_name)
 from codee.lib import runs_db
 from codee_agent_claude_code import oauth as claude_oauth
 from codee_agent_claude_code.account import AccountUnavailable
-from codee_agent_claude_code.usage import Usage, UsageUnavailable
+from codee_agent_claude_code.usage import (
+    Usage, UsageRateLimited, UsageUnavailable)
 from codee_database import claude_code_accounts
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, TasksProvider, load_settings,
@@ -178,7 +180,7 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         self.service.context.settings = Settings(claude_code_rotate_keys=True)
         # Built by hand rather than through __init__, like the other service
         # tests, so the usage cache has to be set up by hand too.
-        self.service._usage_cache = (None, 0.0)
+        self.service._usage_cache = (None, 0.0, USAGE_CACHE_SECONDS)
         self.service._usage_lock = threading.Lock()
 
     def _connect(self, label: str = "one@example.com",
@@ -400,6 +402,56 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
             self.service.claude_code_account_usage()
 
         fetch.assert_called_once()
+
+    def test_a_rate_limited_reading_is_not_retried_on_the_usual_cadence(self) -> None:
+        # Asking too often is what produced the 429, so the cache holds for
+        # much longer than usual rather than turning the refusal into a loop.
+        self._connect("one@example.com")
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      side_effect=UsageRateLimited("HTTP 429")):
+            self.service.claude_code_account_usage()
+
+        _, _, stands_for = self.service._usage_cache
+        self.assertEqual(stands_for, USAGE_RATE_LIMIT_BACKOFF_SECONDS)
+
+    def test_a_rate_limited_account_keeps_the_numbers_it_last_reported(self) -> None:
+        # The meters move over hours: a reading a few minutes old is a far
+        # better answer than an error where the meters were.
+        self._connect("one@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 12.0,
+                                              "seven_day": 70.0},
+                      resets_at={"five_hour": "2026-09-13T14:10:00+00:00"})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage", return_value=usage):
+            self.service.claude_code_account_usage()
+        # Expire the cache so the next call asks, and is refused.
+        rows, _, _ = self.service._usage_cache
+        self.service._usage_cache = (rows, 0.0, USAGE_CACHE_SECONDS)
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      side_effect=UsageRateLimited("HTTP 429")):
+            measured = self.service.claude_code_account_usage()
+
+        self.assertEqual(measured[0].session_percent, 12.0)
+        self.assertEqual(measured[0].weekly_percent, 70.0)
+        self.assertEqual(measured[0].session_resets, "2026-09-13T14:10:00+00:00")
+        self.assertEqual(measured[0].usage_error, "")
+
+    def test_a_rate_limit_with_nothing_to_fall_back_on_says_so(self) -> None:
+        # Nothing was ever read, so there is no older number to show and the
+        # row has to admit it rather than draw an empty meter as zero.
+        self._connect("one@example.com")
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      side_effect=UsageRateLimited("HTTP 429")):
+            measured = self.service.claude_code_account_usage()
+
+        self.assertIn("429", measured[0].usage_error)
+        self.assertEqual(measured[0].session_percent, -1.0)
 
     def test_a_token_that_has_aged_out_is_renewed_before_it_is_asked(self) -> None:
         # An account waiting its turn holds an expired token and would report

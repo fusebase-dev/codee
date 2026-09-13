@@ -24,7 +24,8 @@ from codee_agent_claude_code import oauth as claude_oauth
 from codee_agent_claude_code.account import AccountUnavailable, fetch_account
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_claude_code.usage import (
-    SESSION_WINDOW, WEEKLY_WINDOW, UsageUnavailable, fetch_usage)
+    SESSION_WINDOW, WEEKLY_WINDOW, UsageRateLimited, UsageUnavailable,
+    fetch_usage)
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
 from codee.coding_agents import (
@@ -127,8 +128,16 @@ WORKFLOW_CACHE_VERSION = 5
 # How long the dashboard's account usage stands before it is asked for again.
 # The page redraws every second and the answer moves over hours, so anything
 # shorter would be a request per account per second for a number that has not
-# changed.
-USAGE_CACHE_SECONDS = 60
+# changed. Five minutes matches how often rotation checks the account in use,
+# which is the other thing asking this endpoint on a timer.
+USAGE_CACHE_SECONDS = 300
+
+# How long it stands instead once the endpoint has answered "too many
+# requests". A dashboard left open asks on its own for as long as it is open,
+# so meeting a rate limit with the usual cadence is how a run of 429s keeps
+# itself going; waiting out a longer spell costs nothing, since the meters it
+# draws barely move in that time.
+USAGE_RATE_LIMIT_BACKOFF_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -827,7 +836,8 @@ class AdminService:
         # The last account usage read, and when. Shared by every visitor to the
         # dashboard, because it is a property of the accounts rather than of
         # whoever is looking at them.
-        self._usage_cache: tuple[list[Any] | None, float] = (None, 0.0)
+        self._usage_cache: tuple[list[Any] | None, float, float] = (
+            None, 0.0, USAGE_CACHE_SECONDS)
         self._usage_lock = threading.Lock()
 
     def _git_push(self, message: str) -> tuple[bool, str]:
@@ -2092,7 +2102,11 @@ class AdminService:
 
         One network round trip per account, so it is cached for
         :data:`USAGE_CACHE_SECONDS` — the dashboard redraws every second and
-        must not turn that into a request per second per account.
+        must not turn that into a request per second per account. A reading the
+        endpoint rate limited stands for :data:`USAGE_RATE_LIMIT_BACKOFF_SECONDS`
+        instead: the way to stop being rate limited is to ask less often, so
+        the one answer that must not be retried on the usual cadence is that
+        one.
 
         Tokens are renewed first where they need it: an account that has been
         waiting its turn is holding an expired one and would report itself
@@ -2106,31 +2120,59 @@ class AdminService:
             return []
         now = time.monotonic()
         with self._usage_lock:
-            cached, fetched_at = self._usage_cache
-            if cached is not None and now - fetched_at < USAGE_CACHE_SECONDS:
+            cached, fetched_at, stands_for = self._usage_cache
+            if cached is not None and now - fetched_at < stands_for:
                 return cached
+            previous = {account.id: account for account in cached or []}
 
-        measured = [self._account_usage(account) for account in listed]
+        measured: list[ConnectedAccount] = []
+        rate_limited = False
+        for account in listed:
+            row, refused = self._account_usage(account, previous.get(account.id))
+            measured.append(row)
+            rate_limited = rate_limited or refused
+
         with self._usage_lock:
-            self._usage_cache = (measured, time.monotonic())
+            self._usage_cache = (
+                measured, time.monotonic(),
+                USAGE_RATE_LIMIT_BACKOFF_SECONDS if rate_limited
+                else USAGE_CACHE_SECONDS)
         return measured
 
-    def _account_usage(self, listed: ConnectedAccount) -> ConnectedAccount:
-        """One account's row, with its windows filled in where they could be read."""
+    def _account_usage(
+        self, listed: ConnectedAccount,
+        previous: ConnectedAccount | None = None,
+    ) -> tuple[ConnectedAccount, bool]:
+        """One account's row, and whether the endpoint rate limited the request.
+
+        The row has its windows filled in where they could be read. A request
+        that was rate limited keeps what the last successful one said instead
+        of blanking the meters: those numbers move over hours, so a reading a
+        few minutes old is a much better answer than an error where they were.
+        """
         if listed.needs_reconnect:
-            return replace(listed, usage_error="needs to be connected again")
+            return replace(listed, usage_error="needs to be connected again"), False
         try:
             stored = {account.id: account for account
                       in claude_code_accounts.accounts(self.context)}[listed.id]
         except Exception as error:  # noqa: BLE001 - drawn as unreadable, not raised
-            return replace(listed, usage_error=str(error))
+            return replace(listed, usage_error=str(error)), False
         try:
             account = ensure_fresh(stored, self.context)
             usage = fetch_usage(account.access_token)
+        except UsageRateLimited as error:
+            if previous is not None and not previous.usage_error:
+                return replace(listed,
+                               session_percent=previous.session_percent,
+                               weekly_percent=previous.weekly_percent,
+                               session_resets=previous.session_resets,
+                               weekly_resets=previous.weekly_resets), True
+            return replace(listed, usage_error=str(error)), True
         except UsageUnavailable as error:
-            return replace(listed, usage_error=str(error))
+            return replace(listed, usage_error=str(error)), False
         except Exception as error:  # noqa: BLE001
-            return replace(listed, usage_error=f"{type(error).__name__}: {error}")
+            return replace(listed,
+                           usage_error=f"{type(error).__name__}: {error}"), False
         windows = usage.windows or {}
         resets = usage.resets_at or {}
         return replace(
@@ -2138,7 +2180,7 @@ class AdminService:
             session_percent=windows.get(SESSION_WINDOW, -1.0),
             weekly_percent=windows.get(WEEKLY_WINDOW, -1.0),
             session_resets=resets.get(SESSION_WINDOW, ""),
-            weekly_resets=resets.get(WEEKLY_WINDOW, ""))
+            weekly_resets=resets.get(WEEKLY_WINDOW, "")), False
 
     def start_claude_code_authorization(self) -> claude_oauth.Authorization:
         """Begin a sign-in: the URL to open, and the secrets its code needs.

@@ -17,7 +17,7 @@ from codee_agent_claude_code.account import (
     AccountUnavailable, fetch_account, read_account)
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_claude_code.usage import (
-    OAUTH_BETA, UsageUnavailable, fetch_usage, read_usage)
+    OAUTH_BETA, UsageRateLimited, UsageUnavailable, fetch_usage, read_usage)
 from codee_main_context.context import Settings
 
 SESSION = "82232f47-df60-4cb3-8c3a-de12074c9205"
@@ -134,6 +134,13 @@ class ClaudeCodeUsageTest(unittest.TestCase):
 
         self.assertTrue(usage.limited)
         self.assertIn("401", usage.reason)
+
+    def test_being_asked_too_often_is_its_own_kind_of_unanswered(self) -> None:
+        # Callers that only want a number keep catching UsageUnavailable; the
+        # poller that caused it needs to tell this one apart so it can wait.
+        with patch("requests.get", return_value=_response(429, "slow down")):
+            with self.assertRaises(UsageRateLimited):
+                fetch_usage("key")
 
     def test_a_server_error_leaves_the_question_unanswered(self) -> None:
         with patch("requests.get", return_value=_response(503, "upstream down")):

@@ -43,6 +43,17 @@ class UsageUnavailable(Exception):
     """
 
 
+class UsageRateLimited(UsageUnavailable):
+    """The endpoint refused the question because it was asked too often.
+
+    Still an unanswered question, so everything that merely wants an answer can
+    keep catching :class:`UsageUnavailable`. Split out for the one caller that
+    should change its behaviour: asking again on the usual cadence is what
+    produced this, so a poller that sees it has to wait longer than usual
+    before asking again rather than turn the refusal into a tighter loop.
+    """
+
+
 @dataclass(frozen=True)
 class Usage:
     """What one access key has left, as far as rotation is concerned."""
@@ -80,6 +91,9 @@ def fetch_usage(access_token: str, timeout: int = TIMEOUT_SECONDS) -> Usage:
     except oauth.OAuthApiError as error:
         raise UsageUnavailable(str(error)) from error
 
+    if response.status_code == 429:
+        raise UsageRateLimited(
+            "the usage endpoint is rate limiting these requests (HTTP 429)")
     if response.status_code in (401, 403):
         return Usage(limited=True, reason="the key was rejected "
                                           f"(HTTP {response.status_code})",

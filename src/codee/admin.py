@@ -28,8 +28,11 @@ AGENT_OPTIONS = [DEFAULT_AGENT_OPTION, *AGENT_NAMES.values()]
 WORKFLOW_PROGRESS_INTERVAL = 0.5
 # How often the dashboard asks for the accounts' allowances. The service caches
 # the answer for longer still; this only decides how soon a fresh cache is
-# picked up. Allowance moves over hours, so neither number needs to be small.
-USAGE_POLL_INTERVAL = 30
+# picked up, and how long a reading can be older than the cache allows before
+# the page catches up. Allowance moves over hours, so neither number needs to
+# be small — and a dashboard left open all day is the thing that turns a small
+# one into a rate limit on Anthropic's side.
+USAGE_POLL_INTERVAL = 60
 # Whether this machine has the Claude Code CLI, and so whether the settings
 # page offers its access keys at all. Asked once: an agent does not get
 # installed or uninstalled under a running Codee, and the answer shapes the
