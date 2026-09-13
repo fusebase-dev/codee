@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from codee.admin_api import api_app
 from codee.admin_service import (
     AGENTS_FILE, TASKS_CHECKS, WORKFLOW_HIGHLIGHT_GROUPS, AdminService,
-    SKILL_TYPES, normalize_work_items)
+    SKILL_TYPES, WorkflowGeneration, normalize_work_items)
 from codee.workflow_graph import workflow_graph
 from codee_main_context.context import (
     DEFAULT_ISSUE_TYPES, TasksProvider, credential_field)
@@ -186,7 +186,10 @@ class AdminState(rx.State):
     total_runs: int = 0
     last_24h_runs: int = 0
     hourly_runs: list[dict[str, Any]] = []
-    dashboard_polling: bool = False
+    # Which visit is polling the dashboard. Every visit takes the poll over
+    # from the one before it, so a poll no visit is watching any more cannot
+    # leave the page frozen on the numbers it last wrote.
+    dashboard_watch: int = 0
 
     runs: list[RunRecord] = []
     runs_has_more: bool = False
@@ -199,6 +202,10 @@ class AdminState(rx.State):
     # What the generation is doing right now, newest line last. Inferring a
     # graph is minutes of coding-agent work, so a bare spinner says too little.
     workflow_progress: list[str] = []
+    # Which visit is watching the generation. Every visit takes the watch over
+    # from the one before it, so a watcher that can no longer reach this page
+    # cannot leave it on a spinner until Codee is restarted.
+    workflow_watch: int = 0
     edge_menu_skills: list[str] = []
     edge_menu_left: str = "0px"
     edge_menu_top: str = "0px"
@@ -574,13 +581,29 @@ class AdminState(rx.State):
 
     @rx.event(background=True)
     async def poll_dashboard(self) -> None:
+        """Keep the dashboard live for as long as it is the page on screen.
+
+        Elapsed times and the in-flight list only move because this rewrites
+        them, so the poll belongs to the visit rather than to a flag saying
+        someone once started one: a poll that ended with the page it was
+        drawing is replaced by the next visit, instead of leaving a dashboard
+        that never ticks again. Leaving the dashboard ends it too, rather than
+        reading the database every second behind another page.
+        """
         async with self:
-            if self.dashboard_polling:
-                return
-            self.dashboard_polling = True
+            self.dashboard_watch += 1
+            watch = self.dashboard_watch
         while True:
             async with self:
-                self._refresh_dashboard()
+                # A later visit is polling now, or the dashboard is no longer
+                # the page on screen: either way this poll is done.
+                if self.dashboard_watch != watch or self.active_route != "/":
+                    return
+                try:
+                    self._refresh_dashboard()
+                except Exception as error:  # ponytail: one failed read must not
+                    # end the poll; the next tick draws the numbers again.
+                    print(f"[admin] Failed to refresh dashboard: {error}")
             await asyncio.sleep(1)
 
     def _fetch_runs_page(self, offset: int) -> list[RunRecord]:
@@ -620,50 +643,53 @@ class AdminState(rx.State):
 
     @rx.event(background=True)
     async def load_workflow(self, force: bool = False) -> None:
+        """Show the workflow, attaching to a generation already under way.
+
+        The generation belongs to the service, so every visit reads where it
+        has got to rather than trusting a flag an earlier visit set: leaving
+        the page mid-generation and coming back shows the run's own progress
+        and then its graph, instead of a spinner nothing can clear.
+        """
+        status = SERVICE.start_workflow_generation(force)
         async with self:
-            if self.workflow_loading:
-                return
-            self.workflow_loading = True
-            self.workflow_error = ""
-            self.workflow_progress = []
+            self.workflow_watch += 1
+            watch = self.workflow_watch
             self.edge_menu_skills = []
-        # The service reports progress from the worker thread, which cannot
-        # touch the state; the lines are collected in a plain list and copied
-        # over here while the generation runs.
-        progress: list[str] = []
-        generating = asyncio.create_task(asyncio.to_thread(
-            SERVICE.generate_workflow, force, progress.append))
-        shown = 0
-        try:
-            while not generating.done():
-                await asyncio.sleep(WORKFLOW_PROGRESS_INTERVAL)
-                if len(progress) != shown:
-                    shown = len(progress)
-                    async with self:
-                        self.workflow_progress = progress[:shown]
-            workflow = generating.result()
-        except Exception as error:
+            self._show_workflow(status)
+        while status.running:
+            await asyncio.sleep(WORKFLOW_PROGRESS_INTERVAL)
+            latest = SERVICE.workflow_generation_status()
+            # Inference goes minutes between the lines it reports, so most
+            # polls have nothing to send.
+            if latest == status:
+                continue
+            status = latest
             async with self:
-                self.workflow_error = str(error)
-                self.workflow_sections = []
-                self.workflow_progress = []
-                self.workflow_loading = False
-            return
-        async with self:
-            self.workflow_progress = []
-            # One section per Codee work item, in the order Settings lists
-            # them, so a work item added there shows up here as its own graph.
-            self.workflow_sections = [
-                WorkflowSection(
-                    issue_type=issue_type,
-                    title=f"{issue_type.capitalize()} workflow",
-                    nodes=graph.get("nodes", []),
-                    edges=graph.get("edges", []),
-                    warnings=graph.get("warnings", []),
-                )
-                for issue_type, graph in workflow.items()
-            ]
-            self.workflow_loading = False
+                # A later visit is watching now; two watchers would write the
+                # same vars over each other.
+                if self.workflow_watch != watch:
+                    return
+                self._show_workflow(status)
+
+    def _show_workflow(self, status: WorkflowGeneration) -> None:
+        """Put one snapshot of the generation on the page."""
+        self.workflow_error = status.error
+        self.workflow_progress = list(status.progress)
+        # One section per Codee work item, in the order Settings lists them,
+        # so a work item added there shows up here as its own graph.
+        self.workflow_sections = [
+            WorkflowSection(
+                issue_type=issue_type,
+                title=f"{issue_type.capitalize()} workflow",
+                nodes=graph.get("nodes", []),
+                edges=graph.get("edges", []),
+                warnings=graph.get("warnings", []),
+            )
+            for issue_type, graph in (status.workflow or {}).items()
+        ]
+        # A graph already on screen stays there while the next run confirms
+        # it; only a generation with nothing to show yet gets the spinner.
+        self.workflow_loading = status.running and not self.workflow_sections
 
     def open_edge_menu(self, skills: list[str], x: float, y: float) -> None:
         self.edge_menu_skills = skills
@@ -2524,6 +2550,39 @@ def settings_page() -> rx.Component:
         spacing="5", align="start", width="100%"))
 
 
+# The hover tooltip every status node shares: one `::after` whose text is a
+# custom property the node carries, because the graph is drawn by React Flow
+# from plain dicts and a node cannot bring a component of its own.
+def _workflow_node_tooltip(
+    content: str, border_color: str, white_space: str = "normal"
+) -> dict[str, str]:
+    return {
+        "content": content,
+        "position": "absolute",
+        "bottom": "calc(100% + 8px)",
+        "left": "50%",
+        "transform": "translateX(-50%)",
+        "background": "var(--codee-surface)",
+        "border": f"1px solid {border_color}",
+        "border_radius": "4px",
+        "box_shadow": "0 8px 24px rgba(0, 0, 0, 0.28)",
+        "color": "var(--codee-text)",
+        "font_family": "IBM Plex Sans, sans-serif",
+        "font_size": "0.75rem",
+        "font_weight": "500",
+        "line_height": "1.45",
+        "padding": "0.35rem 0.55rem",
+        "text_align": "left",
+        "white_space": white_space,
+        "width": "max-content",
+        "max_width": "18rem",
+        "opacity": "0",
+        "pointer_events": "none",
+        "transition": "opacity 0.12s ease",
+        "z_index": "5",
+    }
+
+
 # Lighting the hovered transition up has to be done per transition rather than
 # with a bare `:hover`: a long forward or a return arrow is drawn as two or
 # three separate edges routed through invisible waypoints, and hovering one
@@ -2614,35 +2673,23 @@ app = rx.App(
         },
         # The sentence comes from the node's own `--codee-human-action`; the
         # fallback covers a graph generated before the agent was asked for one.
-        ".workflow-node--human::after": {
-            "content": (
-                "var(--codee-human-action, 'A person moves this status "
-                "forward: no issue-trigger skill handles it.')"
-            ),
-            "position": "absolute",
-            "bottom": "calc(100% + 8px)",
-            "left": "50%",
-            "transform": "translateX(-50%)",
-            "background": "var(--codee-surface)",
-            "border": "1px solid var(--codee-human-border)",
-            "border_radius": "4px",
-            "box_shadow": "0 8px 24px rgba(0, 0, 0, 0.28)",
-            "color": "var(--codee-text)",
-            "font_family": "IBM Plex Sans, sans-serif",
-            "font_size": "0.75rem",
-            "font_weight": "500",
-            "line_height": "1.45",
-            "padding": "0.35rem 0.55rem",
-            "text_align": "left",
-            "white_space": "normal",
-            "width": "max-content",
-            "max_width": "18rem",
-            "opacity": "0",
-            "pointer_events": "none",
-            "transition": "opacity 0.12s ease",
-            "z_index": "5",
-        },
+        ".workflow-node--human::after": _workflow_node_tooltip(
+            "var(--codee-human-action, 'A person moves this status "
+            "forward: no issue-trigger skill handles it.')",
+            "var(--codee-human-border)",
+        ),
         ".workflow-node--human:hover::after": {"opacity": "1"},
+        # A status an issue-trigger skill picks up is worked by an agent, and
+        # which agent and model that is only shows on the node itself.
+        ".workflow-node--agent": {"cursor": "help"},
+        # Several lines, so the rule keeps the `\A` breaks the node's
+        # `--codee-agent-run` carries.
+        ".workflow-node--agent::after": _workflow_node_tooltip(
+            "var(--codee-agent-run, 'An AI agent works this status.')",
+            "var(--codee-border)",
+            white_space="pre-line",
+        ),
+        ".workflow-node--agent:hover::after": {"opacity": "1"},
         ".react-flow__edge.workflow-edge": {
             "cursor": "pointer",
         },

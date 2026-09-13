@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -15,7 +16,7 @@ from codee_agent_github_copilot.provider import GitHubCopilotAgent
 
 from codee.admin_service import (
     MCP_CHECK, TASKS_CHECK, WORKFLOW_CACHE_VERSION,
-    WORKFLOW_HUMAN_EDGE_COLOR, AdminService,
+    WORKFLOW_HUMAN_EDGE_COLOR, AdminService, WorkflowGeneration,
     _remove_redundant_skill_transitions, azure_oauth, normalize_work_items,
     parse_skill, repository_name)
 from codee_main_context.context import (
@@ -26,6 +27,14 @@ from codee_main_context.context import (
 def _empty_workflow() -> dict:
     return {issue_type: {"nodes": [], "edges": [], "warnings": []}
             for issue_type in ("story", "task")}
+
+
+def _generating_service() -> AdminService:
+    """A service with only what the shared workflow run needs."""
+    service = AdminService.__new__(AdminService)
+    service._workflow_run = WorkflowGeneration()
+    service._workflow_run_lock = threading.Lock()
+    return service
 
 
 def _write_issue_skill(root: Path) -> Path:
@@ -1112,11 +1121,11 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 node["style"]["--codee-human-action"],
                 "'Finish the developer\\'s work and move the story on.'",
             )
-            self.assertTrue(all(
-                "style" not in node
-                for node in workflow["nodes"]
-                if node["data"]["label"] in ("Ready", "Done")
-            ))
+            # Done is worked by nobody the graph can name: no skill picks it
+            # up, and a final status is not waiting on a person either.
+            done = next(node for node in workflow["nodes"]
+                        if node["data"]["label"] == "Done")
+            self.assertNotIn("style", done)
 
     def test_generate_workflow_draws_a_human_transition_in_yellow(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1286,9 +1295,12 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
 
             with patch.object(service, "_generate_workflow",
                               return_value=generated) as generate:
-                self.assertIs(service.generate_workflow(), generated)
-                self.assertIs(service.generate_workflow(), generated)
-                self.assertIs(service.generate_workflow(force=True), generated)
+                # Equal rather than identical: the graph handed to the page is
+                # the cached one plus what the page reads off the skills.
+                self.assertEqual(service.generate_workflow(), generated)
+                self.assertEqual(service.generate_workflow(), generated)
+                self.assertEqual(
+                    service.generate_workflow(force=True), generated)
 
             self.assertEqual(generate.call_count, 2)
 
@@ -1360,7 +1372,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             generated = _empty_workflow()
             with patch.object(service, "_generate_workflow",
                               return_value=generated) as generate:
-                self.assertIs(service.generate_workflow(), generated)
+                self.assertEqual(service.generate_workflow(), generated)
 
             self.assertEqual(generate.call_count, 1)
 
@@ -1388,9 +1400,219 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             restarted.data_dir = data_dir
             with patch.object(restarted, "_generate_workflow",
                               return_value=regenerated) as generate:
-                self.assertIs(restarted.generate_workflow(), regenerated)
+                self.assertEqual(restarted.generate_workflow(), regenerated)
 
             self.assertEqual(generate.call_count, 1)
+
+
+class AdminServiceWorkflowAgentTest(unittest.TestCase):
+    """What the graph says about the agent working each status."""
+
+    def _service(self, root: Path, extra_frontmatter: str = "") -> AdminService:
+        skills_dir = root / ".claude" / "skills"
+        skill_dir = skills_dir / "develop"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: develop\ndisable-model-invocation: true\n"
+            "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+            f"x-codee-issue-type: story\n{extra_frontmatter}---\n"
+            "After implementation, move the issue to Review.\n"
+        )
+        service = AdminService.__new__(AdminService)
+        service.root = root
+        service.skills_dir = skills_dir
+        service.data_dir = root / ".codee"
+        service.context = Mock(
+            settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+        return service
+
+    def _story_nodes(self, service: AdminService) -> dict[str, dict]:
+        agent = Mock()
+        agent.run.return_value = (
+            '{"statuses":["Ready","Review"],"transitions":['
+            '{"source":"Ready","target":"Review","label":"develop",'
+            '"evidence":"After implementation, move the issue to Review."}],'
+            '"final_statuses":["Review"]}'
+        )
+        with patch.dict("codee.admin_service.CODING_AGENTS", {
+            CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+        }):
+            workflow = service.generate_workflow()
+        return {node["data"]["label"]: node
+                for node in workflow["story"]["nodes"]}
+
+    def test_a_status_a_skill_picks_up_names_its_agent_and_model(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory),
+                "model: claude-opus-5\nx-codee-agent: codex\n")
+
+            nodes = self._story_nodes(service)
+
+            self.assertIn("workflow-node--agent", nodes["Ready"]["className"])
+            # One CSS string with `\A` breaks in it: the tooltip is a single
+            # `::after` whose text the node carries as a custom property.
+            self.assertEqual(
+                nodes["Ready"]["style"]["--codee-agent-run"],
+                "'AI agent: Codex\\A Model: claude-opus-5\\A Skill: develop'",
+            )
+
+    def test_a_skill_that_names_neither_falls_back_to_what_runs_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+            (root / ".codee").mkdir()
+            save_settings(root / ".codee",
+                          Settings(coding_agent=CodingAgent.CODEX))
+
+            nodes = self._story_nodes(service)
+
+            # The reading the executor takes: the agent Settings selects, and
+            # a model left to that agent's CLI.
+            self.assertEqual(
+                nodes["Ready"]["style"]["--codee-agent-run"],
+                "'AI agent: Codex\\A Model: agent default\\A Skill: develop'",
+            )
+
+    def test_a_status_no_skill_picks_up_says_nothing_about_an_agent(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+
+            nodes = self._story_nodes(service)
+
+            self.assertNotIn("workflow-node--agent", nodes["Review"]["className"])
+            self.assertNotIn("style", nodes["Review"])
+
+    def test_changing_the_agent_needs_no_second_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+            self._story_nodes(service)
+            save_settings(root / ".codee",
+                          Settings(coding_agent=CodingAgent.CODEX))
+
+            # Which agent works a status is not something the graph was
+            # inferred from, so picking another one must not cost the minutes
+            # a fresh inference run takes.
+            with patch.object(service, "_generate_workflow") as generate:
+                workflow = service.generate_workflow()
+
+            generate.assert_not_called()
+            ready = next(node for node in workflow["story"]["nodes"]
+                         if node["data"]["label"] == "Ready")
+            self.assertIn("AI agent: Codex",
+                          ready["style"]["--codee-agent-run"])
+
+
+class AdminServiceWorkflowGenerationTest(unittest.TestCase):
+    """The generation run the Workflow page attaches to."""
+
+    @staticmethod
+    def _await(service: AdminService) -> WorkflowGeneration:
+        """Poll until the run is over, as the page's watcher does."""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = service.workflow_generation_status()
+            if not status.running:
+                return status
+            time.sleep(0.01)
+        raise AssertionError("workflow generation never finished")
+
+    def test_a_second_visit_attaches_to_the_run_already_going(self) -> None:
+        service = _generating_service()
+        release = threading.Event()
+        generated = _empty_workflow()
+
+        def generate(force: bool, report) -> dict:
+            report("working")
+            release.wait(5)
+            return generated
+
+        with patch.object(service, "generate_workflow",
+                          side_effect=generate) as generating:
+            service.start_workflow_generation()
+            while not service.workflow_generation_status().progress:
+                time.sleep(0.01)
+            # The visit that comes back mid-generation sees the same run,
+            # with the progress it has made so far.
+            attached = service.start_workflow_generation()
+            self.assertTrue(attached.running)
+            self.assertEqual(attached.progress, ("working",))
+            release.set()
+            finished = self._await(service)
+
+        self.assertEqual(generating.call_count, 1)
+        self.assertIs(finished.workflow, generated)
+        self.assertEqual(finished.error, "")
+
+    def test_the_finished_graph_is_there_for_the_next_visit(self) -> None:
+        service = _generating_service()
+        generated = _empty_workflow()
+
+        with patch.object(service, "generate_workflow",
+                          return_value=generated):
+            service.start_workflow_generation()
+            self._await(service)
+            # Coming back after it finished shows the graph straight away
+            # rather than an empty page behind a spinner.
+            self.assertIs(
+                service.workflow_generation_status().workflow, generated)
+
+    def test_regenerating_takes_the_old_graph_off_the_page(self) -> None:
+        service = _generating_service()
+        release = threading.Event()
+
+        with patch.object(service, "generate_workflow",
+                          return_value=_empty_workflow()):
+            service.start_workflow_generation()
+            self._await(service)
+
+        with patch.object(service, "generate_workflow",
+                          side_effect=lambda force, report: release.wait(5)):
+            started = service.start_workflow_generation(force=True)
+            self.assertTrue(started.running)
+            self.assertIsNone(started.workflow)
+            release.set()
+            self._await(service)
+
+    def test_a_failed_run_ends_and_keeps_the_graph_it_could_not_replace(
+            self) -> None:
+        service = _generating_service()
+        generated = _empty_workflow()
+
+        with patch.object(service, "generate_workflow",
+                          return_value=generated):
+            service.start_workflow_generation()
+            self._await(service)
+
+        with patch.object(service, "generate_workflow",
+                          side_effect=RuntimeError("agent said no")):
+            service.start_workflow_generation()
+            failed = self._await(service)
+
+        # A run that ends without saying so would leave every later visit
+        # watching a generation that is not happening.
+        self.assertFalse(failed.running)
+        self.assertEqual(failed.error, "agent said no")
+        self.assertIs(failed.workflow, generated)
+
+    def test_a_run_that_failed_can_be_started_again(self) -> None:
+        service = _generating_service()
+        generated = _empty_workflow()
+
+        with patch.object(service, "generate_workflow",
+                          side_effect=RuntimeError("agent said no")):
+            service.start_workflow_generation()
+            self._await(service)
+
+        with patch.object(service, "generate_workflow",
+                          return_value=generated):
+            service.start_workflow_generation()
+            retried = self._await(service)
+
+        self.assertEqual(retried.error, "")
+        self.assertIs(retried.workflow, generated)
 
 
 class AdminServiceSkillModelTest(unittest.TestCase):

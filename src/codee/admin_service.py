@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import threading
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -98,6 +98,13 @@ WORKFLOW_NODE_CENTER_OFFSET = 110
 # border. Edge colours have to be literals: React Flow builds an SVG arrow
 # marker per colour, keyed by the string, so a CSS variable cannot be used.
 WORKFLOW_HUMAN_EDGE_COLOR = "#d1a207"
+# Marks a status an issue-trigger skill picks up, so the page can say on hover
+# which agent and model work it.
+WORKFLOW_AGENT_CLASS = "workflow-node--agent"
+# What the tooltip says for a skill with no ``model`` in its frontmatter: the
+# executor passes no model at all there and the agent's CLI picks one, so
+# naming a model id would be a guess.
+WORKFLOW_DEFAULT_MODEL_LABEL = "agent default"
 # How many transitions get a hover-highlight group class. The matching CSS is
 # one static rule per group, so the count is bounded; a workflow with more
 # transitions than this is unreadable long before the cap bites.
@@ -109,6 +116,22 @@ WORKFLOW_CACHE_FILE = "workflow.json"
 # inference changes what it draws, so a cache written by an older Codee is
 # regenerated instead of rendered.
 WORKFLOW_CACHE_VERSION = 5
+
+
+@dataclass(frozen=True)
+class WorkflowGeneration:
+    """What the shared workflow generation is doing right now.
+
+    One run belongs to the whole process rather than to the page that asked
+    for it, so this is what every viewer reads to find out where it is.
+    """
+
+    running: bool = False
+    # What the generation is doing, newest line last.
+    progress: tuple[str, ...] = ()
+    # The last graph that finished, kept across a failed regeneration.
+    workflow: dict[str, Any] | None = None
+    error: str = ""
 
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
@@ -482,6 +505,97 @@ def _css_string(text: str) -> str:
     return f"'{escaped}'"
 
 
+def _css_lines(lines: Iterable[str]) -> str:
+    r"""Quote several lines for a CSS ``content`` value, one per line.
+
+    ``\A`` is the line break a ``content`` string can carry; the rule that
+    reads it sets ``white-space: pre-line`` so the browser honours it. Each
+    line is escaped on its own, so nothing a skill is called can break out of
+    the string.
+    """
+    return "'" + "\\A ".join(
+        _css_string(line)[1:-1] for line in lines) + "'"
+
+
+def _skill_run_summary(
+    skill: IssueTriggeredSkill, default_agent: CodingAgent
+) -> list[str]:
+    """What runs this skill: the agent, the model, and the skill's own name.
+
+    The reading matches the executor's: a skill that names no agent, or one
+    Codee cannot run, is driven by the default agent from Settings, and a
+    skill with no ``model`` leaves the choice to that agent's CLI.
+    """
+    agent = resolve_agent_code(skill.agent) or default_agent
+    return [
+        f"AI agent: {agent_label(agent)}",
+        f"Model: {skill.model or WORKFLOW_DEFAULT_MODEL_LABEL}",
+        f"Skill: {skill.name}",
+    ]
+
+
+def _with_agent_tooltips(
+    workflow: dict[str, Any],
+    skills: list[IssueTriggeredSkill],
+    default_agent: CodingAgent,
+) -> dict[str, Any]:
+    """Mark every status an issue-trigger skill picks up with what runs it.
+
+    Applied to the graph on its way to the page rather than baked into it,
+    because none of this comes from the inference: the answer changes when a
+    skill's frontmatter or the default agent in Settings changes, and neither
+    is worth minutes of a coding-agent run to redraw the same arrows.
+    """
+    handlers: dict[str, dict[str, list[IssueTriggeredSkill]]] = {}
+    for skill in skills:
+        by_status = handlers.setdefault(skill.issue_type, {})
+        for status in skill.statuses:
+            by_status.setdefault(status.casefold(), []).append(skill)
+    return {
+        issue_type: {
+            **graph,
+            "nodes": [
+                _node_with_agent_tooltip(
+                    node, handlers.get(issue_type, {}), default_agent)
+                for node in graph.get("nodes", [])
+            ],
+        }
+        for issue_type, graph in workflow.items()
+    }
+
+
+def _node_with_agent_tooltip(
+    node: dict[str, Any],
+    handlers: dict[str, list[IssueTriggeredSkill]],
+    default_agent: CodingAgent,
+) -> dict[str, Any]:
+    """One node, plus the tooltip naming the agent that works that status.
+
+    Nodes the graph draws for routing carry no status name, so they match no
+    skill and are handed back untouched.
+    """
+    status = str((node.get("data") or {}).get("label", ""))
+    handled = handlers.get(status.casefold())
+    if not handled:
+        return node
+    lines: list[str] = []
+    for skill in handled:
+        # A blank line between skills: several can share an entry status, and
+        # run on different agents when they do.
+        if lines:
+            lines.append("")
+        lines.extend(_skill_run_summary(skill, default_agent))
+    return {
+        **node,
+        "className": " ".join(
+            filter(None, [str(node.get("className", "")), WORKFLOW_AGENT_CLASS])),
+        "style": {
+            **(node.get("style") or {}),
+            "--codee-agent-run": _css_lines(lines),
+        },
+    }
+
+
 def normalize_work_items(rows: list[tuple[str, str]]) -> tuple[dict[str, str], str]:
     """Turn the settings form's mapping rows into what ``Settings`` stores.
 
@@ -625,6 +739,11 @@ class AdminService:
         # Cached graph plus the skill fingerprint it was generated from.
         self._workflow_cache: tuple[str, dict[str, Any]] | None = None
         self._workflow_lock = threading.Lock()
+        # The generation in flight. It outlives the page visit that started
+        # it, so a viewer who leaves and comes back attaches to the same run
+        # instead of waiting on an earlier visit to report back.
+        self._workflow_run = WorkflowGeneration()
+        self._workflow_run_lock = threading.Lock()
         # Asking an agent for its catalog can mean spawning its CLI, so the
         # answer is cached per agent for the life of the process.
         self._models_cache: dict[CodingAgent, list[AgentModel]] = {}
@@ -735,6 +854,70 @@ class AdminService:
                 return skill["slug"]
         return ""
 
+    def start_workflow_generation(
+        self, force: bool = False
+    ) -> WorkflowGeneration:
+        """Begin generating the workflow, or attach to the run already going.
+
+        The run is the process's, not the caller's: whoever asks gets the
+        state it is in right now, so a page that is opened again halfway
+        through picks up the progress made so far rather than starting a
+        second run or watching one it can no longer hear from.
+        """
+        with self._workflow_run_lock:
+            if self._workflow_run.running:
+                return self._workflow_run
+            # Regenerating takes the graph off the screen: the point of
+            # asking for it again is to watch a new one being built.
+            self._workflow_run = WorkflowGeneration(
+                running=True,
+                workflow=None if force else self._workflow_run.workflow,
+            )
+            threading.Thread(
+                target=self._run_workflow_generation,
+                args=(force,),
+                daemon=True,
+            ).start()
+            return self._workflow_run
+
+    def workflow_generation_status(self) -> WorkflowGeneration:
+        """Where the run started by ``start_workflow_generation`` has got to."""
+        with self._workflow_run_lock:
+            return self._workflow_run
+
+    def _run_workflow_generation(self, force: bool) -> None:
+        """Generate off the event loop, recording progress as it arrives.
+
+        The run always ends, whatever happens inside it. One that stopped
+        without saying so would leave every later visit watching the progress
+        of a generation that is no longer running.
+        """
+        workflow: dict[str, Any] | None = None
+        error = "Workflow generation stopped unexpectedly."
+        try:
+            workflow = self.generate_workflow(
+                force, self._report_workflow_progress)
+            error = ""
+        except Exception as failure:  # noqa: BLE001 - shown on the page
+            error = str(failure)
+        finally:
+            with self._workflow_run_lock:
+                self._workflow_run = replace(
+                    self._workflow_run,
+                    running=False,
+                    # A failed regeneration keeps the graph it could not
+                    # replace, so the error is all that changes on screen.
+                    workflow=(self._workflow_run.workflow if workflow is None
+                              else workflow),
+                    error=error,
+                )
+
+    def _report_workflow_progress(self, line: str) -> None:
+        with self._workflow_run_lock:
+            self._workflow_run = replace(
+                self._workflow_run,
+                progress=(*self._workflow_run.progress, line))
+
     def generate_workflow(
         self,
         force: bool = False,
@@ -762,11 +945,27 @@ class AdminService:
                 cached = self._cached_workflow(fingerprint)
                 if cached is not None:
                     announce("Skills are unchanged: showing the stored workflow.")
-                    return cached
+                    return self._workflow_for_page(cached)
             workflow = self._generate_workflow(announce)
             self._workflow_cache = (fingerprint, workflow)
             self._store_workflow(fingerprint, workflow)
-            return workflow
+            return self._workflow_for_page(workflow)
+
+    def _workflow_for_page(self, workflow: dict[str, Any]) -> dict[str, Any]:
+        """The inferred graph with what the page knows without inferring it.
+
+        Which agent and model work a status is read from skill frontmatter and
+        the saved settings here, off the cached graph, so it is right after a
+        skill's model changes or Settings picks another agent — neither of
+        which changes an arrow, and so neither is worth a fresh inference run.
+        """
+        settings = load_settings(self.data_dir)
+        return _with_agent_tooltips(
+            workflow,
+            find_issue_triggered_skills(
+                self.skills_dir, codee_issue_types(settings)),
+            settings.coding_agent,
+        )
 
     def _workflow_fingerprint(self) -> str:
         """Digest the skill documents the workflow graph is inferred from."""
