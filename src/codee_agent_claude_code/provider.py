@@ -72,31 +72,35 @@ class ClaudeCodeAgent(AbstractCodingAgent):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.TIMEOUT_SECONDS,
                 cwd=self._cwd,
             )
         except subprocess.TimeoutExpired:
             raise RuntimeError("Claude CLI timed out after 2 hours")
 
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         log.debug("claude exited %d (%d bytes stdout, %d bytes stderr)",
-                  result.returncode, len(result.stdout), len(result.stderr))
+              result.returncode, len(stdout), len(stderr))
 
         # Raise on any non-success so callers retry. Over-limit exits non-zero;
         # a completed-but-errored run sets is_error in the JSON.
         if result.returncode != 0:
             raise RuntimeError(
-                f"Claude CLI exited {result.returncode}: {result.stderr.strip()[:500]}"
+                f"Claude CLI exited {result.returncode}: {stderr.strip()[:500]}"
             )
 
         try:
-            response = json.loads(result.stdout)
+            response = json.loads(stdout)
         except json.JSONDecodeError:
-            return result.stdout
+            return stdout
         if isinstance(response, dict):
             if response.get("is_error"):
                 raise RuntimeError(
                     f"Claude run errored ({response.get('subtype', 'unknown')}): "
                     f"{str(response.get('result', ''))[:500]}"
                 )
-            return response.get("result", result.stdout)
-        return result.stdout
+            return response.get("result", stdout)
+        return stdout

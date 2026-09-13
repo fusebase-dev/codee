@@ -34,6 +34,20 @@ class ClaudeCodeRunTest(unittest.TestCase):
 
         self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
 
+    def test_cli_output_is_decoded_as_utf8(self) -> None:
+        with patch("subprocess.run", return_value=_completed()) as run:
+            self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run.call_args.kwargs["errors"], "replace")
+
+    def test_missing_captured_streams_do_not_raise_type_error(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["claude"], returncode=0, stdout=None, stderr=None)
+
+        with patch("subprocess.run", return_value=completed):
+            self.assertEqual(self.agent.run("/do-it CORE-1", SESSION), "")
+
     def test_the_best_model_is_a_version_free_alias(self) -> None:
         # The alias tracks the newest Opus, so no release needs an edit here.
         self.assertEqual(ClaudeCodeAgent.best_model(), "opus")

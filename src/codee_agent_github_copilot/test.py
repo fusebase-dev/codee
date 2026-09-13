@@ -71,6 +71,14 @@ class CopilotRunTest(unittest.TestCase):
         for flag in ("--allow-all", "--no-ask-user", "--output-format"):
             self.assertIn(flag, cmd)
         self.assertEqual(self.captured.call_args.kwargs["cwd"], Path("/repo"))
+        self.assertEqual(self.captured.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(self.captured.call_args.kwargs["errors"], "replace")
+
+    def test_missing_captured_streams_do_not_raise_type_error(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["copilot"], returncode=0, stdout=None, stderr=None)
+
+        self.assertEqual(self._run(completed), "")
 
     def test_the_skill_model_is_passed_on_the_command_line(self) -> None:
         stdout = _stream(_event("assistant.message", {"content": "ok"}),
@@ -194,7 +202,7 @@ class CopilotModelCatalogTest(unittest.TestCase):
             {"name": "nameless"},            # no id at all: unusable, skipped
         ]}}
 
-        with patch("codee_agent_github_copilot.provider.subprocess.Popen"), \
+        with patch("codee_agent_github_copilot.provider.subprocess.Popen") as popen, \
                 patch("codee_agent_github_copilot.provider._send"), \
                 patch("codee_agent_github_copilot.provider._await_result",
                       return_value=result):
@@ -202,6 +210,8 @@ class CopilotModelCatalogTest(unittest.TestCase):
 
         self.assertEqual([(m.id, m.name) for m in models],
                          [("claude-opus-5", "Claude Opus 5"), ("gpt-5.4", "gpt-5.4")])
+        self.assertEqual(popen.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(popen.call_args.kwargs["errors"], "replace")
 
     def test_an_unavailable_cli_yields_no_models_rather_than_raising(self) -> None:
         with patch("codee_agent_github_copilot.provider.subprocess.Popen",
