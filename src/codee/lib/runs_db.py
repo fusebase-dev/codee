@@ -65,9 +65,16 @@ def init(main_context: CodeeMainContext) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 message TEXT,
-                started_at TEXT NOT NULL
+                started_at TEXT NOT NULL,
+                agent TEXT,
+                model TEXT
             )"""
         )
+        # Migrate DBs created before the dashboard named the agent behind a run.
+        job_cols = {row[1] for row in conn.execute("PRAGMA table_info(active_jobs)")}
+        for column in ("agent", "model"):
+            if column not in job_cols:
+                conn.execute(f"ALTER TABLE active_jobs ADD COLUMN {column} TEXT")
 
 
 def record_run(skill_name, trigger_type, session_id, status, error=None, started_at=None,
@@ -133,17 +140,24 @@ def clear_active_jobs(main_context: CodeeMainContext) -> None:
         print(f"[runs_db] Failed to clear active jobs: {exc}")
 
 
-def start_job(session_id, message, started_at=None, *,
+def start_job(session_id, message, started_at=None, *, agent="", model="",
               main_context: CodeeMainContext) -> int | None:
-    """Mark a claude run as in-flight. Returns its job id (or None if logging failed)."""
+    """Mark a claude run as in-flight. Returns its job id (or None if logging failed).
+
+    ``agent`` is the coding agent driving the run as a human reads it ("Codex"),
+    and ``model`` the model it was told to use — both recorded so the dashboard
+    can say who is working, not just what the prompt was. Either may be empty:
+    a skill that names no model leaves the agent on its own default.
+    """
     try:
         init(main_context)
         if started_at is None:
             started_at = datetime.now(timezone.utc).isoformat()
         with get_db_connection(main_context) as conn:
             cur = conn.execute(
-                "INSERT INTO active_jobs (session_id, message, started_at) VALUES (?, ?, ?)",
-                (session_id, message, started_at),
+                "INSERT INTO active_jobs (session_id, message, started_at, agent, model)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (session_id, message, started_at, agent, model),
             )
             return cur.lastrowid
     except Exception as exc:  # ponytail: a logging miss must never abort the run
@@ -185,21 +199,22 @@ def active_jobs(main_context: CodeeMainContext) -> list[dict]:
         init(main_context)
         with get_db_connection(main_context) as conn:
             rows = conn.execute(
-                "SELECT id, session_id, message, started_at FROM active_jobs"
+                "SELECT id, session_id, message, started_at, agent, model FROM active_jobs"
             ).fetchall()
     except Exception as exc:
         print(f"[runs_db] Failed to read active jobs: {exc}")
         return []
     now = datetime.now(timezone.utc)
     jobs = []
-    for job_id, session_id, message, started_at in rows:
+    for job_id, session_id, message, started_at, agent, model in rows:
         try:
             elapsed = int(
                 (now - datetime.fromisoformat(started_at)).total_seconds())
         except (ValueError, TypeError):
             elapsed = 0  # ponytail: bad timestamp -> show 0, don't drop the row
         jobs.append({"id": job_id, "session_id": session_id, "message": message,
-                     "started_at": started_at, "elapsed": max(elapsed, 0)})
+                     "started_at": started_at, "elapsed": max(elapsed, 0),
+                     "agent": agent or "", "model": model or ""})
     jobs.sort(key=lambda j: j["elapsed"])
     return jobs
 

@@ -81,6 +81,11 @@ class ActiveJob(BaseModel):
     message: str
     elapsed_label: str
     viewer_url: str
+    # Who is doing the work: the coding agent's display name, and the model the
+    # triggering skill asked for. ``model`` is empty when the skill named none,
+    # which the row reads as the agent running on its own default.
+    agent: str = ""
+    model: str = ""
 
 
 class CheckResult(BaseModel):
@@ -572,6 +577,8 @@ class AdminState(rx.State):
                 elapsed_label=job["elapsed_label"],
                 viewer_url=(SERVICE.session_viewer.format(session_id=job["session_id"])
                             if SERVICE.session_viewer and job.get("session_id") else ""),
+                agent=job.get("agent") or "",
+                model=job.get("model") or "",
             )
             for job in dashboard["active"]
         ]
@@ -1365,12 +1372,46 @@ def elapsed_pill(label: rx.Var | str) -> rx.Component:
     )
 
 
+def running_agent_line(job: ActiveJob) -> rx.Component:
+    """Who is running the prompt: the coding agent, and the model it was given.
+
+    Sits under the prompt rather than beside it so a long prompt keeps the whole
+    first line to itself. A run whose agent went unrecorded — a row written
+    before the columns existed — shows nothing at all instead of a blank label.
+    """
+    return rx.cond(
+        (job.agent != "") | (job.model != ""),
+        rx.hstack(
+            rx.cond(
+                job.agent != "",
+                rx.hstack(rx.icon("bot", size=13, color=SUBTLE_ICON),
+                          rx.text(job.agent, color=MUTED, font_size="0.78rem"),
+                          spacing="1", align="center"),
+            ),
+            rx.cond(
+                job.model != "",
+                rx.code(job.model, font_size="0.7rem", color_scheme="gray"),
+            ),
+            spacing="2",
+            align="center",
+            width="100%",
+        ),
+    )
+
+
 def active_job_row(job: ActiveJob) -> rx.Component:
     return rx.flex(
         live_dot(),
-        rx.text(job.message, font_weight="600", font_family=MONO, font_size="0.9rem",
-                flex="1", min_width="0", overflow="hidden", text_overflow="ellipsis",
-                white_space="nowrap", custom_attrs={"title": job.message}),
+        rx.vstack(
+            rx.text(job.message, font_weight="600", font_family=MONO, font_size="0.9rem",
+                    width="100%", overflow="hidden", text_overflow="ellipsis",
+                    white_space="nowrap", custom_attrs={"title": job.message}),
+            running_agent_line(job),
+            spacing="1",
+            align="start",
+            flex="1",
+            min_width="0",
+        ),
         elapsed_pill(job.elapsed_label),
         rx.cond(
             job.viewer_url != "",

@@ -247,7 +247,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
     raises on any failure so callers can retry.
     """
     agent = _agent_for_skill(agent_code)
-    job_id = runs_db.start_job(session_id, user_message, main_context=context)
+    job_id = runs_db.start_job(session_id, user_message, agent=agent.DISPLAY_NAME,
+                               model=model, main_context=context)
     log.debug("job %s started: session=%s message=%r model=%r agent=%s",
               job_id, session_id, user_message, model, agent.describe())
 

@@ -4,6 +4,8 @@ from pathlib import Path
 
 from codee_main_context.context import CodeeMainContext
 
+from codee_database.database import get_db_connection
+
 from codee.lib import runs_db
 
 
@@ -140,6 +142,41 @@ def test_active_job_lifecycle(tmp_path):
 
     runs_db.finish_job(jid, main_context=ctx)
     assert runs_db.active_jobs(ctx) == []
+
+
+def test_active_job_records_agent_and_model(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.start_job("sid-1", "/task-developer NIM-1", agent="Codex",
+                      model="gpt-5", main_context=ctx)
+    job = runs_db.active_jobs(ctx)[0]
+    assert job["agent"] == "Codex"
+    assert job["model"] == "gpt-5"
+
+
+def test_active_job_without_agent_or_model_reads_as_empty(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.start_job("sid-1", "/task-developer NIM-1", main_context=ctx)
+    job = runs_db.active_jobs(ctx)[0]
+    assert job["agent"] == ""
+    assert job["model"] == ""
+
+
+def test_active_jobs_migrates_a_db_without_the_agent_columns(tmp_path):
+    """A dashboard row written before the columns existed still reads back."""
+    ctx = _ctx(tmp_path)
+    runs_db.init(ctx)
+    with get_db_connection(ctx) as conn:
+        conn.execute("DROP TABLE active_jobs")
+        conn.execute("""CREATE TABLE active_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            message TEXT,
+            started_at TEXT NOT NULL)""")
+        conn.execute("INSERT INTO active_jobs (session_id, message, started_at)"
+                     " VALUES ('old', 'm', ?)", (_ago(0.01),))
+    job = runs_db.active_jobs(ctx)[0]
+    assert job["session_id"] == "old"
+    assert (job["agent"], job["model"]) == ("", "")
 
 
 def test_active_jobs_elapsed_and_order(tmp_path):
