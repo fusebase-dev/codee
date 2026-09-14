@@ -4,7 +4,6 @@ import threading
 import time
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from codee_agent_abstract.provider import AbstractCodingAgent
@@ -48,17 +47,26 @@ SESSIONS_FILE = context.data_dir / "sessions.json"
 # `/<slug>` messages we build from those skills actually resolve.
 REPO_ROOT = project_root()
 
-# Task agents run concurrently in a bounded pool so one long agent (up to 2h)
-# doesn't block the others. Cap comes from the "Max parallel tasks" admin setting.
-MAX_PARALLEL_AGENTS = max(1, context.settings.max_parallel_agents)
-_agent_pool = ThreadPoolExecutor(
-    max_workers=MAX_PARALLEL_AGENTS, thread_name_prefix="task-agent"
-)
-# task_ids a worker currently owns (running OR queued). Claimed on the main
-# thread at submit, released by the worker — so the next poll never launches a
-# second agent for a task that's still in an "In Progress"/"CR Needed" state.
+# Task agents run concurrently, one thread each, so one long agent (up to 2h)
+# doesn't block the others. The cap comes from the "Max parallel tasks" admin
+# setting and is enforced at launch rather than by a fixed-size pool, so an edit
+# applies from the next poll on — see _max_parallel_agents().
+# task_ids a worker currently owns. Claimed on the main thread at launch,
+# released by the worker — so the next poll never launches a second agent for a
+# task that's still in an "In Progress"/"CR Needed" state.
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
+
+
+def _max_parallel_agents() -> int:
+    """How many task agents may run at once, per the settings this poll read.
+
+    Read fresh every time instead of being captured at import, so changing "Max
+    parallel tasks" in Settings takes effect on the next poll without a restart.
+    Agents already running are never interrupted by a lowered cap; the executor
+    simply launches nothing new until it is back under the limit.
+    """
+    return max(1, context.settings.max_parallel_agents)
 
 
 def _load_sessions() -> dict[str, str]:
@@ -171,11 +179,11 @@ def _refresh_config() -> None:
                      settings.coding_agent.value)
 
     if settings.max_parallel_agents != previous.max_parallel_agents:
-        # The pool is sized once and may have work in flight, so this one still
-        # needs a restart rather than being silently ignored.
-        log.warning("Max parallel tasks changed to %s; restart the executor to "
-                    "apply (still running with %s).",
-                    settings.max_parallel_agents, MAX_PARALLEL_AGENTS)
+        # Nothing to rebuild: the cap is read per launch. Agents already running
+        # under the old cap finish; this tick just launches by the new one.
+        log.info("Max parallel tasks changed from %s to %s; applied from this "
+                 "poll on.", previous.max_parallel_agents,
+                 settings.max_parallel_agents)
 
 
 def _current_branch() -> str | None:
@@ -310,22 +318,32 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
 
 def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
                  model: str = "", agent_code: str = "") -> bool:
-    """Hand a task to the agent pool unless one is already in flight for it.
+    """Start a task's agent unless one is already in flight or we're at the cap.
 
-    Returns True if submitted, False if skipped as a duplicate. Only the main
-    (polling) thread adds to _inflight and only workers remove, so claiming the
-    slot here is race-free against the next tick.
+    Returns True if launched, False if skipped — as a duplicate, or because
+    "Max parallel tasks" is already reached, in which case the task keeps its
+    status and the next poll picks it up. Only the main (polling) thread adds to
+    _inflight and only workers remove, so claiming the slot here is race-free
+    against the next tick.
     """
     with _inflight_lock:
         if task_id in _inflight:
             log.debug("%s already running; skipping duplicate launch.", task_id)
             return False
+        limit = _max_parallel_agents()
+        if len(_inflight) >= limit:
+            log.debug("%d agent(s) running, at the cap of %d; %s waits for the "
+                      "next poll.", len(_inflight), limit, task_id)
+            return False
         _inflight.add(task_id)
         depth = len(_inflight)
-    _agent_pool.submit(_run_task, task_id, message,
-                       session_id, skill_name, model, agent_code)
-    log.info("Submitted %s to agent pool (%d in flight/queued, max %d).",
-             task_id, depth, MAX_PARALLEL_AGENTS)
+    # Non-daemon on purpose: a shutdown waits for a running agent rather than
+    # killing it mid-run, which is what the thread pool used to give us.
+    threading.Thread(target=_run_task, name=f"task-agent-{task_id}",
+                     args=(task_id, message, session_id, skill_name, model,
+                           agent_code)).start()
+    log.info("Started an agent for %s (%d running, max %d).",
+             task_id, depth, limit)
     return True
 
 
@@ -349,8 +367,7 @@ def run_once() -> None:
 
     with _inflight_lock:
         running = len(_inflight)
-    log.debug("Agent pool: %d/%d in flight/queued.",
-              running, MAX_PARALLEL_AGENTS)
+    log.debug("Agents: %d/%d running.", running, _max_parallel_agents())
 
     # The work items come from the settings this tick already re-read, rather
     # than from a second read of the same file inside the loader.
@@ -373,6 +390,13 @@ def run_once() -> None:
     for task in tasks:
         task_id = task.key
         with _inflight_lock:
+            running, limit = len(_inflight), _max_parallel_agents()
+            if running >= limit:
+                # Full for this tick — the rest keep their status and get
+                # another go at the next poll, under whatever the cap is then.
+                log.info("%d agent(s) running, at the cap of %d; the remaining "
+                         "task(s) wait for the next poll.", running, limit)
+                break
             if task_id in _inflight:
                 continue  # a worker already owns it; don't re-fetch or re-launch
         summary = task.summary
@@ -426,7 +450,7 @@ def main() -> None:
     log.info("Starting the main loop (ticking every %ss)...", POLL_INTERVAL)
     log.info("Tasks provider: %s", tasks_provider.describe())
     log.debug("data dir=%s repo root=%s max parallel agents=%d",
-              context.data_dir, REPO_ROOT, MAX_PARALLEL_AGENTS)
+              context.data_dir, REPO_ROOT, _max_parallel_agents())
 
     while True:
         try:

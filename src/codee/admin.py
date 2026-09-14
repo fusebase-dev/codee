@@ -3089,7 +3089,10 @@ def settings_page() -> rx.Component:
                 field("Max parallel tasks",
                       rx.input(value=AdminState.max_parallel_agents,
                                on_change=AdminState.set_max_parallel_agents,
-                               type="number", min=1, width="100%")),
+                               type="number", min=1, width="100%"),
+                      rx.text("How many task agents may run at once. Applies "
+                              "from the next poll; running agents finish.",
+                              color=MUTED, font_size="0.82rem")),
                 spacing="4", width="100%"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         # Decided when the page is built rather than with an rx.cond, because

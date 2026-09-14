@@ -266,6 +266,73 @@ class RunTaskLoggingTest(unittest.TestCase):
         self.assertEqual(counts, {"total": 1, "last_24h": 1})
 
 
+class MaxParallelAgentsTest(unittest.TestCase):
+    """The cap is read per launch, so a settings edit needs no restart."""
+
+    def setUp(self) -> None:
+        original_settings = executor.context.settings
+        self.addCleanup(
+            lambda: setattr(executor.context, "settings", original_settings))
+        executor.context.settings = Settings(max_parallel_agents=2)
+        with executor._inflight_lock:
+            self.addCleanup(executor._inflight.clear)
+            executor._inflight.clear()
+
+    def _submit(self, task_id: str) -> bool:
+        # Patch the worker, not the thread: a launched task must really claim
+        # its slot, which is what the cap is counting.
+        with patch.object(executor, "_run_task") as worker:
+            launched = executor._submit_task(task_id, f"/skill {task_id}",
+                                             f"sid-{task_id}", "skill")
+        if launched:
+            worker.assert_called_once()
+        return launched
+
+    def test_launches_up_to_the_configured_cap(self) -> None:
+        self.assertTrue(self._submit("NIM-1"))
+        self.assertTrue(self._submit("NIM-2"))
+        self.assertFalse(self._submit("NIM-3"))
+
+    def test_a_raised_cap_applies_without_a_restart(self) -> None:
+        self._submit("NIM-1")
+        self._submit("NIM-2")
+
+        executor.context.settings = Settings(max_parallel_agents=3)
+
+        self.assertTrue(self._submit("NIM-3"))
+
+    def test_a_lowered_cap_applies_without_a_restart(self) -> None:
+        executor.context.settings = Settings(max_parallel_agents=4)
+        self._submit("NIM-1")
+
+        executor.context.settings = Settings(max_parallel_agents=1)
+
+        # The one already running is left alone; nothing new starts.
+        self.assertFalse(self._submit("NIM-2"))
+        self.assertEqual(executor._inflight, {"NIM-1"})
+
+    def test_a_task_already_in_flight_is_not_launched_twice(self) -> None:
+        self.assertTrue(self._submit("NIM-1"))
+        self.assertFalse(self._submit("NIM-1"))
+
+    def test_a_finished_task_frees_its_slot(self) -> None:
+        self._submit("NIM-1")
+        self._submit("NIM-2")
+
+        with patch.object(executor, "_run_agent", return_value="done"), \
+                patch.object(runs_db, "record_run"):
+            executor._run_task("NIM-1", "/skill NIM-1", "sid-1", "skill")
+
+        self.assertEqual(executor._inflight, {"NIM-2"})
+        self.assertTrue(self._submit("NIM-3"))
+
+    def test_a_nonsense_cap_still_leaves_one_slot(self) -> None:
+        executor.context.settings = Settings(max_parallel_agents=0)
+        self.assertEqual(executor._max_parallel_agents(), 1)
+        self.assertTrue(self._submit("NIM-1"))
+        self.assertFalse(self._submit("NIM-2"))
+
+
 class _Exploding:
     def __init__(self, *args, **kwargs):
         raise RuntimeError("bad credentials")
