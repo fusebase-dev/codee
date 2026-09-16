@@ -180,7 +180,7 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         self.service.context.settings = Settings(claude_code_rotate_keys=True)
         # Built by hand rather than through __init__, like the other service
         # tests, so the usage cache has to be set up by hand too.
-        self.service._usage_cache = (None, 0.0, USAGE_CACHE_SECONDS)
+        self.service._usage_cache = {}
         self.service._usage_lock = threading.Lock()
 
     def _connect(self, label: str = "one@example.com",
@@ -403,6 +403,61 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
 
         fetch.assert_called_once()
 
+    def test_an_account_connected_just_now_is_on_the_next_reading(self) -> None:
+        # What the cache used to hold was the whole list, so an account
+        # connected a minute after the last reading stayed off the dashboard
+        # until the accounts already on it were due to be asked about again.
+        self._connect("one@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 3.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage",
+                      return_value=usage) as fetch:
+            self.service.claude_code_account_usage()
+            self._connect("two@example.com")
+            measured = self.service.claude_code_account_usage()
+
+        self.assertEqual([account.label for account in measured],
+                         ["one@example.com", "two@example.com"])
+        # Only the new account was asked about: the first one's reading still
+        # stands, which is what the cache is for.
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(measured[1].session_percent, 3.0)
+
+    def test_a_disconnected_account_leaves_the_reading_at_once(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 3.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage", return_value=usage):
+            first = self.service.claude_code_account_usage()
+            self.service.disconnect_claude_code_account(first[1].id)
+            measured = self.service.claude_code_account_usage()
+
+        self.assertEqual([account.label for account in measured],
+                         ["one@example.com"])
+        self.assertEqual(list(self.service._usage_cache), [first[0].id])
+
+    def test_a_cached_reading_does_not_hold_a_stale_account_in_use(self) -> None:
+        # The meters are what goes out of date over minutes; which account is
+        # live changes the moment rotation moves, and the widget's one job is
+        # to say which that is.
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        usage = Usage(limited=False, windows={"five_hour": 3.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_usage", return_value=usage):
+            measured = self.service.claude_code_account_usage()
+            claude_code_accounts.set_current_account(
+                measured[1].id, self.service.context)
+            again = self.service.claude_code_account_usage()
+
+        self.assertEqual([account.in_use for account in measured], [True, False])
+        self.assertEqual([account.in_use for account in again], [False, True])
+        self.assertEqual(again[1].session_percent, 3.0)
+
     def test_a_rate_limited_reading_is_not_retried_on_the_usual_cadence(self) -> None:
         # Asking too often is what produced the 429, so the cache holds for
         # much longer than usual rather than turning the refusal into a loop.
@@ -413,8 +468,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                       side_effect=UsageRateLimited("HTTP 429")):
             self.service.claude_code_account_usage()
 
-        _, _, stands_for = self.service._usage_cache
-        self.assertEqual(stands_for, USAGE_RATE_LIMIT_BACKOFF_SECONDS)
+        stands_for = [entry[2] for entry in self.service._usage_cache.values()]
+        self.assertEqual(stands_for, [USAGE_RATE_LIMIT_BACKOFF_SECONDS])
 
     def test_a_rate_limited_account_keeps_the_numbers_it_last_reported(self) -> None:
         # The meters move over hours: a reading a few minutes old is a far
@@ -428,8 +483,9 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                 patch("codee.admin_service.fetch_usage", return_value=usage):
             self.service.claude_code_account_usage()
         # Expire the cache so the next call asks, and is refused.
-        rows, _, _ = self.service._usage_cache
-        self.service._usage_cache = (rows, 0.0, USAGE_CACHE_SECONDS)
+        self.service._usage_cache = {
+            account: (row, 0.0, USAGE_CACHE_SECONDS)
+            for account, (row, _, _) in self.service._usage_cache.items()}
         with patch("codee.admin_service.ensure_fresh", side_effect=lambda a, c: a), \
                 patch("codee.admin_service.fetch_usage",
                       side_effect=UsageRateLimited("HTTP 429")):
@@ -731,6 +787,30 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertFalse(pushed)
             self.assertEqual(message, "missing does not exist")
             push.assert_not_called()
+
+    def test_force_run_skill_queues_the_skill_for_the_next_tick(self) -> None:
+        # The button on the skill editor goes through here, so this calls the
+        # real trigger module rather than a mock: an import that names the
+        # wrong object breaks only at this call.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            (skills_dir / "nightly").mkdir(parents=True)
+            (skills_dir / "nightly" / "SKILL.md").write_text(
+                "---\nname: nightly\nx-codee-trigger: cron\n"
+                "x-codee-cron: 0 0 * * *\n---\nBody\n")
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = skills_dir
+            service.context = CodeeMainContext(data_dir=root / ".codee")
+            service.context.data_dir.mkdir()
+
+            service.force_run_skill("nightly")
+
+            queued = json.loads(
+                (service.context.data_dir / "cron_skill_force.json").read_text())
+            self.assertEqual(
+                [Path(key).name for key in queued], ["SKILL.md"])
+            self.assertIn("nightly", queued[0])
 
     def test_resolve_skill_slug_matches_name_and_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -34,7 +34,7 @@ from codee.lib import runs_db
 from codee.lib.claude_key_rotation import ensure_fresh
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
-from codee.lib.trigger_cron_skills import trigger_cron_skills
+from codee.lib.trigger_cron_skills import request_force_run
 from codee.lib.trigger_issue_skills import (
     IssueTriggeredSkill,
     find_issue_triggered_skills,
@@ -139,6 +139,13 @@ USAGE_CACHE_SECONDS = 300
 # draws barely move in that time.
 USAGE_RATE_LIMIT_BACKOFF_SECONDS = 900
 
+# The only fields of a row the usage cache is allowed to answer for. Everything
+# else — the label, which account is in use, whether it needs signing in again
+# — is read from the database on every pass, so a reading minutes old never
+# holds a stale version of any of it on the page.
+_USAGE_FIELDS = ("session_percent", "weekly_percent", "session_resets",
+                 "weekly_resets", "usage_error")
+
 
 @dataclass(frozen=True)
 class ConnectedAccount:
@@ -213,6 +220,18 @@ def public_base_url() -> str:
 def _check(name: str, ok: bool, message: str) -> dict[str, Any]:
     """One line of the settings page's check list."""
     return {"name": name, "ok": ok, "message": message}
+
+
+def _with_cached_usage(listed: ConnectedAccount,
+                       reading: ConnectedAccount) -> ConnectedAccount:
+    """``listed`` as the database has it now, carrying ``reading``'s meters.
+
+    The row is rebuilt from the live list rather than served from the cache, so
+    what the cache is old about is only the allowance — never who the account
+    is or whether it is the one in use.
+    """
+    return replace(listed, **{field: getattr(reading, field)
+                              for field in _USAGE_FIELDS})
 
 
 def _strip_code_fence(text: str) -> str:
@@ -833,11 +852,11 @@ class AdminService:
         # answer is cached per agent for the life of the process.
         self._models_cache: dict[CodingAgent, list[AgentModel]] = {}
         self._models_lock = threading.Lock()
-        # The last account usage read, and when. Shared by every visitor to the
-        # dashboard, because it is a property of the accounts rather than of
-        # whoever is looking at them.
-        self._usage_cache: tuple[list[Any] | None, float, float] = (
-            None, 0.0, USAGE_CACHE_SECONDS)
+        # The last usage reading per account id — the row, when it was taken,
+        # and how long it stands. Shared by every visitor to the dashboard,
+        # because it is a property of the accounts rather than of whoever is
+        # looking at them.
+        self._usage_cache: dict[int, tuple[ConnectedAccount, float, float]] = {}
         self._usage_lock = threading.Lock()
 
     def _git_push(self, message: str) -> tuple[bool, str]:
@@ -1803,7 +1822,7 @@ class AdminService:
         )
 
     def force_run_skill(self, slug: str) -> None:
-        trigger_cron_skills.request_force_run(
+        request_force_run(
             self.skills_dir / slug / "SKILL.md", main_context=self.context
         )
 
@@ -2100,13 +2119,18 @@ class AdminService:
     def claude_code_account_usage(self) -> list[ConnectedAccount]:
         """The connected accounts with each one's remaining allowance.
 
-        One network round trip per account, so it is cached for
-        :data:`USAGE_CACHE_SECONDS` — the dashboard redraws every second and
-        must not turn that into a request per second per account. A reading the
-        endpoint rate limited stands for :data:`USAGE_RATE_LIMIT_BACKOFF_SECONDS`
-        instead: the way to stop being rate limited is to ask less often, so
-        the one answer that must not be retried on the usual cadence is that
-        one.
+        One network round trip per account, so each account's reading is cached
+        for :data:`USAGE_CACHE_SECONDS` — the dashboard redraws every second
+        and must not turn that into a request per second per account. A reading
+        the endpoint rate limited stands for
+        :data:`USAGE_RATE_LIMIT_BACKOFF_SECONDS` instead: the way to stop being
+        rate limited is to ask less often, so the one answer that must not be
+        retried on the usual cadence is that one.
+
+        The list itself is never cached, only the allowances on it. An account
+        connected a moment ago is on the page the next time the dashboard asks,
+        with its own reading taken there and then, and a disconnected one is
+        off it — neither waits out a cache it was not part of.
 
         Tokens are renewed first where they need it: an account that has been
         waiting its turn is holding an expired one and would report itself
@@ -2117,26 +2141,38 @@ class AdminService:
         """
         listed = self.claude_code_accounts()
         if not listed:
+            with self._usage_lock:
+                self._usage_cache = {}
             return []
         now = time.monotonic()
         with self._usage_lock:
-            cached, fetched_at, stands_for = self._usage_cache
-            if cached is not None and now - fetched_at < stands_for:
-                return cached
-            previous = {account.id: account for account in cached or []}
+            previous = dict(self._usage_cache)
 
         measured: list[ConnectedAccount] = []
-        rate_limited = False
+        # Rebuilt from the accounts that exist now rather than merged into what
+        # was there, so a disconnected account stops being asked about at once
+        # instead of sitting in the cache for the life of the process.
+        readings: dict[int, tuple[ConnectedAccount, float, float]] = {}
         for account in listed:
-            row, refused = self._account_usage(account, previous.get(account.id))
+            entry = previous.get(account.id)
+            # Cached per account, not as one list: an account connected a
+            # moment ago has no reading of its own, and a cached list would
+            # keep it off the dashboard until every account that was already
+            # there was due to be asked about again.
+            if entry is not None and now - entry[1] < entry[2]:
+                readings[account.id] = entry
+                measured.append(_with_cached_usage(account, entry[0]))
+                continue
+            row, refused = self._account_usage(
+                account, entry[0] if entry is not None else None)
+            readings[account.id] = (
+                row, time.monotonic(),
+                USAGE_RATE_LIMIT_BACKOFF_SECONDS if refused
+                else USAGE_CACHE_SECONDS)
             measured.append(row)
-            rate_limited = rate_limited or refused
 
         with self._usage_lock:
-            self._usage_cache = (
-                measured, time.monotonic(),
-                USAGE_RATE_LIMIT_BACKOFF_SECONDS if rate_limited
-                else USAGE_CACHE_SECONDS)
+            self._usage_cache = readings
         return measured
 
     def _account_usage(
