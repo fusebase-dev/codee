@@ -64,37 +64,102 @@ class NormalizeWorkItemsTest(unittest.TestCase):
     """What the settings form's mapping rows have to satisfy before they save."""
 
     def test_rows_become_a_lower_cased_mapping(self) -> None:
-        mapping, error = normalize_work_items(
-            [("Story", "User Story"), ("task", " Task "), ("Bug", "Bug")])
+        mapping, queries, error = normalize_work_items(
+            [("Story", ["User Story"], ""), ("task", [" Task "], ""),
+             ("Bug", ["Bug"], "")])
 
         self.assertEqual(error, "")
-        self.assertEqual(mapping, {"story": "User Story", "task": "Task",
-                                   "bug": "Bug"})
+        self.assertEqual(mapping, {"story": ["User Story"], "task": ["Task"],
+                                   "bug": ["Bug"]})
+        self.assertEqual(queries, {})
+
+    def test_one_work_item_can_name_several_provider_types(self) -> None:
+        # A Codee task that covers the backend's Task and Bug both is one work
+        # item with one set of skills, not two.
+        mapping, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task", "Bug"], "")])
+
+        self.assertEqual(error, "")
+        self.assertEqual(mapping, {"story": ["Story"], "task": ["Task", "Bug"]})
+
+    def test_a_type_listed_twice_in_one_row_is_kept_once(self) -> None:
+        mapping, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task", " task ", "Bug"], "")])
+
+        self.assertEqual(error, "")
+        self.assertEqual(mapping["task"], ["Task", "Bug"])
+
+    def test_a_type_mapped_to_two_work_items_is_refused(self) -> None:
+        # Whichever of them an incoming Bug was reported as, the other work
+        # item's skills would never see it — and nothing would say why.
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task", "Bug"], ""),
+             ("defect", ["bug"], "")])
+
+        self.assertEqual(
+            error, "Work item type 'bug' is mapped to both 'task' and 'defect'")
+
+    def test_a_query_is_stored_beside_the_types_it_replaces(self) -> None:
+        # The types stay so switching the row back offers them again; the
+        # stored query is what says the query is what selects it.
+        mapping, queries, error = normalize_work_items(
+            [("story", ["Story"], ""),
+             ("task", ["Task"], '  labels = "codee"  ')])
+
+        self.assertEqual(error, "")
+        self.assertEqual(mapping["task"], ["Task"])
+        self.assertEqual(queries, {"task": 'labels = "codee"'})
+
+    def test_a_work_item_with_only_a_query_is_accepted(self) -> None:
+        _, queries, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""),
+             ("bug", [], "issuetype = Bug")])
+
+        self.assertEqual(error, "")
+        self.assertEqual(queries, {"bug": "issuetype = Bug"})
+
+    def test_a_queried_work_item_may_reuse_a_mapped_type(self) -> None:
+        # Its types are not what polls it, so there is nothing to collide with.
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""),
+             ("bug", ["Task"], 'labels = "codee"')])
+
+        self.assertEqual(error, "")
 
     def test_the_mandatory_work_items_cannot_be_removed(self) -> None:
         # Losing them would leave every story skill matching nothing, silently.
-        _, error = normalize_work_items([("story", "Story"), ("bug", "Bug")])
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("bug", ["Bug"], "")])
 
         self.assertEqual(error, "Work items task cannot be removed")
 
     def test_a_row_without_a_name_is_refused(self) -> None:
-        _, error = normalize_work_items(
-            [("story", "Story"), ("task", "Task"), ("  ", "Bug")])
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""),
+             ("  ", ["Bug"], "")])
 
         self.assertEqual(error, "Give every work item a name")
 
-    def test_a_row_without_a_provider_type_is_refused(self) -> None:
-        _, error = normalize_work_items(
-            [("story", "Story"), ("task", "Task"), ("bug", "")])
+    def test_a_row_with_neither_a_type_nor_a_query_is_refused(self) -> None:
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""), ("bug", [], "")])
 
         self.assertEqual(error,
-                         "Choose the provider work item type for 'bug'")
+                         "Choose a provider work item type for 'bug'")
+
+    def test_a_row_whose_only_type_is_blank_is_refused(self) -> None:
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""),
+             ("bug", ["  "], "")])
+
+        self.assertEqual(error,
+                         "Choose a provider work item type for 'bug'")
 
     def test_two_rows_with_the_same_name_are_refused(self) -> None:
         # They differ only in case, so one would silently overwrite the other.
-        _, error = normalize_work_items(
-            [("story", "Story"), ("task", "Task"), ("Bug", "Bug"),
-             ("bug", "Defect")])
+        _, _, error = normalize_work_items(
+            [("story", ["Story"], ""), ("task", ["Task"], ""),
+             ("Bug", ["Bug"], ""), ("bug", ["Defect"], "")])
 
         self.assertEqual(error, "'bug' is listed twice")
 
@@ -114,14 +179,16 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
             service = self._service(directory)
 
             service.save_settings("jira", "claude_code", 3, {},
-                                  {"story": "Epic", "task": "Task"})
+                                  {"story": ["Epic"], "task": ["Task"]})
             service.save_settings("azure_devops", "claude_code", 3, {},
-                                  {"story": "User Story", "task": "Task"})
+                                  {"story": ["User Story"],
+                                   "task": ["Task", "Bug"]})
 
             stored = load_settings(directory).work_item_types
-            self.assertEqual(stored["jira"], {"story": "Epic", "task": "Task"})
+            self.assertEqual(stored["jira"],
+                             {"story": ["Epic"], "task": ["Task"]})
             self.assertEqual(stored["azure_devops"],
-                             {"story": "User Story", "task": "Task"})
+                             {"story": ["User Story"], "task": ["Task", "Bug"]})
 
     def test_saving_keeps_the_other_provider_s_task_filter(self) -> None:
         # A JQL clause means nothing to Azure DevOps, so each provider keeps
@@ -130,10 +197,10 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
             directory = Path(temporary_directory)
             service = self._service(directory)
 
-            service.save_settings("jira", "claude_code", 3, {}, None,
+            service.save_settings("jira", "claude_code", 3, {}, None, None,
                                   'labels = "codee"')
             service.save_settings("azure_devops", "claude_code", 3, {}, None,
-                                  "[System.Tags] CONTAINS 'codee'")
+                                  None, "[System.Tags] CONTAINS 'codee'")
 
             stored = load_settings(directory).task_filters
             self.assertEqual(stored["jira"], 'labels = "codee"')
@@ -146,9 +213,41 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
             service = self._service(directory)
 
             service.save_settings("jira", "claude_code", 3, {},
-                                  {"story": "Story", "task": "Task"})
+                                  {"story": ["Story"], "task": ["Task"]})
 
             self.assertEqual(load_settings(directory).task_filters["jira"], "")
+
+    def test_saving_keeps_the_other_provider_s_work_item_queries(self) -> None:
+        # A JQL condition means nothing to Azure DevOps, so each provider keeps
+        # its own and switching between them loses neither.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {},
+                                  {"story": ["Story"], "task": ["Task"]},
+                                  {"task": 'labels = "codee"'})
+            service.save_settings("azure_devops", "claude_code", 3, {},
+                                  {"story": ["User Story"], "task": ["Task"]},
+                                  {"task": "[System.Tags] CONTAINS 'codee'"})
+
+            stored = load_settings(directory).work_item_queries
+            self.assertEqual(stored["jira"], {"task": 'labels = "codee"'})
+            self.assertEqual(stored["azure_devops"],
+                             {"task": "[System.Tags] CONTAINS 'codee'"})
+
+    def test_a_work_item_selected_by_a_query_is_one_skills_may_declare(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings("jira", "claude_code", 3, {},
+                                  {"story": ["Story"], "task": ["Task"],
+                                   "bug": []},
+                                  {"bug": 'labels = "codee-bug"'})
+
+            self.assertEqual(service.issue_types(), ("story", "task", "bug"))
+            self.assertTrue(service.work_item_mappings("jira")[2].is_query)
 
     def test_the_saved_work_items_are_what_skills_may_declare(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -156,8 +255,8 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
             service = self._service(directory)
 
             service.save_settings("jira", "claude_code", 3, {},
-                                  {"story": "Story", "task": "Task",
-                                   "bug": "Bug"})
+                                  {"story": ["Story"], "task": ["Task"],
+                                   "bug": ["Bug"]})
 
             self.assertEqual(service.issue_types(), ("story", "task", "bug"))
 
@@ -334,7 +433,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         second = self.service.claude_code_accounts()[1]
         claude_code_accounts.set_current_account(second.id, self.service.context)
 
-        self.service.save_settings("jira", "claude_code", 3, {}, None, "", False)
+        self.service.save_settings("jira", "claude_code", 3, {}, None, None,
+                                   "", False)
 
         self.assertEqual(
             claude_code_accounts.current_account_id(self.service.context), 0)
@@ -343,7 +443,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         self.service.context.settings = Settings(claude_code_rotate_keys=False)
         self._connect("one@example.com")
 
-        self.service.save_settings("jira", "claude_code", 3, {}, None, "", True)
+        self.service.save_settings("jira", "claude_code", 3, {}, None, None,
+                                   "", True)
 
         self.assertTrue(self.service.claude_code_accounts()[0].in_use)
 
@@ -3012,7 +3113,9 @@ class VerifyTasksMcpCheckTest(unittest.TestCase):
                 get.assert_not_called()
 
                 self.assertEqual(next(checks)["name"], TASKS_CHECK)
-                get.assert_called_once()
+                # One query per Codee work item, and the MCP check untouched
+                # until it is asked for.
+                self.assertEqual(get.call_count, 2)
                 agent.run.assert_not_called()
 
                 self.assertEqual(next(checks)["name"], MCP_CHECK)

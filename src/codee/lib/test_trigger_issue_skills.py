@@ -143,7 +143,8 @@ class ConfiguredIssueTypesTest(unittest.TestCase):
             root = Path(temporary_directory)
             self._skill(root, "triage", "bug")
             save_settings(root, Settings(work_item_types={
-                "jira": {"story": "Story", "task": "Task", "bug": "Bug"}}))
+                "jira": {"story": ["Story"], "task": ["Task", "Defect"],
+                         "bug": ["Bug"]}}))
 
             with patch.dict(os.environ, {"CODEE_DATA_DIR": str(root)}):
                 self.assertEqual(configured_issue_types(),

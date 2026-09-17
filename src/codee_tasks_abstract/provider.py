@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from itertools import zip_longest
 
 from codee_main_context.context import Settings
 
@@ -39,6 +40,36 @@ class Task:
         has no notion of Codee stories inherits "no parent story".
         """
         return False
+
+
+def merge_work_item_tasks(results: list[list["Task"]]) -> list["Task"]:
+    """One list of tasks out of one query's worth of them per work item.
+
+    Every Codee work item is polled with its own query, because only the query
+    that found an item says which work item it is — a condition written by the
+    user cannot be re-run against a result to ask "was this one yours?". What
+    comes back is one already-ordered list per work item, and nothing in it
+    orders them against each other: the backend ranked each query's own
+    results, but a "High" in one backlog is not comparable to a "High" in
+    another, and no answer the backend gave says whose first item should be
+    worked first.
+
+    So they are interleaved rather than concatenated: one from each in turn.
+    That keeps every query's own order, and gives every work item a share of
+    the agents the executor has free — concatenating would let one long backlog
+    hold up every other work item for as long as it stayed full.
+
+    An item two queries both matched is kept once, under the first work item
+    that claimed it, which is the same first-wins rule the type mapping uses.
+    """
+    merged: list["Task"] = []
+    seen: set[str] = set()
+    for round_ in zip_longest(*results):
+        for task in round_:
+            if task is not None and task.key not in seen:
+                seen.add(task.key)
+                merged.append(task)
+    return merged
 
 
 @dataclass(frozen=True)

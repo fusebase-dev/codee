@@ -4,10 +4,12 @@ from urllib.parse import quote
 import requests
 
 from codee_main_context.context import (
-    Settings, TasksProvider, task_filter, work_item_types)
+    Settings, TasksProvider, WorkItemMapping, codee_work_items, task_filter,
+    work_item_mappings)
 from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
-    AbstractTasksProvider, McpServer, Task, TasksProviderError)
+    AbstractTasksProvider, McpServer, Task, TasksProviderError,
+    merge_work_item_tasks)
 
 
 log = get_logger(__name__)
@@ -107,14 +109,13 @@ class JiraTasksProvider(AbstractTasksProvider):
         self._user_email = creds.get("account_email")
         self._api_token = creds.get("api_token")
         self._project = creds.get("project")
-        # Which JIRA issue types stand for which Codee work item. Both
-        # directions are needed: the names go into the JQL type filter, and an
-        # issue that comes back is reported to the executor under the Codee
-        # name the user mapped it to.
-        self._work_item_types = work_item_types(settings, TasksProvider.JIRA)
-        self._codee_types = {issue_type.casefold(): codee_type
-                             for codee_type, issue_type
-                             in self._work_item_types.items()}
+        # How each Codee work item is picked out of JIRA: a list of issue types,
+        # or a JQL condition of the user's own. One query is built per work
+        # item, so what an issue comes back as is settled by the query that
+        # found it. The reverse type map is still needed for the issues no
+        # query asked for — a parent is fetched without a type filter.
+        self._work_items = work_item_mappings(settings, TasksProvider.JIRA)
+        self._codee_types = codee_work_items(self._work_items)
         # An extra JQL condition the user narrowed the poll with, empty unless
         # one was configured. Kept as written: it is theirs to get right, and
         # JIRA says what is wrong with it far better than a parser here could.
@@ -124,12 +125,23 @@ class JiraTasksProvider(AbstractTasksProvider):
         return bool(self._user_email and self._api_token)
 
     def describe(self) -> str:
-        types = ", ".join(self._work_item_types.values()) or "no issue types"
+        types = ", ".join(self._describe_work_items()) or "no issue types"
         # The filter only gets a mention when there is one: it is off for most
         # installations, and "filter none" reads like a setting gone wrong.
         extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"JIRA {self._base_url} "
-                f"(project {self._project}, types {types}{extra})")
+                f"(project {self._project}, work items {types}{extra})")
+
+    def _describe_work_items(self) -> list[str]:
+        """Each work item as "name: how it is selected", for a log line.
+
+        A query is named rather than quoted: it can be a paragraph of JQL, and
+        the point of this line is what Codee is pointed at, not the filter's
+        small print — which the debug log prints in full anyway.
+        """
+        return [f"{mapping.name} (custom JQL)" if mapping.is_query
+                else f"{mapping.name} ({', '.join(mapping.types)})"
+                for mapping in self._work_items]
 
     def task_url(self, key: str) -> str:
         """JIRA's own browse link, which resolves an issue key from any project."""
@@ -181,23 +193,54 @@ class JiraTasksProvider(AbstractTasksProvider):
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
-        """Fetch the Codee issues sitting in the configured statuses."""
+        """Fetch the Codee issues sitting in the configured statuses.
+
+        One query per Codee work item rather than one for all of them. A work
+        item selected by a JQL condition of the user's own can only be
+        recognized by asking JIRA for it on its own terms — nothing in an issue
+        says which condition matched it — and once one work item needs its own
+        query they all do, or two of them would be ordered against each other
+        by an accident of which path they took.
+
+        Each query also gets its own page of results, so a work item with a
+        hundred issues waiting cannot crowd another out of the poll.
+        """
         # Nothing is waiting on an issue, so there is no request worth making.
         # The settings check passes no statuses too, but there the whole point
         # is to reach JIRA, so it queries without a status filter.
         if not statuses and not raise_errors:
             return []
+        return merge_work_item_tasks([
+            self._fetch_work_item(mapping, statuses, raise_errors)
+            for mapping in self._work_items
+        ])
+
+    def _fetch_work_item(self, mapping: WorkItemMapping, statuses: list[str],
+                         raise_errors: bool) -> list[Task]:
+        """One Codee work item's issues, under the name its query was built for.
+
+        A failure is that work item's alone when the executor is asking: the
+        rest of the poll is still worth having, and a mistyped condition on one
+        work item must not stop the others being worked. The settings check
+        asks for the opposite — there the failure is the answer.
+        """
+        if not (mapping.is_query or mapping.types):
+            # Nothing to ask for. Querying anyway would drop the type clause
+            # and hand back the whole project. Only a hand-edited settings file
+            # gets here — the reader drops such a row, and the settings page
+            # refuses to save one.
+            return []
         url = f"{self._base_url}/rest/api/3/search/jql"
         params = {
-            "jql": self._build_jql(statuses),
+            "jql": self._build_jql(mapping, statuses),
             "fields": "key,summary,status,issuetype,parent,labels,priority",
             "maxResults": 50,
         }
         # The query verbatim, because "Codee isn't picking up my issue" is
-        # answered by reading it: the project, the issue types the work item
-        # mapping resolved to, the statuses the skills asked for and the custom
-        # filter from Settings are all in this one string.
-        log.debug("JQL: %s", params["jql"])
+        # answered by reading it: the project, what this work item resolved to,
+        # the statuses the skills asked for and the custom filter from Settings
+        # are all in this one string.
+        log.debug("JQL for work item %s: %s", mapping.name, params["jql"])
 
         try:
             resp = requests.get(
@@ -212,17 +255,20 @@ class JiraTasksProvider(AbstractTasksProvider):
         except requests.RequestException as exc:
             if raise_errors:
                 raise TasksProviderError(_describe_error(exc)) from exc
-            log.error("JIRA API error: %s", _describe_error(exc))
+            log.error("JIRA API error for work item %s: %s",
+                      mapping.name, _describe_error(exc))
             return []
 
-        tasks = [self._to_task(issue) for issue in data.get("issues", [])]
-        log.debug("JQL matched %d issue(s)%s", len(tasks),
+        tasks = [self._to_task(issue, mapping.name)
+                 for issue in data.get("issues", [])]
+        log.debug("JQL for work item %s matched %d issue(s)%s", mapping.name,
+                  len(tasks),
                   ": " + ", ".join(_describe_task(task) for task in tasks)
                   if tasks else "")
         return tasks
 
-    def _build_jql(self, statuses: list[str]) -> str:
-        """JQL for Codee-owned issues, highest priority first, then oldest.
+    def _build_jql(self, mapping: WorkItemMapping, statuses: list[str]) -> str:
+        """JQL for one Codee work item, highest priority first, then oldest.
 
         There is no assignee clause: what hands an issue to Codee is its type
         and its status, not who it is assigned to. So an issue a human still
@@ -241,7 +287,7 @@ class JiraTasksProvider(AbstractTasksProvider):
             status_clause = f'AND status in ({quoted_statuses}) '
         return (
             f'project = {self._project} '
-            f'{self._build_type_clause()}'
+            f'{self._build_work_item_clause(mapping)}'
             f'{status_clause}'
             f'{self._build_filter_clause()}'
             f'ORDER BY priority DESC, created ASC'
@@ -258,26 +304,36 @@ class JiraTasksProvider(AbstractTasksProvider):
             return ""
         return f'AND ({self._task_filter}) '
 
-    def _build_type_clause(self) -> str:
-        """The issue-type filter, from the work items configured in Settings.
+    def _build_work_item_clause(self, mapping: WorkItemMapping) -> str:
+        """What narrows the query to one Codee work item.
 
-        Narrowing the query rather than filtering the response is what keeps an
-        issue of a type Codee was never pointed at from consuming one of the 50
-        rows a page returns. Dropped when nothing is mapped, for the same reason
-        the status clause is: ``in ()`` is a JQL syntax error.
+        Its issue types, or the JQL the user wrote for it instead. Narrowing
+        the query rather than filtering the response is what keeps an issue
+        Codee was never pointed at from consuming one of the 50 rows a page
+        returns.
+
+        A custom condition is bracketed, like the filter below and for the same
+        reason: an unparenthesized ``a = 1 OR b = 2`` would bind its OR across
+        the project and status clauses and hand back issues Codee does not own.
         """
-        issue_types = list(self._work_item_types.values())
-        if not issue_types:
-            return ""
-        quoted = ", ".join(_quote_jql(issue_type) for issue_type in issue_types)
+        if mapping.is_query:
+            return f'AND ({mapping.query}) '
+        quoted = ", ".join(_quote_jql(issue_type)
+                           for issue_type in mapping.types)
         return f'AND issuetype in ({quoted}) '
 
     def _codee_issue_type(self, issue_type: str) -> str:
         """The Codee work item this JIRA issue type was mapped to.
 
-        An unmapped type keeps the name JIRA gave it. The query above only
-        returns mapped types, but a parent is not type-filtered, so this is
-        what lets a story above a Codee task pass through recognizably.
+        Only for the issues nothing queried for: a parent is not type-filtered,
+        and this is what lets the story above a Codee task pass through
+        recognizably. The issues the poll asked for are named by the work item
+        whose query returned them instead.
+
+        An unmapped type keeps the name JIRA gave it — which is also what a
+        parent of a work item selected by a custom JQL condition gets, since
+        the types such a condition matches are the query's business and not
+        written down anywhere Codee can read.
         """
         return self._codee_types.get(issue_type.casefold(), issue_type)
 
@@ -331,14 +387,21 @@ class JiraTasksProvider(AbstractTasksProvider):
                   ", ".join(resolved))
         return resolved
 
-    def _to_task(self, issue: dict) -> Task:
+    def _to_task(self, issue: dict, issue_type: str = "") -> Task:
+        """One issue as the executor reads it.
+
+        ``issue_type`` is the Codee work item whose query returned it, which is
+        the only thing that can name an issue a custom condition matched.
+        Left out for a parent, which no query asked for: it falls back to
+        whichever work item claims the type JIRA gave it.
+        """
         fields = issue.get("fields", {})
         parent_issue = fields.get("parent")
         return JiraTask(
             key=issue["key"],
             summary=fields.get("summary", ""),
             status=fields.get("status", {}).get("name", ""),
-            issue_type=self._codee_issue_type(
+            issue_type=issue_type or self._codee_issue_type(
                 fields.get("issuetype", {}).get("name", "")),
             priority=(fields.get("priority") or {}).get("name", "Unknown"),
             labels=fields.get("labels") or [],

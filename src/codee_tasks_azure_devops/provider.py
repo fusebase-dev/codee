@@ -4,16 +4,18 @@ Every call here is a read: a WIQL query for the ids of the Codee work items in
 the states the skills trigger on, then a batch fetch of those work items. The WIQL endpoint is a POST,
 but it is a query — nothing in this module creates or modifies a work item.
 """
+from collections.abc import Iterable
 from urllib.parse import quote
 
 import requests
 from codee_main_context.context import (
     CodeeMainContext, STORY_ISSUE_TYPE, Settings, TASK_ISSUE_TYPE,
-    TasksProvider, data_dir, task_filter,
-    work_item_types)
+    TasksProvider, WorkItemMapping, codee_work_items, data_dir, task_filter,
+    work_item_mappings)
 from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
-    AbstractTasksProvider, McpServer, Task, TasksProviderError)
+    AbstractTasksProvider, McpServer, Task, TasksProviderError,
+    merge_work_item_tasks)
 
 from codee_tasks_azure_devops.oauth import (
     AzureDevOpsAuth, AzureDevOpsAuthError, OAuthConfig)
@@ -102,25 +104,38 @@ class AzureDevOpsWorkItem(Task):
     ``issue_type`` carries the mapped Codee name, and that mapping is lossy in
     both directions: a type Codee was never pointed at passes through unmapped
     and may collide with a Codee name by accident. Comparing the raw type
-    against ``story_work_item_type`` — the backend type this installation
+    against ``story_work_item_types`` — the backend types this installation
     mapped its story to — is what keeps that accident from reading as a real
     Codee story.
     """
 
     def __init__(self, work_item_type: str = "",
-                 story_work_item_type: str = "", **kwargs):
+                 story_work_item_types: list[str] | None = None,
+                 story_keys: frozenset[str] | set[str] = frozenset(),
+                 **kwargs):
         self.work_item_type = work_item_type
-        self.story_work_item_type = story_work_item_type
+        self.story_work_item_types = list(story_work_item_types or [])
+        self.story_keys = story_keys
         super().__init__(**kwargs)
 
     @property
     def is_parent_codee_story(self) -> bool:
-        """In Azure DevOps a Codee-owned story is the type mapped to "story"."""
+        """In Azure DevOps a Codee-owned story is a type mapped to "story".
+
+        Or, where the story is selected by a WIQL condition instead of a type
+        list, a parent that condition claims — which the provider establishes
+        by putting the condition to Azure DevOps with this page's parent ids.
+        Whatever state the story is resting in, and whether or not the poll
+        itself returned it, the answer is the same one its type would have
+        given.
+        """
         parent = self.parent
-        return (isinstance(parent, AzureDevOpsWorkItem)
-                and bool(self.story_work_item_type)
-                and parent.work_item_type.casefold()
-                == self.story_work_item_type.casefold())
+        if not isinstance(parent, AzureDevOpsWorkItem):
+            return False
+        if parent.key in self.story_keys:
+            return True
+        return parent.work_item_type.casefold() in {
+            story_type.casefold() for story_type in self.story_work_item_types}
 
 
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
@@ -135,21 +150,33 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         # the default data directory to reach the token store.
         context = main_context or CodeeMainContext(data_dir=data_dir())
         self._auth = AzureDevOpsAuth(self._config, context)
-        # Which backend work item type stands for which Codee work item. Both
-        # directions are needed: the names go into the WIQL type filter, and an
-        # item that comes back is reported to the executor under the Codee name
-        # the user mapped it to.
-        self._work_item_types = work_item_types(
+        # How each Codee work item is picked out of Azure DevOps: a list of
+        # work item types, or a WIQL condition of the user's own. One query is
+        # built per work item, so what an item comes back as is settled by the
+        # query that found it. The reverse type map is still needed for the
+        # items no query asked for — a parent is fetched without a type filter.
+        self._work_items = work_item_mappings(
             settings, TasksProvider.AZURE_DEVOPS)
-        self._codee_types = {item_type.casefold(): codee_type
-                             for codee_type, item_type
-                             in self._work_item_types.items()}
-        self._story_work_item_type = self._work_item_types.get(
-            STORY_ISSUE_TYPE, "")
+        self._codee_types = codee_work_items(self._work_items)
+        self._story_work_item_types = list(self._work_item(
+            STORY_ISSUE_TYPE).types)
         # An extra WIQL condition the user narrowed the poll with, empty unless
         # one was configured. Kept as written: it is theirs to get right, and
         # Azure DevOps explains a rejected query better than a parser here could.
         self._task_filter = task_filter(settings, TasksProvider.AZURE_DEVOPS)
+
+    def _work_item(self, name: str) -> WorkItemMapping:
+        """One Codee work item by name, empty when this install has no such row.
+
+        Only the mandatory two are ever looked up this way, and the reader
+        fills those in from the defaults — but a hand-edited settings file can
+        still drop one, and an empty mapping is the answer that keeps every
+        caller from having to say so again.
+        """
+        for mapping in self._work_items:
+            if mapping.name == name:
+                return mapping
+        return WorkItemMapping(name=name)
 
     def is_configured(self) -> bool:
         """Configured means the app details are filled in *and* OAuth completed."""
@@ -158,7 +185,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
     def describe(self) -> str:
         connection = self._auth.connection() or {}
         account = connection.get("account") or "connected account"
-        types = ", ".join(self._work_item_types.values()) or "no work item types"
+        types = ", ".join(self._describe_work_items()) or "no work item types"
         # The account is named as the identity the query runs as, not as a
         # filter — the poll matches on type and state, whoever a work item is
         # assigned to.
@@ -166,7 +193,19 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         # installations, and "filter none" reads like a setting gone wrong.
         extra = f", filter {self._task_filter}" if self._task_filter else ""
         return (f"Azure DevOps {self._config.organization_url} "
-                f"(all projects, connected as {account}, types {types}{extra})")
+                f"(all projects, connected as {account}, "
+                f"work items {types}{extra})")
+
+    def _describe_work_items(self) -> list[str]:
+        """Each work item as "name: how it is selected", for a log line.
+
+        A query is named rather than quoted: it can be a paragraph of WIQL, and
+        the point of this line is what Codee is pointed at, not the filter's
+        small print — which the debug log prints in full anyway.
+        """
+        return [f"{mapping.name} (custom WIQL)" if mapping.is_query
+                else f"{mapping.name} ({', '.join(mapping.types)})"
+                for mapping in self._work_items]
 
     def task_url(self, key: str) -> str:
         """The organization-level editor link for one work item.
@@ -185,7 +224,11 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         verified, message = super().verify_connection(statuses)
         if not verified:
             return verified, message
-        return verified, f"{message}\n\nWIQL: {self._build_wiql(statuses)}"
+        queries = "\n\n".join(
+            f"WIQL for work item {mapping.name}: "
+            f"{self._build_wiql(mapping, statuses)}"
+            for mapping in self._work_items)
+        return verified, f"{message}\n\n{queries}"
 
     def mcp_server(self) -> McpServer | None:
         """Microsoft's Azure DevOps MCP server, addressed at this organization.
@@ -222,7 +265,10 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         """
         account = (self._auth.connection() or {}).get("account")
         organization = self._config.organization
-        item_type = self._work_item_types.get(TASK_ISSUE_TYPE)
+        # The first of them, where a Codee task stands for several backend
+        # types: one created work item is all the check needs, and the rest of
+        # the mapping would only make it longer.
+        item_type = next(iter(self._work_item(TASK_ISSUE_TYPE).types), "")
         if not (organization and account and item_type):
             return None
         return [
@@ -304,7 +350,20 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
 
     def get_tasks(self, statuses: list[str],
                   raise_errors: bool = False) -> list[Task]:
-        """Fetch the Codee work items sitting in the given states."""
+        """Fetch the Codee work items sitting in the given states.
+
+        One WIQL query per Codee work item rather than one for all of them. A
+        work item selected by a condition of the user's own can only be
+        recognized by asking Azure DevOps for it on its own terms — nothing in
+        a returned item says which condition matched it — and once one work
+        item needs its own query they all do, or two of them would be ordered
+        against each other by an accident of which path they took.
+
+        Only the id lists are fetched per work item. WIQL returns ids and
+        nothing else, so the expensive half — the batch read of the items and
+        their parents — is still done once, over everything the queries found
+        between them.
+        """
         # Nothing is waiting on a work item, so there is no request worth
         # making. The settings check passes no statuses too, but there the whole
         # point is to reach Azure DevOps, so it queries without a state filter.
@@ -319,38 +378,119 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             log.error("Azure DevOps auth error: %s", exc)
             return []
 
-        try:
-            ids = self._query_work_item_ids(token, statuses)
-            if not ids:
+        ids_by_work_item = [
+            (mapping, self._work_item_ids(token, mapping, statuses,
+                                          raise_errors))
+            for mapping in self._work_items
+        ]
+        ids = _unique_ids(found for _, found in ids_by_work_item)
+        items: list[dict] = []
+        parents: dict[int, dict] = {}
+        if ids:
+            try:
+                items = self._fetch_work_items(token, ids)
+                parents = self._fetch_parents(token, items)
+            except requests.RequestException as exc:
+                if raise_errors:
+                    raise TasksProviderError(_describe_error(exc)) from exc
+                log.error("Azure DevOps API error: %s", _describe_error(exc))
                 return []
-            items = self._fetch_work_items(token, ids)
-            parents = self._fetch_parents(token, items)
+
+        # The batch endpoint doesn't preserve the WIQL ordering, so each work
+        # item's tasks are rebuilt in the order its own query asked for.
+        by_id = {item["id"]: item for item in items}
+        story_keys = self._codee_story_parents(token, parents, raise_errors)
+        results = []
+        for mapping, found in ids_by_work_item:
+            tasks = [self._to_task(by_id[item_id], parents, mapping.name,
+                                   story_keys)
+                     for item_id in found if item_id in by_id]
+            log.debug("WIQL for work item %s matched %d work item(s)%s",
+                      mapping.name, len(tasks),
+                      ": " + ", ".join(_describe_task(task) for task in tasks)
+                      if tasks else "")
+            results.append(tasks)
+        return merge_work_item_tasks(results)
+
+    def _codee_story_parents(self, token: str, parents: dict[int, dict],
+                             raise_errors: bool) -> set[str]:
+        """Which of this page's parents are stories Codee owns.
+
+        A child of one is driven by the story's own agent run, so the executor
+        has to be told which parents those are. Where the story work item names
+        types, the parent's own type answers it and nothing is asked. Where it
+        is selected by a condition, the condition is put to Azure DevOps with
+        the parents' ids — one query for the whole page, not one per parent,
+        and no state clause: a story shields its children whatever state it is
+        resting in, exactly as its type would have.
+
+        When that query fails, every parent is treated as a story. A tick that
+        does too little is caught by the next one; a child worked beside the
+        story that is already working it is two agents on one change.
+        """
+        story = self._work_item(STORY_ISSUE_TYPE)
+        if not (story.is_query and parents):
+            return set()
+        ids = ", ".join(str(parent_id) for parent_id in sorted(parents))
+        query = ("SELECT [System.Id] FROM WorkItems "
+                 f"WHERE ({story.query}) AND [System.Id] IN ({ids})")
+        log.debug("WIQL for the parents of this page: %s", query)
+        try:
+            response = requests.post(
+                f"{self._config.organization_url}/_apis/wit/wiql",
+                params={"api-version": API_VERSION, "$top": _MAX_TASKS},
+                json={"query": query},
+                headers=self._headers(token),
+                timeout=_TIMEOUT,
+            )
+            response.raise_for_status()
         except requests.RequestException as exc:
             if raise_errors:
                 raise TasksProviderError(_describe_error(exc)) from exc
-            log.error("Azure DevOps API error: %s", _describe_error(exc))
+            log.error("Azure DevOps could not say which parents are stories, "
+                      "so their children wait for the next poll: %s",
+                      _describe_error(exc))
+            return {str(parent_id) for parent_id in parents}
+        return {str(item["id"])
+                for item in response.json().get("workItems") or []}
+
+    def _work_item_ids(self, token: str, mapping: WorkItemMapping,
+                       statuses: list[str], raise_errors: bool) -> list[int]:
+        """The ids one Codee work item's query returned, in its own order.
+
+        A failure is that work item's alone when the executor is asking: the
+        rest of the poll is still worth having, and a mistyped condition on one
+        work item must not stop the others being worked. The settings check
+        asks for the opposite — there the failure is the answer.
+        """
+        if not (mapping.is_query or mapping.types):
+            # Nothing to ask for. Querying anyway would drop the type clause,
+            # and with no assignee clause to fall back on that hands the
+            # executor every item in the organization. Only a hand-edited
+            # settings file gets here — the reader drops such a row, and the
+            # settings page refuses to save one.
             return []
+        try:
+            found = self._query_work_item_ids(token, mapping, statuses)
+        except requests.RequestException as exc:
+            if raise_errors:
+                raise TasksProviderError(_describe_error(exc)) from exc
+            log.error("Azure DevOps API error for work item %s: %s",
+                      mapping.name, _describe_error(exc))
+            return []
+        return found
 
-        # The batch endpoint doesn't preserve the WIQL ordering, so restore the
-        # priority-then-age order the query asked for.
-        by_id = {item["id"]: item for item in items}
-        tasks = [self._to_task(by_id[item_id], parents)
-                 for item_id in ids if item_id in by_id]
-        log.debug("WIQL matched %d work item(s)%s", len(tasks),
-                  ": " + ", ".join(_describe_task(task) for task in tasks)
-                  if tasks else "")
-        return tasks
-
-    def _query_work_item_ids(self, token: str, statuses: list[str]) -> list[int]:
+    def _query_work_item_ids(self, token: str, mapping: WorkItemMapping,
+                             statuses: list[str]) -> list[int]:
         # Organization-scoped, like the batch fetch below: the endpoint's
         # project segment is optional, and leaving it off is what lets one query
         # span every project the connected account can read.
-        query = self._build_wiql(statuses)
+        query = self._build_wiql(mapping, statuses)
         # Logged verbatim: "Codee isn't picking up my work item" is answered by
-        # reading the types the work item mapping resolved to, the states the
-        # skills asked for and the custom filter from Settings, all of which
-        # are in this one string.
-        log.debug("WIQL: %s", query)
+        # reading what this work item resolved to, the states the skills asked
+        # for and the custom filter from Settings, all of which are in this one
+        # string.
+        log.debug("WIQL for work item %s: %s", mapping.name, query)
         response = requests.post(
             f"{self._config.organization_url}/_apis/wit/wiql",
             params={"api-version": API_VERSION, "$top": _MAX_TASKS},
@@ -374,8 +514,9 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         quoted = ", ".join(_quote_wiql(status) for status in statuses)
         return f"[System.State] IN ({quoted})"
 
-    def _build_wiql(self, statuses: list[str]) -> str:
-        """WIQL for Codee work items, highest priority first, then oldest.
+    def _build_wiql(self, mapping: WorkItemMapping,
+                    statuses: list[str]) -> str:
+        """WIQL for one Codee work item, highest priority first, then oldest.
 
         There is no assignee clause: what hands a work item to Codee is its
         type and its state, not who it is assigned to. So a work item a human
@@ -391,7 +532,7 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         Codee work item types, and only the states asked for.
         """
         clauses = [clause for clause in (
-            self._build_wiql_type_clause(),
+            self._build_wiql_work_item_clause(mapping),
             self._build_wiql_status_clause(statuses),
             self._build_wiql_filter_clause(),
         ) if clause]
@@ -413,19 +554,18 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             return ""
         return f"({self._task_filter})"
 
-    def _build_wiql_type_clause(self) -> str:
-        """The work item type filter, from the work items configured in Settings.
+    def _build_wiql_work_item_clause(self, mapping: WorkItemMapping) -> str:
+        """What narrows the query to one Codee work item.
 
-        Dropped when nothing is mapped, like the state clause above and for the
-        same reason — but this one dropping is worse than a wide query: with no
-        assignee clause to fall back on it would hand the executor every item in
-        the organization. Settings keeps the mandatory work items filled in so
-        it cannot happen in practice.
+        Its work item types, or the WIQL the user wrote for it instead. A
+        custom condition is bracketed, like the filter below and for the same
+        reason: an unparenthesized ``... OR ...`` would bind across the state
+        clause and hand back items Codee does not own.
         """
-        item_types = list(self._work_item_types.values())
-        if not item_types:
-            return ""
-        quoted = ", ".join(_quote_wiql(item_type) for item_type in item_types)
+        if mapping.is_query:
+            return f"({mapping.query})"
+        quoted = ", ".join(_quote_wiql(item_type)
+                           for item_type in mapping.types)
         return f"[System.WorkItemType] IN ({quoted})"
 
     def _fetch_work_items(self, token: str, ids: list[int]) -> list[dict]:
@@ -463,19 +603,33 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         return {"Authorization": f"Bearer {token}",
                 "Accept": "application/json"}
 
-    def _to_task(self, item: dict, parents: dict[int, dict]) -> Task:
+    def _to_task(self, item: dict, parents: dict[int, dict],
+                 issue_type: str = "",
+                 story_keys: frozenset[str] | set[str] = frozenset()) -> Task:
+        """One work item as the executor reads it.
+
+        ``issue_type`` is the Codee work item whose query returned it, which is
+        the only thing that can name an item a custom condition matched. Left
+        out for a parent, which no query asked for: it falls back to whichever
+        work item claims the type Azure DevOps gave it.
+
+        ``story_keys`` are the parents established as Codee stories, which is
+        how a child of a story selected by a custom condition is still
+        recognized as one — its type alone cannot say so.
+        """
         fields = item.get("fields", {})
         parent = parents.get(fields.get("System.Parent"))
         work_item_type = fields.get("System.WorkItemType", "")
         return AzureDevOpsWorkItem(
             work_item_type=work_item_type,
-            story_work_item_type=self._story_work_item_type,
+            story_work_item_types=self._story_work_item_types,
+            story_keys=story_keys,
             key=str(item["id"]),
             summary=fields.get("System.Title", ""),
             status=fields.get("System.State", ""),
             # Parents aren't type-filtered by the query, so an unmapped type
             # (an "Epic" above a Codee task) passes through as-is.
-            issue_type=self._codee_types.get(
+            issue_type=issue_type or self._codee_types.get(
                 work_item_type.casefold(), work_item_type),
             priority=_PRIORITY_NAMES.get(
                 fields.get("Microsoft.VSTS.Common.Priority"), "Unknown"),
@@ -484,6 +638,19 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
             # looks one level up, and chasing the chain would cost a call per level.
             parent=self._to_task(parent, {}) if parent else None,
         )
+
+
+def _unique_ids(id_lists: Iterable[list[int]]) -> list[int]:
+    """Every id the work item queries found, each once, in the order found.
+
+    One batch read covers them all, and an item two queries both matched must
+    not take two of the 200 places that read has.
+    """
+    seen: dict[int, None] = {}
+    for ids in id_lists:
+        for item_id in ids:
+            seen.setdefault(item_id, None)
+    return list(seen)[:_BATCH_LIMIT]
 
 
 def _split_tags(tags: str | None) -> list[str]:

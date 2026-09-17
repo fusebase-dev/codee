@@ -47,6 +47,7 @@ from codee_main_context.context import (
     DEFAULT_ISSUE_TYPES,
     Settings,
     TasksProvider,
+    WorkItemMapping,
     codee_issue_types,
     data_dir,
     load_settings,
@@ -54,7 +55,7 @@ from codee_main_context.context import (
     project_root,
     save_settings,
     skills_dir,
-    work_item_types,
+    work_item_mappings,
 )
 
 load_dotenv()
@@ -680,31 +681,67 @@ def _node_with_agent_tooltip(
     }
 
 
-def normalize_work_items(rows: list[tuple[str, str]]) -> tuple[dict[str, str], str]:
+def normalize_work_items(
+    rows: list[tuple[str, list[str], str]],
+) -> tuple[dict[str, list[str]], dict[str, str], str]:
     """Turn the settings form's mapping rows into what ``Settings`` stores.
 
-    Returns the mapping and an error message, one of which is always empty.
+    Returns the type mapping, the queries, and an error message — the error is
+    empty when the rows are good, and the two mappings are empty when it is not.
 
     Names are lower-cased because that is how a skill declares the work item it
     triggers on, and the two have to meet. The mandatory work items must
     survive: a settings page that let them be renamed away would leave every
     story and task skill matching nothing, with no error to explain it.
+
+    A row says how its work item is selected in one of two ways. Either it
+    names provider types — several, where one Codee work item covers a
+    backend's "Task" and "Bug" both, though a type may appear in only one row:
+    an item that came back under a type claimed twice could be reported to the
+    executor under either name, and there is no answer to which set of skills
+    it should have run. Or it carries a query, which is the whole selection and
+    is not checked here at all — only the backend can say whether a condition
+    parses, and **Verify connection** is how it gets asked.
+
+    A row's types are kept even when its query is what selects it, so switching
+    back offers them again. Nothing reads them meanwhile.
     """
-    mapping: dict[str, str] = {}
-    for raw_name, raw_type in rows:
+    mapping: dict[str, list[str]] = {}
+    queries: dict[str, str] = {}
+    claimed: dict[str, str] = {}
+    for raw_name, raw_types, raw_query in rows:
         name = raw_name.strip().lower()
-        item_type = raw_type.strip()
+        query = raw_query.strip()
+        item_types: list[str] = []
         if not name:
-            return {}, "Give every work item a name"
-        if not item_type:
-            return {}, f"Choose the provider work item type for '{name}'"
+            return {}, {}, "Give every work item a name"
         if name in mapping:
-            return {}, f"'{name}' is listed twice"
-        mapping[name] = item_type
+            return {}, {}, f"'{name}' is listed twice"
+        for raw_type in raw_types:
+            item_type = raw_type.strip()
+            if not item_type or item_type.casefold() in {
+                    existing.casefold() for existing in item_types}:
+                continue
+            # Two work items may both name a type when a query is what picks
+            # one of them: the types beside a query are only what the page
+            # would offer if it were switched back, and nothing polls them.
+            if not query:
+                owner = claimed.get(item_type.casefold())
+                if owner is not None:
+                    return {}, {}, (
+                        f"Work item type '{item_type}' is mapped to both "
+                        f"'{owner}' and '{name}'")
+                claimed[item_type.casefold()] = name
+            item_types.append(item_type)
+        if not (item_types or query):
+            return {}, {}, f"Choose a provider work item type for '{name}'"
+        mapping[name] = item_types
+        if query:
+            queries[name] = query
     missing = [name for name in DEFAULT_ISSUE_TYPES if name not in mapping]
     if missing:
-        return {}, f"Work items {' and '.join(missing)} cannot be removed"
-    return mapping, ""
+        return {}, {}, f"Work items {' and '.join(missing)} cannot be removed"
+    return mapping, queries, ""
 
 
 def _is_workflow(value: Any, issue_types: tuple[str, ...]) -> bool:
@@ -2020,8 +2057,10 @@ class AdminService:
         """
         return codee_issue_types(load_settings(self.data_dir))
 
-    def work_item_types(self, tasks_provider: str = "") -> dict[str, str]:
-        """Codee work item -> backend work item type, for the settings form.
+    def work_item_mappings(
+        self, tasks_provider: str = "",
+    ) -> list[WorkItemMapping]:
+        """How each Codee work item is selected, for the settings form.
 
         Defaults to the selected provider; naming another is how the settings
         page reads back the mapping it kept for a provider the user just
@@ -2033,7 +2072,7 @@ class AdminService:
                         else settings.tasks_provider)
         except ValueError:
             provider = settings.tasks_provider
-        return work_item_types(settings, provider)
+        return work_item_mappings(settings, provider)
 
     def list_work_item_types(
         self,
@@ -2062,7 +2101,8 @@ class AdminService:
         coding_agent: str,
         max_parallel_agents: int,
         credentials: dict[str, str],
-        work_items: dict[str, str] | None = None,
+        work_items: dict[str, list[str]] | None = None,
+        work_item_queries: dict[str, str] | None = None,
         task_filter: str = "",
         claude_code_rotate_keys: bool = False,
     ) -> None:
@@ -2075,6 +2115,12 @@ class AdminService:
         all_work_items = dict(current.work_item_types)
         if work_items is not None:
             all_work_items[tasks_provider] = work_items
+        # The queries travel with the types they replace: a work item selected
+        # by a condition is still that provider's, and switching provider and
+        # back must not drop it.
+        all_work_item_queries = dict(current.work_item_queries)
+        if work_item_queries is not None:
+            all_work_item_queries[tasks_provider] = work_item_queries
         # Same again for the custom query clause, which is written in the
         # selected provider's own query language and means nothing to the other.
         all_task_filters = dict(current.task_filters)
@@ -2084,6 +2130,7 @@ class AdminService:
             coding_agent=CodingAgent(coding_agent),
             credentials=all_credentials,
             work_item_types=all_work_items,
+            work_item_queries=all_work_item_queries,
             task_filters=all_task_filters,
             claude_code_rotate_keys=claude_code_rotate_keys,
             max_parallel_agents=max(1, max_parallel_agents),

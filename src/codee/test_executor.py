@@ -96,7 +96,8 @@ class RefreshConfigTest(unittest.TestCase):
         executor._refresh_config()
 
         self.assertIn('AND (labels = "codee") ',
-                      executor.tasks_provider._build_jql(["Ready"]))
+                      executor.tasks_provider._build_jql(
+                          executor.tasks_provider._work_items[0], ["Ready"]))
 
     def test_unchanged_settings_keep_the_live_provider(self) -> None:
         self._save()

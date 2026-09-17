@@ -160,19 +160,66 @@ Then click Connect to Azure DevOps. You will have to grant access for your app a
 
 ### Work items
 
-Codee only picks up work items whose type you have listed here. Every row maps one of
-Codee's work items — the name a skill declares in `x-codee-issue-type` — to what your
-provider calls it.
+Codee only picks up the work items listed here. Every row maps one of Codee's work items —
+the name a skill declares in `x-codee-issue-type` — to what it is in your provider.
+
+Every row says how its work item is found, and the control beside it picks which of the
+two ways:
+
+**Types** — the ordinary answer. Pick a type from the dropdown and it is added to the row
+as a chip; pick another and it joins it, and the `x` on a chip removes it. That is how one
+Codee work item covers several of your backend's types — a team whose bugs are worked
+exactly like its tasks points `task` at both `Task` and `Bug`, and every task skill picks
+up either without a second copy of itself. A provider type can belong to only one
+types-mode row, since an item arriving under it has to resolve to one set of skills.
+
+**JQL (Advanced)** / **WIQL (Advanced)** — a condition you write yourself, which replaces
+the type list entirely. For the work item no list of type names can describe: a `Bug` that
+is only Codee's when it carries a label, or one split across projects by a field nobody
+made a type. Write a bare condition, not a whole query:
+
+```
+issuetype = Bug AND labels = "codee"                          # Jira
+[System.WorkItemType] = 'Bug' AND [System.Tags] CONTAINS 'codee'   # Azure DevOps
+```
+
+It is ANDed with the statuses your skills trigger on and with the custom JQL/WIQL below,
+so it narrows what Codee polls rather than defining it from scratch. Nothing here is
+checked when you save — only the backend can say whether a condition parses, and
+**Verify connection** is how it gets asked. A condition the backend rejects costs you that
+work item's whole poll, so verify after writing one.
+
+Switching a row to a query keeps the types it had, so switching back offers them again;
+saving a row in **Types** mode is what discards its query.
+
+Codee issues **one query per Codee work item** — it is the query that says which work item
+an item is, and a condition you wrote cannot be re-run against a result to ask whether it
+matched. Two consequences worth knowing. Each work item gets its own page of results, so a
+backlog of a hundred bugs can no longer crowd the stories out of a poll. And the results
+are interleaved, one work item at a time, rather than ranked against each other: each
+query is priority-ordered on its own, but a `High` in one backlog is not comparable to a
+`High` in another. An item two rows both match is worked once, as the first row that
+claimed it.
 
 `story` and `task` are always present and cannot be removed: the skills that ship with
 Codee trigger on them, and a story is what tells Codee to drive its children inside the
-story's own run rather than one by one. Their provider type is yours to change. Out of the
-box they point at:
+story's own run rather than one by one. The types they point at are yours to change. Out
+of the box they are:
 
 | Codee work item | Jira | Azure DevOps |
 | --- | --- | --- |
 | `story` | `Story` | `User Story` |
 | `task` | `Task` | `Task` |
+
+One type each out of the box, and adding more to either row is safe: a story mapped to
+both `Story` and `Epic` is driven by the same story skills, children and all.
+
+In Azure DevOps a child of a story is left to the story's own run. With `story` in
+**Types** mode the parent's own type settles that. With a query, Codee puts the story
+condition to Azure DevOps along with the ids of the parents on the page — one extra query
+per poll, with no state clause — so a story shields its children whatever state it is
+resting in, exactly as its type would have. If that query fails, the children wait for the
+next poll rather than risk being worked beside the story already working them.
 
 **Load types from provider** fills the dropdowns with the types your backend actually
 defines — the issue types of the configured Jira project, or the work item types across
@@ -181,9 +228,10 @@ your Azure DevOps organization's projects. It needs the credentials above to be 
 
 Use **Add work item** for anything beyond a story and a task — a `bug` pointed at your
 backend's `Bug`, say. A skill can then declare `x-codee-issue-type: bug`, and the Workflow
-page gets its own graph for it.
+page gets its own graph for it. Add a work item when it needs skills of its own; add
+another type to an existing row when it does not.
 
-A work item whose type is not listed here is left alone, whatever state it is in.
+A work item no row here selects is left alone, whatever state it is in.
 
 ### Custom JQL / WIQL
 
@@ -191,8 +239,8 @@ An optional extra condition every task query is narrowed by, written in the sele
 provider's own query language — JQL for Jira, WIQL for Azure DevOps. It is empty out of
 the box, and while it stays empty the poll is exactly the one described above.
 
-When you fill it in, it is added to every fetch as one more `AND` condition on top of the
-work items and the statuses your skills trigger on — it can only narrow what Codee picks
+When you fill it in, it is added to every fetch as one more `AND` condition on top of each
+work item's own selection and the statuses your skills trigger on — it can only narrow what Codee picks
 up, never widen it. Write the condition alone; a leading `AND` is dropped for you, and the
 whole clause is bracketed before it is joined, so an `OR` inside it stays inside it.
 

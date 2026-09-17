@@ -214,13 +214,27 @@ def check_result(check: dict[str, Any]) -> CheckResult:
 class WorkItem(BaseModel):
     """One row of the work item mapping on the settings page.
 
+    A row says how its work item is found, in one of two ways. In ``types``
+    mode it names the backend's own work item types — a list, because one Codee
+    work item can stand for several of them at once: a Codee `task` that is
+    both a "Task" and a "Bug" over there is still one work item, handled by one
+    set of skills. In ``query`` mode it carries a condition in the provider's
+    own language, which replaces the type list entirely.
+
+    Both are kept while the page is open, so switching between the modes does
+    not throw away what the other one held. Only the active one is saved —
+    a stored query is what says the row is in query mode, so a row switched
+    back to types has to give its query up.
+
     ``fixed`` marks the work items Codee cannot run without: they are listed
     like the rest and pointed at whatever the backend calls them, but their
     name is not the user's to change and they have no remove button.
     """
 
     name: str
-    provider_type: str
+    provider_types: list[str] = []
+    query: str = ""
+    mode: str = "types"
     fixed: bool = False
 
 
@@ -363,7 +377,7 @@ class AdminState(rx.State):
     # the provider they were edited for. The credentials get this for free by
     # having a flat field per provider; the mapping is one shared list, so it
     # has to be parked by hand or switching away and back would discard it.
-    other_work_items: dict[str, dict[str, str]] = {}
+    other_work_items: dict[str, list[WorkItem]] = {}
     provider_work_item_types: list[str] = []
     # Where the fetched list came from, in the provider's own words. Shown
     # beside the count, because a list narrower than the backend as a whole
@@ -931,13 +945,16 @@ class AdminState(rx.State):
         are edits the user has not saved and would not expect to lose — and
         from the saved mapping otherwise.
         """
-        mapping = self.other_work_items.get(self.tasks_provider)
-        if mapping is None:
-            mapping = SERVICE.work_item_types(self.tasks_provider)
+        parked = self.other_work_items.get(self.tasks_provider)
+        if parked is not None:
+            self.work_items = [row.model_copy(deep=True) for row in parked]
+            return
         self.work_items = [
-            WorkItem(name=name, provider_type=provider_type,
-                     fixed=name in DEFAULT_ISSUE_TYPES)
-            for name, provider_type in mapping.items()
+            WorkItem(name=mapping.name, provider_types=list(mapping.types),
+                     query=mapping.query,
+                     mode="query" if mapping.is_query else "types",
+                     fixed=mapping.name in DEFAULT_ISSUE_TYPES)
+            for mapping in SERVICE.work_item_mappings(self.tasks_provider)
         ]
 
     def load_settings_page(self) -> Any:
@@ -998,7 +1015,8 @@ class AdminState(rx.State):
         # switching away and back would silently reset them to the defaults.
         self.other_work_items = {
             **self.other_work_items,
-            self.tasks_provider: self._work_items_mapping(),
+            self.tasks_provider: [row.model_copy(deep=True)
+                                  for row in self.work_items],
         }
         self.tasks_provider = value
         self._load_work_items()
@@ -1012,24 +1030,53 @@ class AdminState(rx.State):
         # Reflex only re-renders on assignment, not on a mutated element.
         self.work_items = list(self.work_items)
 
-    def set_work_item_type(self, index: int, value: str) -> None:
-        self.work_items[index].provider_type = value
+    def add_work_item_type(self, index: int, value: str) -> None:
+        """Point a work item at one more of the backend's types.
+
+        A type the row already names is dropped rather than added twice: the
+        dropdown offers every type whatever a row holds, since which of them
+        are still free is a per-row answer a shared list cannot give.
+        """
+        provider_type = value.strip()
+        item = self.work_items[index]
+        if not provider_type or provider_type.casefold() in {
+                existing.casefold() for existing in item.provider_types}:
+            return
+        item.provider_types = item.provider_types + [provider_type]
+        # Reflex only re-renders on assignment, not on a mutated element.
+        self.work_items = list(self.work_items)
+
+    def remove_work_item_type(self, index: int, value: str) -> None:
+        item = self.work_items[index]
+        item.provider_types = [provider_type
+                               for provider_type in item.provider_types
+                               if provider_type != value]
+        self.work_items = list(self.work_items)
+
+    def set_work_item_query(self, index: int, value: str) -> None:
+        self.work_items[index].query = value
+        self.work_items = list(self.work_items)
+
+    def set_work_item_mode(self, index: int, value: str) -> None:
+        """Switch one row between naming types and carrying a query.
+
+        Both are kept: a row switched to a query and back finds its types where
+        it left them, and the save is what decides which of the two is stored.
+        """
+        if value not in ("types", "query"):
+            return
+        self.work_items[index].mode = value
         self.work_items = list(self.work_items)
 
     def add_work_item(self) -> None:
         self.work_items = self.work_items + \
-            [WorkItem(name="", provider_type="")]
+            [WorkItem(name="", provider_types=[])]
 
     def remove_work_item(self, index: int) -> None:
         if self.work_items[index].fixed:
             return
         self.work_items = [item for position, item
                            in enumerate(self.work_items) if position != index]
-
-    def _work_items_mapping(self) -> dict[str, str]:
-        """The rows as they stand, without the validation ``save`` applies."""
-        return {item.name.strip().lower(): item.provider_type.strip()
-                for item in self.work_items if item.name.strip()}
 
     @rx.var
     def work_item_type_options(self) -> list[str]:
@@ -1042,8 +1089,9 @@ class AdminState(rx.State):
         a lost setting from an unset one.
         """
         options = set(self.provider_work_item_types)
-        options.update(item.provider_type.strip() for item in self.work_items
-                       if item.provider_type.strip())
+        options.update(provider_type.strip() for item in self.work_items
+                       for provider_type in item.provider_types
+                       if provider_type.strip())
         return sorted(options, key=str.casefold)
 
     @rx.var
@@ -1065,8 +1113,7 @@ class AdminState(rx.State):
         count = len(self.provider_work_item_types)
         scope = self.provider_work_item_types_scope
         return (f"{count} type{'' if count == 1 else 's'}"
-                + (f" from {scope}" if scope else "")
-                + ". Reload after changing the credentials above.")
+                + (f" from {scope}" if scope else ""))
 
     @rx.event(background=True)
     async def load_work_item_types(self) -> None:
@@ -1270,11 +1317,34 @@ class AdminState(rx.State):
                 self.jira_api_token))
         return bool(self.azure_organization_url.strip())
 
+    def _query_language(self) -> str:
+        """What the selected provider calls its query language."""
+        return "WIQL" if self.tasks_provider == "azure_devops" else "JQL"
+
     @rx.var
     def task_filter_label(self) -> str:
         """Named after the language it has to be written in, not after Codee."""
         return ("Custom WIQL" if self.tasks_provider == "azure_devops"
                 else "Custom JQL")
+
+    @rx.var
+    def work_item_query_label(self) -> str:
+        """The second way to select a work item, named after its language.
+
+        "Advanced" because it is: it replaces the type list with a condition
+        nothing here can check, and gets it wrong loudly rather than quietly —
+        a clause the backend rejects fails that work item's whole query.
+        """
+        return ("WIQL (Advanced)" if self.tasks_provider == "azure_devops"
+                else "JQL (Advanced)")
+
+    @rx.var
+    def work_item_query_placeholder(self) -> str:
+        """An example in the provider's own language, so the box is self-explaining."""
+        if self.tasks_provider == "azure_devops":
+            return ("[System.WorkItemType] = 'Bug' "
+                    "AND [System.Tags] CONTAINS 'codee'")
+        return 'issuetype = Bug AND labels = "codee"'
 
     @rx.var
     def mcp_provider_label(self) -> str:
@@ -1397,8 +1467,18 @@ class AdminState(rx.State):
             parallel_agents = int(self.max_parallel_agents)
         except ValueError:
             return "Max parallel tasks must be a number"
-        work_items, error = normalize_work_items(
-            [(item.name, item.provider_type) for item in self.work_items])
+        for item in self.work_items:
+            # Only the page knows a row is in query mode while its query is
+            # still empty; saved, it would silently become a types row.
+            if item.mode == "query" and not item.query.strip():
+                name = item.name.strip().lower() or "the new work item"
+                return f"Write the {self._query_language()} for '{name}'"
+        work_items, work_item_queries, error = normalize_work_items(
+            # A row in types mode saves no query, which is what makes a stored
+            # query mean "this work item is selected by one".
+            [(item.name, list(item.provider_types),
+              item.query if item.mode == "query" else "")
+             for item in self.work_items])
         if error:
             return error
         SERVICE.save_settings(
@@ -1407,6 +1487,7 @@ class AdminState(rx.State):
             parallel_agents,
             self._credentials(),
             work_items,
+            work_item_queries,
             self._task_filter(),
             self.claude_code_rotate_keys,
         )
@@ -2733,12 +2814,41 @@ def tasks_mcp_setup() -> rx.Component:
         spacing="3", width="100%")
 
 
+def work_item_type_chip(index: Any, provider_type: Any) -> rx.Component:
+    """One backend type a work item is polled as, with the way to drop it.
+
+    A chip rather than another dropdown: the types on a row are a set, and a
+    row of selects would ask the user to read four boxes to learn what a
+    dropdown-less list says at a glance.
+    """
+    return rx.badge(
+        provider_type,
+        # A real button rather than an icon with a click handler: unmapping a
+        # type is the only way back out of a pick, and a bare svg would put it
+        # out of reach of the keyboard and unannounced to a screen reader.
+        rx.el.button(
+            rx.icon("x", size=12),
+            type="button",
+            aria_label="Remove work item type " + provider_type,
+            title="Remove work item type",
+            on_click=lambda: AdminState.remove_work_item_type(
+                index, provider_type),
+            style={"display": "flex", "alignItems": "center",
+                   "cursor": "pointer", "background": "none",
+                   "border": "none", "padding": "0", "color": "inherit"}),
+        color_scheme="gray", variant="soft", size="2", flex_shrink="0")
+
+
 def work_item_row(item: WorkItem, index: int) -> rx.Component:
     """One mapping: the Codee work item, and what the provider calls it.
 
-    The mandatory two render with their name read-only and no remove button —
-    the same row as the rest, minus the two things that would break the
-    executor. Everything else is the user's to name, repoint, and delete.
+    A work item is found one of two ways, and the control on the left of the
+    second cell picks which. Pointed at backend types, each shows as a chip and
+    the dropdown beside them adds one more. Given a query instead, the chips
+    give way to the box it is written in. The mandatory two
+    render with their name read-only and no remove button — the same row as the
+    rest, minus the two things that would break the executor. Everything else
+    is the user's to name, repoint, and delete.
     """
     # Each side gets its own flex box rather than a bare `width="100%"` child:
     # two flex items both asking for the full row collapse unpredictably, and
@@ -2761,19 +2871,54 @@ def work_item_row(item: WorkItem, index: int) -> rx.Component:
             **cell),
         rx.icon("arrow-right", size=16, color=MUTED, flex_shrink="0"),
         rx.box(
-            rx.select(
-                AdminState.work_item_type_options,
-                value=item.provider_type,
-                placeholder="Select a work item type",
-                # Inert while the fetch is in flight: the list it would offer
-                # is the thing being replaced, so a pick made now is a pick
-                # from a menu that is about to change under it.
-                disabled=AdminState.work_item_types_loading,
-                on_change=lambda value: AdminState.set_work_item_type(
-                    index, value),
-                width="100%",
-            ),
-            **cell),
+            rx.hstack(
+                rx.segmented_control.root(
+                    rx.segmented_control.item("Types", value="types"),
+                    rx.segmented_control.item(
+                        AdminState.work_item_query_label, value="query"),
+                    value=item.mode, size="1", flex_shrink="0",
+                    on_change=lambda value: AdminState.set_work_item_mode(
+                        index, value),
+                ),
+                rx.cond(
+                    item.mode == "query",
+                    # Nothing here is validated: only the backend can say
+                    # whether a condition parses, and Verify connection below
+                    # is how it gets asked.
+                    rx.input(
+                        value=item.query,
+                        placeholder=AdminState.work_item_query_placeholder,
+                        on_change=lambda value:
+                            AdminState.set_work_item_query(index, value),
+                        flex="1", min_width="0"),
+                    rx.hstack(
+                        rx.foreach(
+                            item.provider_types,
+                            lambda provider_type: work_item_type_chip(
+                                index, provider_type)),
+                        rx.select(
+                            AdminState.work_item_type_options,
+                            # Bound to nothing on purpose: picking is what adds
+                            # a chip, and the box goes straight back to its
+                            # placeholder so the next type can be added without
+                            # clearing the last one.
+                            value="",
+                            placeholder=rx.cond(item.provider_types,
+                                                "Add a work item type",
+                                                "Select a work item type"),
+                            # Inert while the fetch is in flight: the list it
+                            # would offer is the thing being replaced, so a
+                            # pick made now is a pick from a menu that is about
+                            # to change under it.
+                            disabled=AdminState.work_item_types_loading,
+                            on_change=lambda value:
+                                AdminState.add_work_item_type(index, value),
+                        ),
+                        spacing="2", align="center", wrap="wrap",
+                        flex="1", min_width="0"),
+                ),
+                spacing="2", align="center", width="100%"),
+            flex="2", min_width="0"),
         # The delete column is a fixed-width box holding the button rather
         # than the button itself. A ghost button carries a negative margin to
         # align optically, which swallows the row's gap and makes the column
@@ -2818,9 +2963,7 @@ def work_items_setting() -> rx.Component:
                     rx.text(f"Loading work item types from "
                             f"{AdminState.mcp_provider_label}…",
                             color=MUTED, font_size="0.8rem"),
-                    spacing="2", align="center"),
-                rx.text("Codee only picks up work items of these types.",
-                        color=MUTED, font_size="0.8rem")),
+                    spacing="2", align="center")),
             spacing="2", align="center", width="100%"),
         rx.foreach(AdminState.work_items, work_item_row),
         rx.hstack(
@@ -2871,8 +3014,7 @@ def task_filter_setting() -> rx.Component:
                          placeholder="[System.Tags] CONTAINS 'codee'",
                          rows="2", width="100%")),
         hint=rx.text("Optional. Added to every task query as one more AND "
-                     "condition, on top of the work items above. Leave it "
-                     "empty to pick up everything they match.",
+                     "condition, on top of the work items above.",
                      color=MUTED, font_size="0.8rem"))
 
 
@@ -3082,16 +3224,12 @@ def settings_page() -> rx.Component:
                       rx.select(["claude_code", "github_copilot", "codex"],
                                 value=AdminState.coding_agent,
                                 on_change=AdminState.set_coding_agent,
-                                width="100%"),
-                      rx.text("Runs every skill that does not name its own "
-                              "agent in x-codee-agent.",
-                              color=MUTED, font_size="0.82rem")),
+                                width="100%")),
                 field("Max parallel tasks",
                       rx.input(value=AdminState.max_parallel_agents,
                                on_change=AdminState.set_max_parallel_agents,
                                type="number", min=1, width="100%"),
-                      rx.text("How many task agents may run at once. Applies "
-                              "from the next poll; running agents finish.",
+                      rx.text("How many task agents may run at once.",
                               color=MUTED, font_size="0.82rem")),
                 spacing="4", width="100%"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),

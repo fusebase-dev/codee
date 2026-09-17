@@ -46,6 +46,23 @@ def _settings(**credentials) -> Settings:
                     credentials={"azure_devops": credentials})
 
 
+def _wiql_results(*id_lists: list[int]) -> list[Mock]:
+    """One WIQL response per Codee work item, in the order they are polled.
+
+    The poll issues a query per work item — story first, then task, then
+    anything the installation added — so a test says what each of them found.
+    """
+    return [_response({"workItems": [{"id": item_id} for item_id in ids]})
+            for ids in id_lists]
+
+
+def _wiql(provider: AzureDevOpsTasksProvider, statuses: list[str],
+          name: str = "task") -> str:
+    """The query one work item is polled with — there is one per work item."""
+    mapping = next(item for item in provider._work_items if item.name == name)
+    return provider._build_wiql(mapping, statuses)
+
+
 class OAuthConfigTest(unittest.TestCase):
     def test_from_settings_reads_provider_credentials(self) -> None:
         settings = _settings(organization_url="https://dev.azure.com/acme/",
@@ -336,7 +353,7 @@ class TasksProviderTest(unittest.TestCase):
             main_context=self.context)
 
     def test_wiql_quotes_statuses_and_orders_by_priority(self) -> None:
-        wiql = self.provider._build_wiql(["Ready", "Bob's queue"])
+        wiql = _wiql(self.provider, ["Ready", "Bob's queue"])
 
         self.assertIn("[System.State] IN ('Ready', 'Bob''s queue')", wiql)
         self.assertIn("ORDER BY [Microsoft.VSTS.Common.Priority] ASC", wiql)
@@ -344,16 +361,18 @@ class TasksProviderTest(unittest.TestCase):
     def test_the_query_does_not_filter_on_an_assignee(self) -> None:
         # Type and state are the handover; who the work item is assigned
         # to is nobody's business but the humans working alongside it.
-        wiql = self.provider._build_wiql(["Ready"])
+        wiql = _wiql(self.provider, ["Ready"])
 
         self.assertNotIn("System.AssignedTo", wiql)
         self.assertNotIn("@Me", wiql)
 
-    def test_wiql_only_asks_for_the_mapped_work_item_types(self) -> None:
-        wiql = self.provider._build_wiql(["Ready"])
-
-        self.assertIn(
-            "[System.WorkItemType] IN ('User Story', 'Task')", wiql)
+    def test_each_work_item_asks_only_for_its_own_types(self) -> None:
+        # A story arriving on the task query would be worked by the wrong
+        # skills, and the type it came back as could not say otherwise.
+        self.assertIn("[System.WorkItemType] IN ('User Story')",
+                      _wiql(self.provider, ["Ready"], "story"))
+        self.assertIn("[System.WorkItemType] IN ('Task')",
+                      _wiql(self.provider, ["Ready"], "task"))
 
     def test_wiql_follows_a_remapped_work_item(self) -> None:
         # An organization on the Scrum process calls its backlog something
@@ -364,15 +383,272 @@ class TasksProviderTest(unittest.TestCase):
             "story": "Product Backlog Item", "task": "Task", "bug": "Bug"}}
         provider = AzureDevOpsTasksProvider(settings, self.context)
 
-        wiql = provider._build_wiql(["Ready"])
+        self.assertIn("[System.WorkItemType] IN ('Product Backlog Item')",
+                      _wiql(provider, ["Ready"], "story"))
+        self.assertIn("[System.WorkItemType] IN ('Bug')",
+                      _wiql(provider, ["Ready"], "bug"))
 
-        self.assertIn("[System.WorkItemType] IN "
-                      "('Product Backlog Item', 'Task', 'Bug')", wiql)
+    def test_wiql_asks_for_every_type_a_work_item_is_mapped_to(self) -> None:
+        # One Codee work item, several backend types: a team whose bugs are
+        # worked exactly like its tasks maps both to `task` rather than
+        # maintaining a second copy of every task skill.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_types = {"azure_devops": {
+            "story": ["User Story", "Feature"], "task": ["Task", "Bug"]}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        self.assertIn("[System.WorkItemType] IN ('User Story', 'Feature')",
+                      _wiql(provider, ["Ready"], "story"))
+        self.assertIn("[System.WorkItemType] IN ('Task', 'Bug')",
+                      _wiql(provider, ["Ready"], "task"))
+
+    def test_a_second_mapped_type_arrives_as_the_same_work_item(self) -> None:
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_types = {"azure_devops": {
+            "story": ["User Story"], "task": ["Task", "Bug"]}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+        self._connect()
+        items = _response({"value": [
+            {"id": 41, "fields": {"System.Title": "A bug",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Bug"}},
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([], [41]), items]):
+            tasks = provider.get_tasks(["Ready"])
+
+        self.assertEqual(tasks[0].issue_type, "task")
+
+    def test_a_child_of_any_mapped_story_type_is_flagged(self) -> None:
+        # Both types are the story this installation drives its children from,
+        # so a child of either has to be left to the story's own run.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_types = {"azure_devops": {
+            "story": ["User Story", "Feature"], "task": ["Task"]}}
+        self.provider = AzureDevOpsTasksProvider(settings, self.context)
+        self._connect()
+
+        tasks = self._tasks_with_parent_type("Feature")
+
+        self.assertTrue(tasks[0].is_parent_codee_story)
+
+    def test_a_work_item_with_a_query_is_asked_for_in_its_own_words(self) -> None:
+        # The advanced answer: what a `bug` is cannot be said with type names
+        # here, so the user says it in WIQL instead.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_queries = {"azure_devops": {
+            "bug": "[System.WorkItemType] = 'Bug' "
+                   "AND [System.Tags] CONTAINS 'codee'"}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        wiql = _wiql(provider, ["Ready"], "bug")
+
+        self.assertIn("([System.WorkItemType] = 'Bug' "
+                      "AND [System.Tags] CONTAINS 'codee')", wiql)
+        # Its own condition replaces the type list and nothing else: the states
+        # the skills asked for and the ordering stay.
+        self.assertIn("[System.State] IN ('Ready')", wiql)
+        self.assertNotIn("[System.WorkItemType] IN", wiql)
+
+    def test_a_work_item_query_is_bracketed(self) -> None:
+        # Unbracketed, an OR inside it would bind across the state clause and
+        # hand back items Codee does not own.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_queries = {"azure_devops": {
+            "bug": "[System.Tags] CONTAINS 'a' OR [System.Tags] CONTAINS 'b'"}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+
+        self.assertIn(
+            "([System.Tags] CONTAINS 'a' OR [System.Tags] CONTAINS 'b')",
+            _wiql(provider, ["Ready"], "bug"))
+
+    def test_a_queried_work_item_arrives_under_its_own_name(self) -> None:
+        # Nothing in the item says which condition matched it, so the query
+        # that found it is what names it.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_queries = {"azure_devops": {
+            "bug": "[System.Tags] CONTAINS 'codee'"}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+        self._connect()
+        items = _response({"value": [
+            {"id": 51, "fields": {"System.Title": "A defect",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Issue"}},
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([], [], [51]), items]):
+            tasks = provider.get_tasks(["Ready"])
+
+        self.assertEqual(tasks[0].issue_type, "bug")
+
+    def _queried_story_provider(self) -> None:
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_queries = {"azure_devops": {
+            "story": "[System.Tags] CONTAINS 'codee-story'"}}
+        self.provider = AzureDevOpsTasksProvider(settings, self.context)
+        self._connect()
+
+    def test_a_child_of_a_queried_story_is_flagged(self) -> None:
+        # A story picked out by a condition has no type to recognize it by, so
+        # the condition is put to Azure DevOps with this page's parent ids.
+        self._queried_story_provider()
+
+        tasks = self._tasks_with_parent_type("Feature", story_parents=[30])
+
+        self.assertTrue(tasks[0].is_parent_codee_story)
+
+    def test_a_queried_story_shields_its_children_in_any_state(self) -> None:
+        # The parent is a story the poll itself never saw — it rests in a state
+        # no skill triggers on — and its children are still its own to drive,
+        # exactly as a story named by its type would be.
+        self._queried_story_provider()
+
+        tasks = self._tasks_with_parent_type(
+            "Feature", story_ids=[], story_parents=[30])
+
+        self.assertTrue(tasks[0].is_parent_codee_story)
+
+    def test_a_parent_the_story_condition_rejects_is_not_flagged(self) -> None:
+        self._queried_story_provider()
+
+        tasks = self._tasks_with_parent_type("Feature", story_parents=[])
+
+        self.assertFalse(tasks[0].is_parent_codee_story)
+
+    def test_the_parent_query_asks_only_about_this_page_s_parents(self) -> None:
+        self._queried_story_provider()
+        items = _response({"value": [
+            {"id": 31, "fields": {"System.Title": "A child",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Task",
+                                  "System.Parent": 30}},
+        ]})
+        parents = _response({"value": [
+            {"id": 30, "fields": {"System.Title": "The parent",
+                                  "System.State": "Done",
+                                  "System.WorkItemType": "Feature"}},
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([], [31]), items, parents,
+                                *_wiql_results([30])]) as post:
+            self.provider.get_tasks(["Ready"])
+
+        query = post.call_args_list[-1].kwargs["json"]["query"]
+        self.assertIn("([System.Tags] CONTAINS 'codee-story')", query)
+        self.assertIn("[System.Id] IN (30)", query)
+        # No state clause: a story shields its children whatever state it is in.
+        self.assertNotIn("[System.State]", query)
+
+    def test_a_types_story_asks_nothing_extra_about_its_parents(self) -> None:
+        # The parent's own type is already in hand, so the question is free.
+        self._connect()
+        tasks = self._tasks_with_parent_type("User Story")
+
+        self.assertTrue(tasks[0].is_parent_codee_story)
+
+    def test_children_wait_when_the_parent_query_fails(self) -> None:
+        # A tick that does too little is caught by the next one; a child worked
+        # beside the story already working it is two agents on one change.
+        self._queried_story_provider()
+        items = _response({"value": [
+            {"id": 31, "fields": {"System.Title": "A child",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Task",
+                                  "System.Parent": 30}},
+        ]})
+        parents = _response({"value": [
+            {"id": 30, "fields": {"System.Title": "The parent",
+                                  "System.State": "Done",
+                                  "System.WorkItemType": "Feature"}},
+        ]})
+        rejected = Mock(status_code=400, text="")
+        rejected.json.return_value = {"message": "TF51005: no such field."}
+        rejected.raise_for_status.side_effect = requests.HTTPError(
+            "400 Client Error", response=rejected)
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([], [31]), items, parents,
+                                rejected]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertTrue(tasks[0].is_parent_codee_story)
+
+    def test_work_items_are_interleaved_rather_than_concatenated(self) -> None:
+        # Each query is priority-ordered on its own, and nothing orders them
+        # against each other — so a long task backlog must not hold up the
+        # stories waiting behind it.
+        self._connect()
+        items = _response({"value": [
+            {"id": item_id, "fields": {"System.Title": f"Item {item_id}",
+                                       "System.State": "Ready",
+                                       "System.WorkItemType": "Task"}}
+            for item_id in (61, 62, 63, 71)
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([71], [61, 62, 63]), items]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks], ["71", "61", "62", "63"])
+
+    def test_an_item_two_queries_both_found_is_reported_once(self) -> None:
+        # Two conditions can overlap, and the first work item to claim an item
+        # is the one whose skills should work it.
+        settings = _settings(organization_url="https://dev.azure.com/acme",
+                             client_id="client-1", client_secret="secret-1")
+        settings.work_item_queries = {"azure_devops": {
+            "bug": "[System.Tags] CONTAINS 'codee'"}}
+        provider = AzureDevOpsTasksProvider(settings, self.context)
+        self._connect()
+        items = _response({"value": [
+            {"id": 81, "fields": {"System.Title": "Both",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Task"}},
+        ]})
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[*_wiql_results([], [81], [81]), items]) as post:
+            tasks = provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks], ["81"])
+        self.assertEqual(tasks[0].issue_type, "task")
+        # And it takes one place in the batch read, not two.
+        self.assertEqual(post.call_args_list[-1].kwargs["json"]["ids"], [81])
+
+    def test_one_failing_work_item_does_not_lose_the_others(self) -> None:
+        # A mistyped condition on one work item must not stop the rest being
+        # worked: the executor's tick has to survive it.
+        self._connect()
+        items = _response({"value": [
+            {"id": 91, "fields": {"System.Title": "Still here",
+                                  "System.State": "Ready",
+                                  "System.WorkItemType": "Task"}},
+        ]})
+        rejected = Mock(status_code=400, text="")
+        rejected.json.return_value = {"message": "TF51005: no such field."}
+        rejected.raise_for_status.side_effect = requests.HTTPError(
+            "400 Client Error", response=rejected)
+
+        with patch("codee_tasks_azure_devops.provider.requests.post",
+                   side_effect=[rejected, *_wiql_results([91]), items]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks], ["91"])
 
     def test_no_custom_filter_leaves_the_query_as_it_was(self) -> None:
         # The setting is empty for everyone who never opened it, and their
         # query has to be the one they had before it existed.
-        wiql = self.provider._build_wiql(["Ready"])
+        wiql = _wiql(self.provider, ["Ready"])
 
         self.assertNotIn("AND (", wiql)
 
@@ -383,12 +659,12 @@ class TasksProviderTest(unittest.TestCase):
             "azure_devops": "[System.Tags] CONTAINS 'codee'"}
         provider = AzureDevOpsTasksProvider(settings, self.context)
 
-        wiql = provider._build_wiql(["Ready"])
+        wiql = _wiql(provider, ["Ready"])
 
         self.assertIn("AND ([System.Tags] CONTAINS 'codee') ORDER BY", wiql)
 
     def test_wiql_names_no_project_at_all(self) -> None:
-        wiql = self.provider._build_wiql(["Ready"])
+        wiql = _wiql(self.provider, ["Ready"])
 
         self.assertNotIn("System.TeamProject", wiql)
         # @project would need a project in the route, which there isn't.
@@ -397,7 +673,7 @@ class TasksProviderTest(unittest.TestCase):
     def test_the_query_is_organization_scoped(self) -> None:
         self._connect()
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[_response({"workItems": []})]) as post:
+                   side_effect=_wiql_results([], [])) as post:
             self.provider.get_tasks(["Ready"])
 
         self.assertEqual(post.call_args.args[0],
@@ -419,7 +695,6 @@ class TasksProviderTest(unittest.TestCase):
 
     def test_get_tasks_maps_fields_and_keeps_the_query_order(self) -> None:
         self._connect()
-        wiql = _response({"workItems": [{"id": 11}, {"id": 12}]})
         # Deliberately out of order: the batch endpoint doesn't preserve WIQL order.
         items = _response({"value": [
             {"id": 12, "fields": {"System.Title": "Second",
@@ -441,7 +716,7 @@ class TasksProviderTest(unittest.TestCase):
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[wiql, items, parents]):
+                   side_effect=[*_wiql_results([], [11, 12]), items, parents]):
             tasks = self.provider.get_tasks(["Ready"])
 
         self.assertEqual([task.key for task in tasks], ["11", "12"])
@@ -457,7 +732,6 @@ class TasksProviderTest(unittest.TestCase):
 
     def test_the_mapped_story_type_arrives_as_the_story_work_item(self) -> None:
         self._connect()
-        wiql = _response({"workItems": [{"id": 21}]})
         items = _response({"value": [
             {"id": 21, "fields": {"System.Title": "A story",
                                   "System.State": "Ready",
@@ -465,7 +739,7 @@ class TasksProviderTest(unittest.TestCase):
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[wiql, items]):
+                   side_effect=[*_wiql_results([21], []), items]):
             tasks = self.provider.get_tasks(["Ready"])
 
         self.assertEqual(tasks[0].issue_type, "story")
@@ -487,7 +761,6 @@ class TasksProviderTest(unittest.TestCase):
 
     def test_a_task_without_a_parent_is_not_flagged(self) -> None:
         self._connect()
-        wiql = _response({"workItems": [{"id": 31}]})
         items = _response({"value": [
             {"id": 31, "fields": {"System.Title": "Orphan",
                                   "System.State": "Ready",
@@ -495,13 +768,20 @@ class TasksProviderTest(unittest.TestCase):
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[wiql, items]):
+                   side_effect=[*_wiql_results([], [31]), items]):
             tasks = self.provider.get_tasks(["Ready"])
 
         self.assertFalse(tasks[0].is_parent_codee_story)
 
-    def _tasks_with_parent_type(self, parent_type: str) -> list:
-        wiql = _response({"workItems": [{"id": 31}]})
+    def _tasks_with_parent_type(self, parent_type: str,
+                                story_ids: list[int] | None = None,
+                                story_parents: list[int] | None = None) -> list:
+        """One task under one parent, as a poll returns it.
+
+        ``story_parents`` is what the extra query answers when the story work
+        item is selected by a condition: which of this page's parents it
+        claims. Left out where the story names types, since nothing is asked.
+        """
         items = _response({"value": [
             {"id": 31, "fields": {"System.Title": "A child",
                                   "System.State": "Ready",
@@ -514,16 +794,20 @@ class TasksProviderTest(unittest.TestCase):
                                   "System.WorkItemType": parent_type}},
         ]})
 
+        responses = [*_wiql_results(story_ids or [], [31]), items, parents]
+        if story_parents is not None:
+            responses.extend(_wiql_results(story_parents))
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[wiql, items, parents]):
+                   side_effect=responses):
             return self.provider.get_tasks(["Ready"])
 
     def test_empty_result_skips_the_batch_call(self) -> None:
         self._connect()
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[_response({"workItems": []})]) as post:
+                   side_effect=_wiql_results([], [])) as post:
             self.assertEqual(self.provider.get_tasks(["Ready"]), [])
-        self.assertEqual(post.call_count, 1)
+        # One query per work item and nothing else: there is nothing to batch.
+        self.assertEqual(post.call_count, 2)
 
     def test_expired_authorization_yields_no_tasks_instead_of_raising(self) -> None:
         # A polling executor must survive a revoked authorization.
@@ -538,14 +822,13 @@ class TasksProviderTest(unittest.TestCase):
     def test_no_statuses_drops_the_state_clause_rather_than_emptying_it(self) -> None:
         # `IN ()` is not valid WIQL, and a check run before any issue-triggered
         # skill exists still has to reach Azure DevOps.
-        wiql = self.provider._build_wiql([])
+        wiql = _wiql(self.provider, [])
 
         self.assertNotIn("[System.State] IN", wiql)
         self.assertIn("[System.WorkItemType] IN", wiql)
 
     def test_a_successful_pull_names_the_work_items_it_found(self) -> None:
         self._connect()
-        wiql = _response({"workItems": [{"id": 11}]})
         items = _response({"value": [
             {"id": 11, "fields": {"System.Title": "Fix the thing",
                                   "System.State": "Ready",
@@ -553,17 +836,23 @@ class TasksProviderTest(unittest.TestCase):
         ]})
 
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[wiql, items]):
+                   side_effect=[*_wiql_results([], [11]), items]):
             verified, message = self.provider.verify_connection(["Ready"])
 
         self.assertTrue(verified)
         self.assertIn("11 Fix the thing", message)
+        # Every query it would run, named, since each work item is polled with
+        # its own and "why was this not picked up" is answered by reading them.
         self.assertIn(
-            "WIQL: SELECT [System.Id] FROM WorkItems "
-            "WHERE [System.WorkItemType] IN ('User Story', 'Task') "
+            "WIQL for work item story: SELECT [System.Id] FROM WorkItems "
+            "WHERE [System.WorkItemType] IN ('User Story') "
             "AND [System.State] IN ('Ready') "
             "ORDER BY [Microsoft.VSTS.Common.Priority] ASC, "
             "[System.CreatedDate] ASC",
+            message)
+        self.assertIn(
+            "WIQL for work item task: SELECT [System.Id] FROM WorkItems "
+            "WHERE [System.WorkItemType] IN ('Task') ",
             message)
 
     def test_an_empty_check_prints_the_custom_filter_in_the_raw_wiql(self) -> None:
@@ -672,7 +961,6 @@ class AzureDevOpsDebugLoggingTest(unittest.TestCase):
             main_context=self.context)
 
     def test_the_query_and_its_result_are_logged(self) -> None:
-        wiql = _response({"workItems": [{"id": 11}]})
         items = _response({"value": [
             {"id": 11, "fields": {"System.Title": "Fix it",
                                   "System.State": "Ready",
@@ -682,11 +970,14 @@ class AzureDevOpsDebugLoggingTest(unittest.TestCase):
         with self.assertLogs("codee_tasks_azure_devops.provider",
                              "DEBUG") as logs:
             with patch("codee_tasks_azure_devops.provider.requests.post",
-                       side_effect=[wiql, items]):
+                       side_effect=[*_wiql_results([11], []), items]):
                 self.provider.get_tasks(["Ready"])
 
         output = "\n".join(logs.output)
-        self.assertIn("[System.WorkItemType] IN ('User Story', 'Task')", output)
+        # One query per work item, each logged under the name it was built for.
+        self.assertIn("work item story: SELECT", output)
+        self.assertIn("[System.WorkItemType] IN ('User Story')", output)
+        self.assertIn("[System.WorkItemType] IN ('Task')", output)
         self.assertIn("[System.State] IN ('Ready')", output)
         # Both names, so a type that was mapped is distinguishable from one
         # that passed through untouched.
@@ -696,11 +987,13 @@ class AzureDevOpsDebugLoggingTest(unittest.TestCase):
         with self.assertLogs("codee_tasks_azure_devops.provider",
                              "DEBUG") as logs:
             with patch("codee_tasks_azure_devops.provider.requests.post",
-                       side_effect=[_response({"workItems": []})]):
+                       side_effect=_wiql_results([], [])):
                 self.provider.get_tasks(["Ready"])
 
         output = "\n".join(logs.output)
-        self.assertIn("WIQL: SELECT [System.Id] FROM WorkItems", output)
+        self.assertIn("WIQL for work item task: SELECT [System.Id] "
+                      "FROM WorkItems", output)
+        self.assertIn("WIQL for work item task matched 0 work item(s)", output)
 
 
 class AzureDevOpsWorkItemTypesTest(unittest.TestCase):

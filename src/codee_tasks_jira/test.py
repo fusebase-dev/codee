@@ -3,24 +3,36 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from codee_main_context.context import Settings, work_item_types
+from codee_main_context.context import (
+    Settings, WorkItemMapping, codee_work_items, work_item_mappings)
 from codee_tasks_abstract.provider import TasksProviderError
 from codee_tasks_jira.provider import JiraTasksProvider
 
 
+def _work_items(mapping: dict[str, list[str] | str]) -> list[WorkItemMapping]:
+    """Settings-page shorthand: a list of types is types, a string is a query."""
+    return [
+        WorkItemMapping(name=name, query=value) if isinstance(value, str)
+        else WorkItemMapping(name=name, types=tuple(value))
+        for name, value in mapping.items()
+    ]
+
+
 def _configure(provider: JiraTasksProvider,
-               mapping: dict[str, str] | None = None) -> JiraTasksProvider:
+               mapping: dict[str, list[str] | str] | None = None,
+               ) -> JiraTasksProvider:
     """Give a hand-built provider the work item mapping its __init__ would."""
-    mapping = mapping or work_item_types(Settings())
-    provider._work_item_types = mapping
-    provider._codee_types = {issue_type.casefold(): codee_type
-                             for codee_type, issue_type in mapping.items()}
+    work_items = (_work_items(mapping) if mapping is not None
+                  else work_item_mappings(Settings()))
+    provider._work_items = work_items
+    provider._codee_types = codee_work_items(work_items)
     provider._task_filter = ""
     return provider
 
 
-def _issue(parent_labels: list[str] | None = None) -> dict:
-    issue = {"key": "CORE-1", "fields": {
+def _issue(key: str = "CORE-1",
+           parent_labels: list[str] | None = None) -> dict:
+    issue = {"key": key, "fields": {
         "summary": "A task",
         "status": {"name": "Ready"},
         "issuetype": {"name": "Task"},
@@ -44,12 +56,12 @@ class JiraParentStoryTest(unittest.TestCase):
             JiraTasksProvider.__new__(JiraTasksProvider))
 
     def test_parent_with_the_label_is_a_codee_story(self) -> None:
-        task = self.provider._to_task(_issue(["CodeeStory", "backend"]))
+        task = self.provider._to_task(_issue(parent_labels=["CodeeStory", "backend"]))
 
         self.assertTrue(task.is_parent_codee_story)
 
     def test_parent_without_the_label_is_not(self) -> None:
-        task = self.provider._to_task(_issue(["backend"]))
+        task = self.provider._to_task(_issue(parent_labels=["backend"]))
 
         self.assertFalse(task.is_parent_codee_story)
 
@@ -59,7 +71,7 @@ class JiraParentStoryTest(unittest.TestCase):
         self.assertFalse(task.is_parent_codee_story)
 
     def test_labels_missing_from_the_parent_are_fetched_once(self) -> None:
-        parent = _issue([])
+        parent = _issue(parent_labels=[])
         del parent["fields"]["parent"]["fields"]["labels"]
         task = self.provider._to_task(parent)
 
@@ -88,8 +100,14 @@ class JiraTasksProviderTest(unittest.TestCase):
         self.provider._api_token = "token"
         self.provider._project = "CORE"
 
+    def _jql(self, statuses: list[str], name: str = "task") -> str:
+        """The query one work item is polled with — there is one per work item."""
+        mapping = next(item for item in self.provider._work_items
+                       if item.name == name)
+        return self.provider._build_jql(mapping, statuses)
+
     def test_build_jql_uses_requested_statuses(self) -> None:
-        jql = self.provider._build_jql(["Custom Ready", 'Needs "review"'])
+        jql = self._jql(["Custom Ready", 'Needs "review"'])
 
         self.assertIn('status in ("Custom Ready", "Needs \\"review\\"")', jql)
         self.assertNotIn("[AI]", jql)
@@ -97,7 +115,7 @@ class JiraTasksProviderTest(unittest.TestCase):
     def test_no_statuses_drops_the_clause_rather_than_emptying_it(self) -> None:
         # `status in ()` is a JQL syntax error; the connection check asks for
         # every issue in the project whatever its status.
-        jql = self.provider._build_jql([])
+        jql = self._jql([])
 
         self.assertNotIn("status in", jql)
         self.assertIn("project = CORE", jql)
@@ -105,28 +123,28 @@ class JiraTasksProviderTest(unittest.TestCase):
     def test_the_query_does_not_filter_on_an_assignee(self) -> None:
         # Type and status are the handover; who the issue is assigned to is
         # nobody's business but the humans working alongside it.
-        jql = self.provider._build_jql(["Ready"])
+        jql = self._jql(["Ready"])
 
         self.assertNotIn("assignee", jql)
 
-    def test_only_the_mapped_issue_types_are_asked_for(self) -> None:
+    def test_each_work_item_asks_only_for_its_own_issue_types(self) -> None:
         # An issue of a type Codee was never pointed at would otherwise eat one
-        # of the 50 rows a page returns.
-        jql = self.provider._build_jql(["Ready"])
-
-        self.assertIn('issuetype in ("Story", "Task")', jql)
+        # of the 50 rows a page returns — and a story arriving on the task
+        # query would be worked by the wrong skills.
+        self.assertIn('issuetype in ("Story")', self._jql(["Ready"], "story"))
+        self.assertIn('issuetype in ("Task")', self._jql(["Ready"], "task"))
 
     def test_no_custom_filter_leaves_the_query_as_it_was(self) -> None:
         # The setting is empty for everyone who never opened it, and their
         # query has to be the one they had before it existed.
-        jql = self.provider._build_jql(["Ready"])
+        jql = self._jql(["Ready"])
 
         self.assertNotIn("AND (", jql)
 
     def test_the_custom_filter_is_anded_in_before_the_ordering(self) -> None:
         self.provider._task_filter = 'labels = "codee"'
 
-        jql = self.provider._build_jql(["Ready"])
+        jql = self._jql(["Ready"])
 
         self.assertIn('AND (labels = "codee") ORDER BY', jql)
 
@@ -135,20 +153,116 @@ class JiraTasksProviderTest(unittest.TestCase):
         # clauses and hand back issues Codee does not own.
         self.provider._task_filter = 'labels = "a" OR labels = "b"'
 
-        jql = self.provider._build_jql(["Ready"])
+        jql = self._jql(["Ready"])
 
         self.assertIn('AND (labels = "a" OR labels = "b") ', jql)
         self.assertIn("project = CORE", jql)
 
-    def test_a_remapped_work_item_changes_the_type_clause(self) -> None:
-        provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
-                              {"story": "Epic", "task": "Sub-task",
-                               "bug": "Bug"})
-        provider._project = "CORE"
+    def test_a_remapped_work_item_changes_its_type_clause(self) -> None:
+        self.provider = _configure(
+            JiraTasksProvider.__new__(JiraTasksProvider),
+            {"story": ["Epic"], "task": ["Sub-task"], "bug": ["Bug"]})
+        self.provider._project = "CORE"
 
-        jql = provider._build_jql(["Ready"])
+        self.assertIn('issuetype in ("Epic")', self._jql(["Ready"], "story"))
+        self.assertIn('issuetype in ("Bug")', self._jql(["Ready"], "bug"))
 
-        self.assertIn('issuetype in ("Epic", "Sub-task", "Bug")', jql)
+    def test_every_type_a_work_item_is_mapped_to_is_asked_for(self) -> None:
+        # One Codee work item, several JIRA issue types: a team whose bugs are
+        # worked exactly like its tasks maps both to `task` rather than
+        # maintaining a second copy of every task skill.
+        self.provider = _configure(
+            JiraTasksProvider.__new__(JiraTasksProvider),
+            {"story": ["Story"], "task": ["Task", "Bug"]})
+        self.provider._project = "CORE"
+
+        self.assertIn('issuetype in ("Task", "Bug")', self._jql(["Ready"]))
+
+    def test_a_work_item_with_a_query_is_asked_for_in_its_own_words(self) -> None:
+        # The advanced answer: what a `bug` is cannot be said with type names
+        # here, so the user says it in JQL instead.
+        self.provider = _configure(
+            JiraTasksProvider.__new__(JiraTasksProvider),
+            {"story": ["Story"], "task": ["Task"],
+             "bug": 'issuetype = Bug AND labels = "codee"'})
+        self.provider._project = "CORE"
+
+        jql = self._jql(["Ready"], "bug")
+
+        self.assertIn('AND (issuetype = Bug AND labels = "codee") ', jql)
+        # Its own condition replaces the type list and nothing else: the
+        # project, the statuses the skills asked for and the ordering stay.
+        self.assertIn("project = CORE", jql)
+        self.assertIn('status in ("Ready")', jql)
+        self.assertNotIn("issuetype in", jql)
+
+    def test_a_work_item_query_is_bracketed(self) -> None:
+        # Unbracketed, an OR inside it would bind across the project and status
+        # clauses and hand back issues Codee does not own.
+        self.provider = _configure(
+            JiraTasksProvider.__new__(JiraTasksProvider),
+            {"story": ["Story"], "task": ["Task"],
+             "bug": 'labels = "a" OR labels = "b"'})
+        self.provider._project = "CORE"
+
+        self.assertIn('AND (labels = "a" OR labels = "b") ',
+                      self._jql(["Ready"], "bug"))
+
+
+    def test_a_queried_work_item_arrives_under_its_own_name(self) -> None:
+        # Nothing in the issue says which condition matched it, so the query
+        # that found it is what names it.
+        self.provider = _configure(
+            JiraTasksProvider.__new__(JiraTasksProvider),
+            {"story": ["Story"], "task": ["Task"],
+             "bug": 'labels = "codee"'})
+        self.provider._base_url = "https://acme.atlassian.net"
+        self.provider._user_email = "agent@example.com"
+        self.provider._api_token = "token"
+        self.provider._project = "CORE"
+        empty = Mock(status_code=200)
+        empty.json.return_value = {"issues": []}
+        found = Mock(status_code=200)
+        found.json.return_value = {"issues": [_issue()]}
+
+        with patch("codee_tasks_jira.provider.requests.get",
+                   side_effect=[empty, empty, found]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        # CORE-1 is a JIRA "Task", but the bug query is what returned it.
+        self.assertEqual([task.issue_type for task in tasks], ["bug"])
+
+    def test_work_items_are_interleaved_rather_than_concatenated(self) -> None:
+        # Each query is priority-ordered on its own, and nothing orders them
+        # against each other — so a long task backlog must not hold up the
+        # stories waiting behind it.
+        stories = Mock(status_code=200)
+        stories.json.return_value = {"issues": [_issue("CORE-9")]}
+        tasks_page = Mock(status_code=200)
+        tasks_page.json.return_value = {
+            "issues": [_issue("CORE-1"), _issue("CORE-2")]}
+
+        with patch("codee_tasks_jira.provider.requests.get",
+                   side_effect=[stories, tasks_page]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks],
+                         ["CORE-9", "CORE-1", "CORE-2"])
+
+    def test_one_failing_work_item_does_not_lose_the_others(self) -> None:
+        # A mistyped condition on one work item must not stop the rest being
+        # worked: the executor's tick has to survive it.
+        rejected = Mock(status_code=400)
+        rejected.raise_for_status.side_effect = _error(
+            400, {"errorMessages": ["Field 'nope' does not exist."]})
+        found = Mock(status_code=200)
+        found.json.return_value = {"issues": [_issue()]}
+
+        with patch("codee_tasks_jira.provider.requests.get",
+                   side_effect=[rejected, found]):
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks], ["CORE-1"])
 
 
 class JiraVerifyConnectionTest(unittest.TestCase):
@@ -290,20 +404,28 @@ class JiraIssueTypeMappingTest(unittest.TestCase):
 
     def test_a_custom_mapping_is_what_decides_the_name(self) -> None:
         provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
-                              {"story": "Story", "task": "Sub-task",
-                               "bug": "Task"})
+                              {"story": ["Story"], "task": ["Sub-task"],
+                               "bug": ["Task"]})
 
         task = provider._to_task(_issue())
 
         self.assertEqual(task.issue_type, "bug")
 
+    def test_every_type_a_work_item_maps_to_arrives_under_its_name(self) -> None:
+        provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
+                              {"story": ["Story"], "task": ["Sub-task", "Task"]})
+
+        task = provider._to_task(_issue())
+
+        self.assertEqual(task.issue_type, "task")
+
     def test_an_unmapped_parent_type_passes_through_unchanged(self) -> None:
         # Parents aren't type-filtered by the query, so one Codee was never
         # pointed at still has to be describable.
         provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
-                              {"story": "Epic", "task": "Task"})
+                              {"story": ["Epic"], "task": ["Task"]})
 
-        task = provider._to_task(_issue(["backend"]))
+        task = provider._to_task(_issue(parent_labels=["backend"]))
 
         self.assertEqual(task.parent.issue_type, "Story")
 
@@ -329,7 +451,11 @@ class JiraDebugLoggingTest(unittest.TestCase):
                 self.provider.get_tasks(["Ready"])
 
         output = "\n".join(logs.output)
-        self.assertIn('issuetype in ("Story", "Task")', output)
+        # One query per work item, each logged under the name it was built for.
+        self.assertIn('work item story: project = CORE AND issuetype in ("Story")',
+                      output)
+        self.assertIn('work item task: project = CORE AND issuetype in ("Task")',
+                      output)
         self.assertIn('status in ("Ready")', output)
         # The mapped name, so a status/type that matched no skill is visible.
         self.assertIn("CORE-1 [Ready/task]", output)
@@ -345,8 +471,8 @@ class JiraDebugLoggingTest(unittest.TestCase):
                 self.provider.get_tasks(["Ready"])
 
         output = "\n".join(logs.output)
-        self.assertIn("JQL: project = CORE", output)
-        self.assertIn("JQL matched 0 issue(s)", output)
+        self.assertIn("JQL for work item task: project = CORE", output)
+        self.assertIn("JQL for work item task matched 0 issue(s)", output)
 
     def test_a_failed_poll_logs_what_jira_said(self) -> None:
         response = Mock(status_code=400)

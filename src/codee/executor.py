@@ -160,6 +160,7 @@ def _refresh_config() -> None:
     if (settings.tasks_provider != previous.tasks_provider
             or settings.credentials != previous.credentials
             or settings.work_item_types != previous.work_item_types
+            or settings.work_item_queries != previous.work_item_queries
             or settings.task_filters != previous.task_filters):
         try:
             tasks_provider = build_tasks_provider(settings)
