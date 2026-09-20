@@ -40,6 +40,10 @@ jobs:
         run: npm ci
       - name: Build Docusaurus site
         run: npm run build
+      # The UI demo is plain HTML/CSS/JS with no build of its own, so it rides
+      # along in the same Pages artifact and is served at /codee/demo/.
+      - name: Add the UI demo
+        run: cp -r ../demo build/demo
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
