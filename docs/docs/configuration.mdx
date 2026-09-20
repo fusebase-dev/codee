@@ -4,27 +4,26 @@ sidebar_position: 3
 
 # Configuration
 
-Codee works with tasks providers to execute them. After you run `uv run codee-start` you need to open Codee UI and open `Settings`.
+Codee works with tasks providers to fetch tasks from them. After you run `uv run codee-start` you need to open Codee UI and open `Settings`.
 
 :::tip
 
 `uvx codee-agent init` asks for most of this in the terminal — the coding agent, the max
 parallel tasks, and, for Jira, every credential below. See [Installation](./installation).
-This page is where you change any of it afterwards, and where Azure DevOps is connected.
 
 :::
 
 ## Coding agent configuration
 
-Codee supports Claude Code, Github Copilot and Codex coding agents. You need to select one of them.
+Codee supports Claude Code, Github Copilot and Codex coding agents. You can use several of
+them at once, with a different agent for different tasks, and pick one as the default.
 
 ### Default agent
 
-The agent every skill runs on unless it names one of its own. A skill picks a different
-one in its **Agent** field, which is saved as `x-codee-agent` in its frontmatter — so a
-repository can keep most of its work on one agent and hand a single skill to another.
-Changing the default here moves every skill that names no agent; it never overrides a
-skill that does.
+Skills run on this agent unless they set their own. To give one skill a different agent,
+set its **Agent** field, which is saved as `x-codee-agent` in the skill's frontmatter. If
+you change the default here, every skill without its own agent switches to it. Skills that
+set their own agent are not affected.
 
 ### Max parallel tasks
 
@@ -32,9 +31,7 @@ Codee can execute multiple tasks in parallel. Specify number of parallel tasks h
 
 ## Claude Code
 
-Only shown when the `claude` CLI is installed on the machine Codee runs on — the accounts
-are written into Claude Code's own credentials file, so there is nothing to configure
-without it.
+Only shown when the `claude` CLI is installed on the machine Codee runs on.
 
 ### Use specified accounts - Auto accounts rotate
 
@@ -43,64 +40,9 @@ Once either is used up every run fails until it resets, which for an executor th
 around the clock means hours of tasks that simply do not get done.
 
 Switch this on and connect one account per subscription, and Codee carries on through it.
-A thread in the executor checks the current account's usage every five minutes and, when a
-window is full, signs Claude Code in as the next account that still has allowance. The
-list is used in order and wraps round, so the first account gets another turn once the
-last one fills up — by then its own window has usually reset.
-
-#### Connecting an account
-
-**Connect a Claude account** opens Anthropic's sign-in page. Approve it there, and the page
-prints a code; paste that back into Codee and the account appears in the list, named by the
-email it was granted by. The link is shown as well as opened, so the sign-in can be
-approved from whatever machine you are actually sitting at — the one running Codee is
-often a server with no browser.
-
-This is the same sign-in `claude /login` performs, and that matters rather than being a
-convenience. A token from `claude setup-token` carries the `user:inference` scope and
-nothing else, so it cannot be asked whose account it is or how much of its allowance is
-left — which are exactly the two questions rotation is built on. A session token from this
-flow carries both.
-
-#### What Codee writes
-
-Codee writes the whole `claudeAiOauth` section of `~/.claude/.credentials.json`: the access
-token, the refresh token beside it, the real expiry, the scopes and the plan. The refresh
-token is deliberately included — a session token is good for hours while an agent run can
-take two, so the CLI has to be able to renew it mid-run. Codee renews tokens itself too,
-before handing an account that has been out of rotation back to the CLI, and adopts a
-renewal the CLI made so the two never drift apart. Nothing else in that file is touched.
-
-Claude Code renews that token by itself, which is the point of handing it the refresh
-token — so the file is often newer than what Codee last stored. Codee therefore looks
-before it writes: on its first check after a restart, if the file holds a token for the
-account rotation has chosen, it adopts that one rather than overwriting it with its older
-copy. If something else has signed the machine in as a *different* account, the next check
-puts the rotation's account back: with this option on, that field is Codee's.
-
-#### Watching them from the Dashboard
-
-With this on, the Dashboard grows a **Claude accounts** panel under **Currently running**:
-one row per connected account, with a meter for the session window and one for the week,
-and the account currently doing the work lit up. The meters turn amber past 80% and red at
-the limit, and a window under pressure says when it resets. An account whose allowance
-cannot be read says so on its own row rather than blanking the panel.
-
-The reading is taken every half minute at most and cached, so having the Dashboard open
-does not turn into a request per account per redraw.
-
-#### Keeping the spare accounts alive
-
-A refresh token lasts on the order of a month, and every renewal extends it — so the
-account in rotation looks after itself. The ones waiting their turn do not, and a spare
-subscription that is only reached once the others are exhausted could sit untouched past
-its refresh window and be dead on exactly the day it was needed. Codee renews every
-connected account that has gone five days without one, whether or not it is in use.
-
-If an account does reach the end of its refresh window — Codee was stopped for a month,
-or the session was revoked from the Anthropic side — the list marks it **sign in again**.
-Rotation skips it rather than handing Claude Code a dead token; disconnect it and connect
-it again to bring it back.
+Codee checks the current account's usage every five minutes. When a window is full, it
+signs Claude Code in as the next account that still has allowance. Accounts are used in the
+order they are listed, and after the last one Codee goes back to the first.
 
 Leave the option off and Codee never touches the credentials file: Claude Code runs on
 whatever account the machine is signed in with.
@@ -108,6 +50,24 @@ whatever account the machine is signed in with.
 Accounts are credentials, so they are kept in Codee's SQLite database rather than in
 `settings.json` — the same place the Azure DevOps tokens live, and for the same reason.
 Only the on/off switch is in the settings file.
+
+#### Connecting an account
+
+**Connect a Claude account** opens Anthropic's sign-in page. Approve it there, and the page
+prints a code; paste that back into Codee and the account appears in the list, named by the
+email it was granted by. The link is shown as well as opened, so the sign-in can be
+approved from whatever machine you are actually sitting at.
+
+This is the same sign-in as `claude /login`, and rotation needs it. A token from
+`claude setup-token` only has the `user:inference` scope, so Codee cannot tell whose
+account it belongs to or how much allowance is left. Rotation needs both answers, and a
+session token from this sign-in gives them.
+
+#### Watching them from the Dashboard
+
+With this on, the Dashboard grows a **Claude accounts** panel: one row per connected
+account, with a meter for the session window and one for the week, and the account
+currently doing the work lit up.
 
 ## Tasks provider configuration
 
@@ -124,9 +84,7 @@ Your Jira domain, e.g. `https://myjira.atlassian.net`.
 #### API Token Owner Email
 
 The email the API token below belongs to. Jira Cloud's REST API authenticates with HTTP
-Basic where the username is that email, so it is required — but it is only a credential.
-It does not decide which issues Codee picks up: the poll does not filter on an assignee,
-only on the project, the work item types and the statuses the skills trigger on.
+Basic where the username is that email, so it is required.
 
 #### API token
 
@@ -142,10 +100,6 @@ and it appears in the URL of any board. Codee polls this one project only.
 
 For Azure DevOps you will need to create an App Registration,  you will see instruction on the Settings page on how to do that.
 
-As with Jira, the connected account is a credential and a scope, not a filter: the poll
-does not look at who a work item is assigned to, only at the work item types, the states
-the skills trigger on, and the projects that account can read.
-
 #### Organization URL
 
 Specify your organiztion URL in Azure DevOps.
@@ -160,122 +114,84 @@ Then click Connect to Azure DevOps. You will have to grant access for your app a
 
 ### Work items
 
-Codee only picks up the work items listed here. Every row maps one of Codee's work items —
-the name a skill declares in `x-codee-issue-type` — to what it is in your provider.
+Codee only picks up the work items listed here. Each row maps one of Codee's work items to
+the work item types it stands for in your provider.
+
+You do not need to create anything in Jira or Azure DevOps for this. Point `story` and
+`task` at the work item types your projects already use, and add a row for anything else
+you want Codee to work on. You can still make a separate work item type just for Codee if you
+prefer it that way, but Codee does not need one.
 
 Every row says how its work item is found, and the control beside it picks which of the
 two ways:
 
-**Types** — the ordinary answer. Pick a type from the dropdown and it is added to the row
-as a chip; pick another and it joins it, and the `x` on a chip removes it. That is how one
-Codee work item covers several of your backend's types — a team whose bugs are worked
-exactly like its tasks points `task` at both `Task` and `Bug`, and every task skill picks
-up either without a second copy of itself. A provider type can belong to only one
-types-mode row, since an item arriving under it has to resolve to one set of skills.
+**Types** — pick one or more work item types from the dropdown. If your team works bugs
+the same way it works tasks, map `task` to both `Task` and `Bug`, and every task skill will
+pick up either one. The same work item type cannot be used in two rows: an
+item of that type has to resolve to one set of skills.
 
 **JQL (Advanced)** / **WIQL (Advanced)** — a condition you write yourself, which replaces
-the type list entirely. For the work item no list of type names can describe: a `Bug` that
-is only Codee's when it carries a label, or one split across projects by a field nobody
-made a type. Write a bare condition, not a whole query:
+the type list. Use it when a list of type names is not enough, for example a `Bug` that is
+only Codee's when it has a certain label. Write just the condition, not a whole query:
 
 ```
 issuetype = Bug AND labels = "codee"                          # Jira
 [System.WorkItemType] = 'Bug' AND [System.Tags] CONTAINS 'codee'   # Azure DevOps
 ```
 
-It is ANDed with the statuses your skills trigger on and with the custom JQL/WIQL below,
-so it narrows what Codee polls rather than defining it from scratch. Nothing here is
-checked when you save — only the backend can say whether a condition parses, and
-**Verify connection** is how it gets asked. A condition the backend rejects costs you that
-work item's whole poll, so verify after writing one.
+Codee does not check the condition when you save it. Use **Verify connection** to check
+it. If the condition is invalid, that work item is not polled at all, so always verify
+after writing one.
 
-Switching a row to a query keeps the types it had, so switching back offers them again;
-saving a row in **Types** mode is what discards its query.
-
-Codee issues **one query per Codee work item** — it is the query that says which work item
-an item is, and a condition you wrote cannot be re-run against a result to ask whether it
-matched. Two consequences worth knowing. Each work item gets its own page of results, so a
-backlog of a hundred bugs can no longer crowd the stories out of a poll. And the results
-are interleaved, one work item at a time, rather than ranked against each other: each
-query is priority-ordered on its own, but a `High` in one backlog is not comparable to a
-`High` in another. An item two rows both match is worked once, as the first row that
-claimed it.
-
-`story` and `task` are always present and cannot be removed: the skills that ship with
-Codee trigger on them, and a story is what tells Codee to drive its children inside the
-story's own run rather than one by one. The types they point at are yours to change. Out
-of the box they are:
+`story` and `task` are always present and cannot be removed, because the skills that ship
+with Codee trigger on them. You can change the types they are mapped to. By default they
+are:
 
 | Codee work item | Jira | Azure DevOps |
 | --- | --- | --- |
 | `story` | `Story` | `User Story` |
 | `task` | `Task` | `Task` |
 
-One type each out of the box, and adding more to either row is safe: a story mapped to
-both `Story` and `Epic` is driven by the same story skills, children and all.
+You can add more types to either row. If you map `story` to both `Story` and `Epic`, both
+are worked by the same story skills.
 
-In Azure DevOps a child of a story is left to the story's own run. With `story` in
-**Types** mode the parent's own type settles that. With a query, Codee puts the story
-condition to Azure DevOps along with the ids of the parents on the page — one extra query
-per poll, with no state clause — so a story shields its children whatever state it is
-resting in, exactly as its type would have. If that query fails, the children wait for the
-next poll rather than risk being worked beside the story already working them.
-
-**Load types from provider** fills the dropdowns with the types your backend actually
-defines — the issue types of the configured Jira project, or the work item types across
-your Azure DevOps organization's projects. It needs the credentials above to be filled in
-(and, for Azure DevOps, connected), but nothing has to be saved first.
+**Load types from provider** fills the dropdowns with the types your provider defines.
 
 Use **Add work item** for anything beyond a story and a task — a `bug` pointed at your
-backend's `Bug`, say. A skill can then declare `x-codee-issue-type: bug`, and the Workflow
-page gets its own graph for it. Add a work item when it needs skills of its own; add
-another type to an existing row when it does not.
+backend's `Bug`, say. Add a work item when it needs skills of its own; add another type to
+an existing row when it does not.
 
-A work item no row here selects is left alone, whatever state it is in.
+Codee ignores any work item that no row here selects, whatever state it is in.
 
 ### Custom JQL / WIQL
 
-An optional extra condition every task query is narrowed by, written in the selected
-provider's own query language — JQL for Jira, WIQL for Azure DevOps. It is empty out of
-the box, and while it stays empty the poll is exactly the one described above.
-
-When you fill it in, it is added to every fetch as one more `AND` condition on top of each
-work item's own selection and the statuses your skills trigger on — it can only narrow what Codee picks
-up, never widen it. Write the condition alone; a leading `AND` is dropped for you, and the
-whole clause is bracketed before it is joined, so an `OR` inside it stays inside it.
+An optional condition that narrows every work item query, written in JQL for Jira or WIQL
+for Azure DevOps. It is empty by default.
 
 | Provider | Example |
 | --- | --- |
 | Jira | `labels = "codee" AND component != "legacy"` |
 | Azure DevOps | `[System.Tags] CONTAINS 'codee'` |
 
-This is also where an assignee filter goes. Codee does not apply one itself — status and
-type are the whole handover — so a team that wants "only what is assigned to Codee" writes
-it here: `assignee = "codee@yourcompany.com"` for Jira, `[System.AssignedTo] = @Me` for
+You can also filter by assignee here, so Codee only picks up work items assigned to it.
+Write `assignee = "codee@yourcompany.com"` for Jira, or `[System.AssignedTo] = @Me` for
 Azure DevOps, where `@Me` is the account that authorized the connection.
-
-Each provider keeps its own filter, so switching provider and back does not lose it.
-Nothing is validated as you type: the backend is the only thing that can say whether a
-clause parses, so use **Verify connection** below to have it checked — an invalid filter
-fails there with the message the provider returned, rather than silently returning no
-tasks on every poll.
 
 ### Verify connection
 
 Once every field of the selected provider is filled in (and, for Azure DevOps, the app is connected), a **Verify connection** button becomes available at the bottom of the Tasks provider section.
 
-Clicking it pulls tasks exactly the way Codee does when it polls: same account, same work item types, same statuses your issue-triggered skills declare, and the same custom filter if you set one. It reports either the tasks it found or the reason the provider refused — a wrong project key, an expired token, an unreachable host. Nothing is saved by verifying, so you can check credentials before storing them.
+Clicking it pulls tasks the same way Codee does when it polls: same account, same work
+item types, same statuses your skills trigger on, and the same custom filter if you set
+one. It reports either the tasks it found or the reason the provider refused, for example
+a wrong project key or an expired token. Nothing is saved by verifying, so you can check
+credentials before storing them.
+
+Once the MCP server is set up, verifying runs a second check through it: the coding agent
+creates a work item and then closes it again, so you can see that Codee can write to your
+provider as well as read from it.
 
 ### Setting up MCP server for tasks provider
 
 When you have set up a task provider you will have button `Setup MCP Server` activated. In order to work for Codee you should also click
 this button. That will configure mcp server for the selected provider in `.mcp.json` file.
-
-`.mcp.json` is written in the shape every supported agent can use: Claude Code reads the `mcpServers` section, Github Copilot the
-`servers` one. Codex reads neither — it keeps its servers in its own `config.toml` — so Codee hands the servers from `.mcp.json` to the
-`codex` CLI on each run instead. Either way `.mcp.json` stays the one place a server is configured, and nothing is written into your
-machine-wide agent config.
-
-### Verifiying tasks provider connection
-
-You can verify task provider / its MCP are working by clicking Verify connection button. It will try to fetch, create, update tasks.

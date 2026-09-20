@@ -22,8 +22,29 @@ them.
 Codee polls the project you set under **Settings → Tasks provider → Project key** (see
 [Configuration](../configuration)) for issues that are of one of the types listed under
 **Settings → Tasks provider → Work items** and in one of the statuses its skills trigger
-on. That mapping ships pointing `story` at Jira's `Story` and `task` at `Task`; repoint it
-there if your project calls them something else.
+on.
+
+You do not have to create anything in Jira for that. Codee has work items of its own, the
+names skills declare in `x-codee-issue-type`, and that section maps each of them to the
+issue types your project already uses. `story` and `task` are always there, mapped to Jira's
+`Story` and `Task` by default:
+
+| Codee work item | Jira issue type |
+| --- | --- |
+| `story` | `Story` |
+| `task` | `Task` |
+
+To change either one, click **Load types from provider**, which lists the issue types of the
+configured project, and pick the right one. A row can name several types, so if your team
+works bugs the same way it works tasks, map `task` to both `Task` and `Bug` and every task
+skill will pick up either. If no list of type names covers what you need — a `Bug` that is
+Codee's only when it has a label — switch the row to **JQL (Advanced)** and write the
+condition yourself.
+
+**Add work item** adds a work item of your own, for example a `bug` row mapped to `Bug`. It
+is worked by skills that declare `x-codee-issue-type: bug` and gets its own graph on the
+Workflow page. Add a work item when it needs skills of its own; add another type to an
+existing row when it does not. See [Configuration](../configuration#work-items).
 
 Nothing is filtered on the assignee. An issue reaching an `AI` status is picked up whoever
 it is assigned to, so leave it with whoever owns it — you will want it back on them when

@@ -16,14 +16,15 @@ Nothing is filtered on the assignee. A work item reaching an `AI` state is picke
 it is assigned to, so leave it with whoever owns it — you will want it back on them when
 Codee hands it to `AI Ready for Human review`.
 
-There is one more requirement, which is what the setup below is mostly about: the work item
-has to be of a type you listed under **Settings → Tasks provider → Work items**. Codee
-ignores every other type, even in a matching state.
+There is one more requirement: the work item has to be of a type you listed under
+**Settings → Tasks provider → Work items**. Codee ignores every other type, even in a
+matching state.
 
-This tutorial uses two custom types, `Codee Story` and `Codee Task`, so that work handed to
-Codee is separated from your team's own backlog by type as well as by state. That is a
-choice, not a requirement — the mapping ships pointing at `User Story` and `Task`, and you
-can leave it there and separate the work by state alone.
+You do not have to create anything in Azure DevOps for that. Codee has two work items of
+its own, `story` and `task`, and out of the box they are mapped to the standard `User Story`
+and `Task`, which is what this tutorial uses. You can map them to other types, map several
+types to one row, or add work items of your own — see
+[Which work items Codee polls](#which-work-items-codee-polls).
 
 :::warning[The `AI` states have to be Codee's alone]
 
@@ -40,8 +41,8 @@ there. `[System.AssignedTo] = @Me` restores the assignee filter Codee used to ap
 own. See [Configuration](../configuration).
 :::
 
-This tutorial shows how to set up the account and the app registration, how to create the
-work item types and states, and how a story and a task move through them.
+This tutorial shows how to set up the account and the app registration, how to map the work
+items and create the states, and how a story and a task move through them.
 
 ## The two identities
 
@@ -93,42 +94,59 @@ be assigned work in it.
 Then use **Verify connection** on the settings page to check the account can reach your
 projects and act on a work item in them.
 
-## Creating the work item types
+## Which work items Codee polls
 
-### Which types Codee polls
+Skills trigger on Codee's own work item names (`x-codee-issue-type: story`,
+`x-codee-issue-type: task`). **Settings → Tasks provider → Work items** is where you map
+each of those to the types your organization uses. Out of the box:
 
-Codee picks up the work item types listed under **Settings → Tasks provider → Work items**,
-and each maps to an issue type your skills trigger on. The rest of this tutorial assumes
-the two custom types it creates below:
-
-| Work item type | `x-codee-issue-type` |
+| Codee work item | Azure DevOps type |
 | --- | --- |
-| `Codee Story` | `story` |
-| `Codee Task` | `task` |
+| `story` | `User Story` |
+| `task` | `Task` |
 
-Set that mapping in Settings once the types exist: click **Load types from provider** and
-pick `Codee Story` for `story` and `Codee Task` for `task`. Until you do, Codee is still
-polling for the default `User Story` and `Task`.
+If your projects use the standard Agile process, this is already correct. Leave the
+mapping as it is, and the only thing you have to create is the states.
 
-Every other type is ignored, whatever state it is in. The children of a `Codee Story` are
-not picked up on their own either. Codee works on them inside the story's run.
+If your projects use a different process template, click **Load types from provider**, which
+lists the types defined across the organization's projects, and pick the right one on each
+row. On Scrum, map `story` to `Product Backlog Item`; on Basic, map `task` to `Issue`.
 
-### Create work item types in an inherited process
+One row can name several types. If your team works bugs the same way it works tasks, map
+`task` to both `Task` and `Bug`, and every task skill will pick up either. If no list of
+type names covers what you need — a `Bug` that is Codee's only when it is tagged — switch
+the row to **WIQL (Advanced)** and write the condition yourself.
 
-Custom types need an inherited process in Azure DevOps, created once for the organization
-and applied to every project Codee works in.
+**Add work item** adds a row of your own, for example a `bug` mapped to your `Bug` type.
+Skills can then declare `x-codee-issue-type: bug`, and the Workflow page draws that work
+item its own graph. You cannot remove `story` and `task`, because the skills Codee ships
+with trigger on them, but you can change what they are mapped to.
+[Configuration](../configuration#work-items) describes every field in that section.
 
-1. **Organization settings → Boards → Process**. Open the `…` menu on the process your
-   projects use and choose **Create inherited process**.
-2. In the new process, use **New work item type** to add `Codee Task` and `Codee Story`.
-3. Add the **Priority** field to both if it is missing; it orders Codee's queue.
-4. Point each project at the new process under **Projects → Change process**.
+A type that no row selects is ignored, whatever state it is in. Children of a story are not
+picked up on their own either: Codee works on them inside the story's run, so a `Task` whose
+parent is a mapped `User Story` is skipped on purpose.
 
-### Set the backlog levels
+### Using a separate type for Codee
 
-Backlog levels decide what can be a child of what. In the process, open **Backlog levels**,
-add `Codee Story` to the requirement backlog and `Codee Task` to the iteration backlog.
-Until you do, a `Codee Task` cannot be given a `Codee Story` parent.
+With the default mapping, any `User Story` or `Task` in the organization is picked up once
+it lands in an `AI` state. That is usually what you want: the state is the handover, so the
+same backlog item is worked by a person or by Codee depending on where it sits.
+
+If you would rather separate Codee's work by type as well, add your own types to the
+inherited process that the `AI` states need anyway (see
+[Create an inherited process](#create-an-inherited-process)):
+
+1. In the inherited process, use **New work item type** to add them, for example
+   `Codee Story` and `Codee Task`.
+2. Add the **Priority** field to both if it is missing; it orders Codee's queue.
+3. Open **Backlog levels** and put the story type in the requirement backlog and the task
+   type in the iteration backlog. Until you do, the task cannot be given the story as a
+   parent.
+4. In Settings, click **Load types from provider** and point `story` and `task` at them.
+
+Everything else below works the same way, only the type names change. A tag plus a custom
+WIQL condition gives you the same separation without new types, so it is worth trying first.
 
 ## Creating states for Codee
 
@@ -140,6 +158,19 @@ work item is Codee's now, and what Codee should do with it.
 Codee polls for work items whose `System.State` matches a skill's `x-codee-issue-status`
 trigger. The `AI` prefix keeps Codee's stages visible on the board.
 
+### Create an inherited process
+
+Azure DevOps does not let you add states to its own Agile, Scrum or Basic process, so the
+states below need an inherited process. You create it once for the organization and apply it
+to every project Codee works in:
+
+1. **Organization settings → Boards → Process**. Open the `…` menu on the process your
+   projects use and choose **Create inherited process**.
+2. Point each project at it under **Projects → Change process**.
+
+This does not change the types. An inherited Agile process still has `User Story` and
+`Task`, with the same fields and boards. You are only adding states to them.
+
 ### Which states to create
 
 :::tip[These states come from the default skills]
@@ -149,10 +180,11 @@ Nothing here is fixed. You can create different states, have them run different 
 wire different transitions between them. Codee is fully customizable here.
 :::
 
-Create these eight states on **both** `Codee Task` and `Codee Story`, in the process
-editor: open the type, go to **States**, and use **New state** for each one. Every state
-you add must be put in a **state category** - that is what tells Azure DevOps whether a
-work item counts as open, active or closed for boards, queries and burndown.
+Create these eight states on **every type you mapped** — `User Story` and `Task` unless you
+changed the mapping. In the process editor: open the type, go to **States**, and use
+**New state** for each one. Every state you add must be put in a **state category** - that
+is what tells Azure DevOps whether a work item counts as open, active or closed for boards,
+queries and burndown.
 
 The `Assignee` column says who acts next. It is a convention for your board, not something
 Codee reads — the state alone decides what it picks up.
@@ -197,7 +229,7 @@ where clarifying questions land, see [Clarifying questions](#2-clarifying-questi
 Where Codee starts writing code. For a story this is your approval of the plan, and it
 means the child work items are right. Codee then takes one open child per run and
 implements it, pushing to one pull request per repository for the whole story, so later
-children add commits to the pull request the first one opened. A `Codee Task` with no
+children add commits to the pull request the first one opened. A task work item with no
 parent is implemented directly, with no decomposition. The review and QA states below work
 the same way, one child at a time.
 
@@ -355,23 +387,25 @@ WIQL if you set one. It reports either the work items it found or the reason Azu
 refused.
 
 The MCP check goes further and exercises the write path: it asks the agent to create a
-`Codee Task` in any project it can write to, and then move it to a `Done`, `Closed` or
-`Removed` state so it does not stay open.
+work item of whatever type `task` is mapped to (`Task` by default) in any project it can
+write to, and then move it to a `Done`, `Closed` or `Removed` state so it does not stay
+open. It uses the mapped type instead of a fixed name, so the check uses the same type Codee
+actually polls for.
 
 ## Story flow
 
 A story is work too large to do in one go. Codee decomposes it into child work items first,
 then implements them one by one.
 
-The whole flow is driven by the **story** work item: it is of type `Codee Story`, and its
-state is what triggers each run. The children are worked on inside
-those runs, and Codee moves their states itself to track where each one is. Because their
-parent is a `Codee Story`, Codee skips them in the queue instead of treating each as
-separate work.
+The whole flow is driven by the **story** work item: it is of a type mapped to `story` —
+`User Story` out of the box — and its state is what triggers each run. The children are
+worked on inside those runs, and Codee moves their states itself to track where each one
+is. Because their parent is a story, Codee skips them in the queue instead of treating each
+as separate work.
 
 ```mermaid
 flowchart TD
-    start([Create as Codee Story]) --> decomp[AI Decomposition needed]
+    start([Create a story work item]) --> decomp[AI Decomposition needed]
     decomp -->|story-planner| review[AI Decomposition review]
     review -.->|questions answered| decomp
     review -->|plan approved| dev[AI Ready for development]
@@ -390,14 +424,15 @@ flowchart TD
 
 ### 1. Decomposition
 
-Create the story as a `Codee Story` and move it to `AI Decomposition needed`. On the next poll Codee:
+Create the story as a type mapped to `story` and move it to `AI Decomposition needed`. On
+the next poll Codee:
 
 1. Reads the story, its acceptance criteria, attachments, comments and linked work items,
    then the project instructions and the code the story touches.
 2. Asks clarifying questions in a comment when a requirement is unclear or missing, instead
    of guessing.
-3. Creates the child `Codee Task` work items, each with a technical description, acceptance
-   criteria and its dependencies.
+3. Creates the child work items, each with a technical description, acceptance criteria
+   and its dependencies.
 4. Writes the spec to `story-spec/{STORY_ID}/README.md`, pushes it to Codee's repository,
    and comments with the plan.
 5. Moves the story to `AI Decomposition review`.
@@ -493,11 +528,11 @@ child to work on and just moves the story on to the next stage.
 ## Task flow
 
 A task is standalone work that does not need decomposition: a bug fix, a small change, a
-chore. It is a `Codee Task` with no parent, and it skips planning:
+chore. It is a task work item with no parent, and it skips planning:
 
 ```mermaid
 flowchart TD
-    start([Create as Codee Task]) --> dev[AI Ready for development]
+    start([Create a task work item]) --> dev[AI Ready for development]
     dev -->|task-developer| cr[AI Ready for CR]
     cr -->|task-code-reviewer| sec[AI Ready for security review]
     sec -->|task-security-reviewer| qa[AI Ready for QA]
@@ -511,36 +546,41 @@ flowchart TD
     linkStyle 5,6,7 stroke-dasharray: 5 4
 ```
 
-Create it as a `Codee Task` and move it straight to `AI Ready for development`. There is no planning round. Codee implements it the same way it
-implements a story child: dedicated branch, pull request, work item comment. The review,
-security and QA stages work the same as in the story flow.
+Create it as a type mapped to `task` and move it straight to `AI Ready for development`.
+There is no planning round. Codee implements it the same way it implements a story child:
+dedicated branch, pull request, work item comment. The review, security and QA stages work
+the same as in the story flow.
 
 ### Choosing between a story and a task
 
-Use a **`Codee Story`** when the work needs several children, touches more than one part of
-the system or more than one repository, or when the requirements are not concrete enough to
+Use a **story** when the work needs several children, touches more than one part of the
+system or more than one repository, or when the requirements are not concrete enough to
 implement yet. The decomposition step splits the work up and surfaces the unclear parts
 before any code is written.
 
-Use a **`Codee Task`** when you already know what the change is and it fits in one pull
-request. Decomposition would only add an extra review step here.
+Use a **task** when you already know what the change is and it fits in one pull request.
+Decomposition would only add an extra review step here.
 
 ## When nothing gets picked up
 
 Work through these in order - they follow the query Codee actually runs:
 
-1. **Is the type right?** Only `Codee Task` and `Codee Story` are polled. A `User Story`,
-   `Product Backlog Item` or `Bug` is invisible to Codee, whatever its state.
+1. **Is the type mapped?** Only the types listed under
+   **Settings → Tasks provider → Work items** are polled. If your `story` row still says
+   `User Story`, a `Product Backlog Item` is invisible to Codee whatever its state. Map the
+   row to it, or add it as a second type on the row.
 2. **Does the state name match a skill exactly?** Case does not matter; everything else
    does. `AI Ready for dev` is not `AI Ready for development`.
-3. **Does a skill cover this type *and* this state?** A skill has to match both. A state
-   defined on `Codee Task` with only a `story` skill triggering on it never fires.
+3. **Does a skill cover this work item *and* this state?** A skill has to match both. A
+   state defined on the type mapped to `task`, with only a `story` skill triggering on it,
+   never fires.
 4. **Does the connected account have access to that project?** The query spans the
    organization, but only the projects that account can read.
 5. **Is a custom WIQL filtering it out?** Anything in
    **Settings → Tasks provider → Custom WIQL** is `AND`ed onto every poll and can only
-   narrow it. Empty it to rule it out.
-6. **Is it a child of a `Codee Story`?** Then it is deliberately skipped - its parent's run
-   drives it.
+   narrow it. The same goes for a **WIQL (Advanced)** condition on the work item's own row.
+   Empty them to rule them out.
+6. **Is its parent a story?** Then it is skipped on purpose - its parent's run drives it.
+   With the default mapping that means any `Task` under a `User Story`.
 
 Note that the assignee is *not* on this list: it is not part of the query at all.

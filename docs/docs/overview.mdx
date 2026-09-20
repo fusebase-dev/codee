@@ -17,6 +17,18 @@ Codee polls your issue tracker as its own user. When a work item's type and stat
 
 Jira and Azure DevOps are now supported. Codee will pick up tasks from them and work on them.
 
+## Work items
+
+Codee has its own internal work items, and each is mapped to one or more work item types
+in your tasks provider. Default work items are:
+
+| Codee work item | Jira | Azure DevOps |
+| --- | --- | --- |
+| `story` | `Story` | `User Story` |
+| `task` | `Task` | `Task` |
+
+See [Configuration](./configuration#work-items) for details.
+
 ## Skills
 
 Codee is based on skills. Some skills can be just informative guidelines, while others contain explicit instructions and commands on how to accomplish something.

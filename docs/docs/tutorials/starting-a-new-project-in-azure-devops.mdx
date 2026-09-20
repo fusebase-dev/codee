@@ -11,7 +11,7 @@ up its first work item there.
 
 It takes three steps:
 
-1. **Give Codee access to the Azure DevOps project**, with the `Codee` work item types and
+1. **Give Codee access to the Azure DevOps project**, with the mapped work item types and
    the `AI` states available in it.
 2. **Add the git repository to Codee**, on the **Repositories** page in the Codee UI.
 3. **Create work items and move them into an `AI` state.**
@@ -19,7 +19,7 @@ It takes three steps:
 ```mermaid
 flowchart LR
     project[Add Codee to the ADO project] --> repo[Add the repo in Codee UI]
-    repo --> item[Create Codee Story / Codee Task]
+    repo --> item[Create a story or task work item]
     item --> state[Move to an AI state]
     state --> run([Codee picks it up on the next poll])
 
@@ -37,13 +37,18 @@ the connected account can read**, so setting up a project comes down to two thin
   it can read work items, change their state, comment, and open pull requests. Membership is
   also what makes the project visible to the poll at all — a project Codee's account cannot
   read is a project Codee never sees.
-- **The work item types and states exist.** `Codee Task`, `Codee Story` and the `AI` states
-  come from an inherited process. If you already set one up for an earlier project, you do
-  not create anything new - open **Project settings → Overview → Process** and point the new
-  project at that same process. If this is your first project, follow
-  [Creating the work item types](./working-on-tasks-in-azure-devops#creating-the-work-item-types)
-  and [Creating states for Codee](./working-on-tasks-in-azure-devops#creating-states-for-codee)
-  once, and reuse the result everywhere afterwards.
+- **The mapped types and the `AI` states exist.** Codee polls the types that
+  **Settings → Tasks provider → Work items** maps `story` and `task` to, which are
+  `User Story` and `Task` by default, so the types are usually already in the project. The
+  `AI` states are not: they come from an inherited process. If you set one up for an earlier
+  project, there is nothing new to create — open **Project settings → Overview → Process**
+  and point the new project at that same process. If this is your first project, follow
+  [Creating states for Codee](./working-on-tasks-in-azure-devops#creating-states-for-codee)
+  once and reuse the result everywhere afterwards.
+
+  Only a project on a *different* process template needs a closer look. Check under
+  [Which work items Codee polls](./working-on-tasks-in-azure-devops#which-work-items-codee-polls)
+  that the types it uses are in the mapping, and add them to the row if they are not.
 
 Nothing needs to be reconfigured in Codee itself. The app registration, the tokens and the
 MCP server are per-organization, and they already cover the new project.
@@ -88,7 +93,8 @@ project conventions belong in the repository's own `AGENTS.md`, `CLAUDE.md` or
 
 Create the work items in Azure DevOps as usual, with two constraints:
 
-- **Type: `Codee Story` or `Codee Task`.** Codee ignores every other work item type.
+- **Type: one the mapping selects.** A story work item (`User Story` by default) or a task
+  one (`Task`). Codee ignores every other work item type.
 - **The work is in the description.** Codee reads the description, the acceptance criteria,
   the attachments, the comments and the linked work items. Screenshots, error output, links
   to an existing implementation and a Definition of Done all belong there.
@@ -98,12 +104,12 @@ with whoever owns it.
 
 ### Story or task
 
-Use a **`Codee Story`** when the work needs several steps, spans repositories, or is not yet
+Use a **story** when the work needs several steps, spans repositories, or is not yet
 concrete enough to implement. Codee plans it first and you approve the plan before any code
 is written.
 
-Use a **`Codee Task`** when you already know what the change is and it fits in one pull
-request. It goes straight to implementation.
+Use a **task** when you already know what the change is and it fits in one pull request. It
+goes straight to implementation.
 
 ## 4. Move it to an `AI` state
 
@@ -111,10 +117,10 @@ The state is the trigger. Type says the work item is one Codee handles at all; t
 says it is Codee's now and what to do with it, and Codee only acts on states its skills
 declare.
 
-| Type | Start it in | What Codee does |
+| Work item | Start it in | What Codee does |
 | --- | --- | --- |
-| `Codee Story` | `AI Decomposition needed` | Reads the story and the code, asks any clarifying questions, creates child work items with acceptance criteria, and moves the story to `AI Decomposition review` for you to approve. |
-| `Codee Task` | `AI Ready for development` | Implements the change on its own branch and opens a pull request, then moves the work item on to review. |
+| story | `AI Decomposition needed` | Reads the story and the code, asks any clarifying questions, creates child work items with acceptance criteria, and moves the story to `AI Decomposition review` for you to approve. |
+| task | `AI Ready for development` | Implements the change on its own branch and opens a pull request, then moves the work item on to review. |
 
 From here the work item follows the normal pipeline - development, code review, security
 review, QA, then `AI Ready for Human review` where a person merges. That whole flow, state
