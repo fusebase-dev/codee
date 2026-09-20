@@ -91,6 +91,15 @@ const config: Config = {
           label: 'Docs',
         },
         {
+          // The demo is plain HTML copied into the build by the Pages
+          // workflow, so it is not a route this build knows about: a
+          // site-relative link would fail the broken-link check and would not
+          // exist under `npm start` either. Absolute, as in overview.mdx.
+          href: 'https://fusebase-dev.github.io/codee/demo/',
+          label: 'Demo',
+          position: 'left',
+        },
+        {
           href: 'https://github.com/fusebase-dev/codee',
           label: 'GitHub',
           position: 'right',
