@@ -53,6 +53,22 @@ This means that this skill will be triggered on a work item with type `story` (`
 
 Codee will run this skill for a specific task like this: `/story-developer TSK-4192`.
 
+### Skill triggers
+
+A trigger is what makes Codee run a skill on its own. There are four:
+
+| Trigger | Runs the skill when | |
+| --- | --- | --- |
+| Issue | a work item reaches a type and status the skill claims | [Set up](./triggers/issue) |
+| Cron | a schedule comes round | [Set up](./triggers/cron) |
+| AWS SQS | a message arrives on a queue | [Set up](./triggers/aws-sqs) |
+| Email | mail arrives for an address the skill claims | [Set up](./triggers/email) |
+
+A skill with no trigger is either knowledge the agent reads when it needs it, or a slash
+command you run yourself.
+
+See [Skill triggers](./triggers) for what they share and how to set each one up.
+
 ### Choosing an agent per skill
 
 A skill can also say which agent runs it, and on which model:

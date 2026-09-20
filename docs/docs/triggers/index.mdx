@@ -1,0 +1,84 @@
+---
+sidebar_position: 1
+---
+
+# Skill triggers
+
+A trigger is what makes Codee run a skill on its own. Without one, a skill is either
+knowledge the agent reads when it needs it, or a slash command you run yourself.
+
+A skill declares its trigger in the frontmatter with `x-codee-trigger`, plus the extra
+fields that trigger needs:
+
+| Trigger | `x-codee-trigger` | Listens to | Fields |
+| --- | --- | --- | --- |
+| [Issue](./issue) | `issue` | your issue tracker | `x-codee-issue-type`, `x-codee-issue-status` |
+| [Cron](./cron) | `cron` | the clock | `x-codee-cron` |
+| [AWS SQS](./aws-sqs) | `aws-sqs` | an SQS queue | `x-codee-aws-sqs-queue` |
+| [Email](./email) | `email` | an email address | `x-codee-email-address` |
+
+A skill has at most one trigger.
+
+## What every triggered skill needs
+
+```yaml
+---
+name: cron-research-5xx-errors
+description: Investigate frequent 5xx errors from the last 24 hours and report the findings.
+disable-model-invocation: true
+x-codee-trigger: cron
+x-codee-cron: 0 0 * * 2-6
+---
+```
+
+- The file is `.claude/skills/<skill-name>/SKILL.md`. Codee only looks one level deep, so
+  a skill in a subfolder of a subfolder is not found.
+- `disable-model-invocation: true` is **required**. Without it Codee skips the skill and
+  logs an error, because a triggered skill must not also be picked up by the agent on its
+  own.
+- `name` and `description` are the usual Agent Skills fields.
+- The body of the file is the prompt. For cron it is sent as it is; the other three
+  triggers pass content along with it (see each page).
+
+## Choosing the agent and model
+
+Any triggered skill can name the agent and model that run it:
+
+```yaml
+x-codee-agent: codex
+model: gpt-6-astra
+```
+
+Leave `x-codee-agent` out and the skill runs on the
+[default agent](../configuration#default-agent). Leave `model` out and it runs on whatever
+that agent defaults to. See [Overview](../overview.mdx#choosing-an-agent-per-skill).
+
+## Setting one up in the UI
+
+You do not have to edit the file by hand. On the **Skills** page, open a skill and pick a
+**Skill type**:
+
+| Skill type in the UI | Frontmatter it writes |
+| --- | --- |
+| `issue trigger` | `x-codee-trigger: issue` + issue type and statuses |
+| `cron trigger` | `x-codee-trigger: cron` + the cron expression |
+| `email trigger` | `x-codee-trigger: email` + the address |
+| `aws-sqs trigger` | `x-codee-trigger: aws-sqs` + the queue |
+| `slash command` | `disable-model-invocation: true`, no trigger |
+| `knowledge` | nothing |
+
+The fields for the selected type appear under the picker, and `disable-model-invocation`
+is set for you. Saving writes the skill file and pushes it to Git, so the skill is a file
+in your repo either way.
+
+## When triggers fire
+
+The executor ticks **every 60 seconds**. Each tick checks every trigger.
+
+Issue-triggered tasks run in parallel, up to
+[Max parallel tasks](../configuration#max-parallel-tasks).
+
+## Seeing what ran
+
+Every trigger writes a row to the **Runs** page with the skill name, the trigger type, the
+session id, and the error if it failed. Live runs also show on the Dashboard.

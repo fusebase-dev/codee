@@ -1,0 +1,162 @@
+---
+sidebar_position: 5
+---
+
+# Email trigger
+
+An email-triggered skill runs when mail arrives for an address it claims. The whole
+message — headers, body, attachments — is passed to the agent.
+
+Use it for intake from people rather than systems: a support address that turns threads
+into triaged bugs, a `deploy-requests@` address, anything already reaching your team by
+mail.
+
+```yaml
+---
+name: email-bug-intake
+description: Turn a support mail thread into a triaged Issue Tracker bug.
+disable-model-invocation: true
+x-codee-trigger: email
+x-codee-email-address: bugs@codee.example.com
+---
+```
+
+## How delivery works
+
+Codee does not fetch mail from a mailbox. It reads a directory:
+
+```
+incoming mail  →  temp-emails/*.eml  →  the tick routes each file to a skill
+```
+
+Anything that writes an `.eml` file into `temp-emails/` in your Codee project directory
+feeds the trigger — the SMTP server Codee ships with, a `procmail` rule, a fetchmail cron
+job, a script against your IMAP mailbox. The SMTP server is the shortest path, not the
+only one.
+
+## Setup
+
+### 1. Allow the sender domains
+
+```bash
+export CODEE_ALLOWED_SENDER_DOMAINS=yourcompany.com,partner.example
+```
+
+Mail from any other domain is dropped without running anything.
+
+:::warning[This variable is not optional]
+
+It is empty by default, and an empty list allows nothing. Until it is set, every email is
+dropped and no email skill ever runs. It is read at startup, so restart Codee after
+changing it.
+:::
+
+An email address is trivial to forge, so treat this as a filter, not authentication. Do
+not put an address that accepts mail from the public internet behind a skill that can
+change code.
+
+### 2. Run the SMTP server
+
+It is a separate process — `codee-start` does not launch it:
+
+```bash
+MAIL_PORT=2525 uv run python -m codee.mail_server
+```
+
+| Variable | Default | What it is |
+| --- | --- | --- |
+| `MAIL_HOST` | `0.0.0.0` | interface to listen on |
+| `MAIL_PORT` | `2525` | port to listen on |
+
+It listens unprivileged on purpose. Map port 25 to it at the infrastructure layer with
+iptables or a load balancer rather than running Codee as root. Put it behind your own MX
+or a relay; it does not do TLS, authentication or spam filtering itself.
+
+Each accepted message is written to a `.eml` file, with the envelope recipients prepended
+as an `X-Codee-Rcpt` header so routing matches the real `RCPT TO` rather than only the
+visible `To`.
+
+:::warning[Check where the files land]
+
+The server writes to a `temp-emails/` directory next to its own installation, while the
+executor reads `temp-emails/` in your project directory. When Codee is installed as a
+package these are not the same place. Send one test message, find the `.eml` file, and if
+it is not in your project's `temp-emails/`, symlink it there or use your own delivery
+mechanism.
+:::
+
+### 3. Declare the trigger
+
+```yaml
+x-codee-trigger: email
+x-codee-email-address: bugs@codee.example.com
+```
+
+The address is matched case-insensitively against every recipient of the message, in this
+order: `X-Codee-Rcpt`, `Delivered-To`, `To`, `Cc`, `Bcc`. The first skill that matches
+runs.
+
+One address belongs to one skill. If two skills claim the same address, Codee keeps the
+first and logs a warning about the other.
+
+In the UI, pick `email trigger` as the **Skill type** and fill in **Email address**.
+
+### 4. Write the prompt
+
+Put `{CONTENT}` where the message should go:
+
+```markdown
+# Email Bug Intake
+
+A bug report arrived by email:
+
+{CONTENT}
+
+1. Read the whole thread, including quoted replies and attachments.
+2. Extract the reported behaviour, the expected behaviour, and the environment.
+3. Search the Issue Tracker for a duplicate before creating anything.
+4. Create the bug with a reproduction, severity, and the affected component.
+5. Reply to the reporter with the issue key.
+```
+
+Leave `{CONTENT}` out and the message is appended to the end of the body instead.
+
+What the agent receives is:
+
+- every header, one per line;
+- the body, plain text preferred and HTML as a fallback;
+- a list of attachments, each saved to a temporary file and given by path, so the agent
+  can open a screenshot or a log.
+
+Ask for a duplicate check. An address people can mail is an address people mail twice.
+
+### 5. Send a test message
+
+```bash
+swaks --to bugs@codee.example.com --from you@yourcompany.com \
+      --server localhost:2525 --body 'Checkout fails with a 500 on the payment step.'
+```
+
+The run appears on the **Runs** page within a minute.
+
+## How a message is handled
+
+1. Each tick takes up to **three** `.eml` files, oldest name first, across all email
+   skills.
+2. A message from a domain outside `CODEE_ALLOWED_SENDER_DOMAINS` is deleted and nothing
+   runs.
+3. A message no skill claims is deleted and nothing runs.
+4. Otherwise the prompt is rendered and the agent runs.
+5. On success the file is deleted.
+6. On failure the file is **kept** and tried again on a later tick.
+
+## Things worth knowing
+
+- **A failing message retries forever.** Point 6 has no attempt limit. If a skill keeps
+  failing on one email, the fix is to delete the `.eml` file from `temp-emails/`.
+- **Three per tick.** A backlog drains at three messages a minute at best, and slower when
+  runs are long, because each run blocks the tick.
+- **No reply is sent for you.** If the reporter should hear back, say so in the skill body
+  and give the agent a way to send it.
+- **Attachments are written to a temporary directory** outside the project. They are not
+  cleaned up by Codee.

@@ -1,0 +1,8 @@
+{
+  "label": "Skill triggers",
+  "position": 4,
+  "link": {
+    "type": "doc",
+    "id": "triggers/index"
+  }
+}

@@ -1,0 +1,133 @@
+---
+sidebar_position: 4
+---
+
+# AWS SQS trigger
+
+An SQS-triggered skill runs when a message arrives on an Amazon SQS queue. The message
+body is passed to the agent as the content to work on.
+
+This is how you hand Codee anything that already produces events: CloudWatch alarms,
+canary failures, deploy notifications, a webhook your own service forwards.
+
+```yaml
+---
+name: aws-sqs-alarm-response
+description: Investigate a production alarm and record the findings in the Issue Tracker.
+disable-model-invocation: true
+x-codee-trigger: aws-sqs
+x-codee-aws-sqs-queue: codee-alarms
+---
+```
+
+Codee ships with this skill, so you have a working example in
+`.claude/skills/aws-sqs-alarm-response/SKILL.md`.
+
+## Setup
+
+### 1. Create the queue
+
+Create a standard SQS queue in the same AWS account Codee will use. Set its **visibility
+timeout** to at least two hours: Codee sets two hours when it receives a message, but a
+queue-level default below that still applies to anything Codee is not currently holding.
+
+Add a dead-letter queue with a low `maxReceiveCount`, say 3. Without one, a message the
+agent keeps failing on comes back forever.
+
+### 2. Give Codee AWS credentials
+
+Codee uses boto3, so any credential source boto3 understands works: environment
+variables, `~/.aws/credentials`, an instance or IRSA role. **A region is required** —
+`AWS_DEFAULT_REGION` or a region in the profile.
+
+The identity needs three permissions on the queue:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueUrl"],
+  "Resource": "arn:aws:sqs:eu-central-1:123456789012:codee-alarms"
+}
+```
+
+`sqs:GetQueueUrl` is only needed when the skill names the queue by name rather than by
+URL.
+
+If AWS is not configured, SQS triggers simply stay idle. Codee says so once in the log and
+carries on with the other triggers.
+
+### 3. Declare the trigger
+
+```yaml
+x-codee-trigger: aws-sqs
+x-codee-aws-sqs-queue: codee-alarms
+```
+
+`x-codee-aws-sqs-queue` takes either a queue **name** in the configured account and
+region, or a full queue **URL**:
+
+```yaml
+x-codee-aws-sqs-queue: https://sqs.eu-central-1.amazonaws.com/123456789012/codee-alarms
+```
+
+Use the URL for a queue in another account or region.
+
+In the UI, pick `aws-sqs trigger` as the **Skill type** and fill in **AWS SQS queue**.
+
+### 4. Write the prompt
+
+Put `{CONTENT}` where the message body should go:
+
+```markdown
+# Alarm Response
+
+An alarm was triggered with this content:
+
+{CONTENT}
+
+## Workflow
+
+1. Determine which service or user flow is affected.
+2. Gather relevant logs, metrics, traces, request data, and screenshots.
+3. Identify the likely cause, impact, and any immediate mitigation.
+4. Search the Issue Tracker for an existing open issue about the same problem.
+5. Create or update one issue with the evidence and the recommended action.
+```
+
+Leave `{CONTENT}` out and the message body is appended to the end of the body instead.
+
+The content is the **raw message body**, as a string. For an SNS-to-SQS subscription that
+is the SNS envelope JSON with the real payload in its `Message` field, unless raw message
+delivery is on — tell the agent which one to expect.
+
+### 5. Send a test message
+
+```bash
+aws sqs send-message \
+  --queue-url https://sqs.eu-central-1.amazonaws.com/123456789012/codee-alarms \
+  --message-body 'Test alarm: checkout latency above 5s for 10 minutes.'
+```
+
+The run appears on the **Runs** page within a minute.
+
+## How a message is handled
+
+1. Once per tick, each SQS skill receives **one** message from its queue, with no long
+   polling — an empty queue costs one fast call.
+2. The message becomes invisible to other consumers for two hours.
+3. The prompt is rendered and the agent runs.
+4. On success the message is deleted and the run is recorded as succeeded.
+5. On failure the message is **not** deleted. It becomes visible again when the two hours
+   are up and is delivered anew, which is what the dead-letter queue is for.
+
+## Things worth knowing
+
+- **One message per skill per tick.** A tick is a minute, so a queue drains at roughly
+  one message a minute, slower if runs are long. SQS is a buffer here, not a fan-out.
+- **The run blocks the tick.** Every other trigger on that tick waits for the agent to
+  finish.
+- **Delivery is at-least-once.** SQS can deliver the same message twice, and a crash
+  after the agent worked but before the delete has the same effect. Make the skill check
+  for an existing ticket before it creates one.
+- **Several skills can watch the same queue.** Each takes its own message, so which skill
+  gets which message is not something you can control. Use one queue per skill.

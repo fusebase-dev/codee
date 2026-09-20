@@ -1,0 +1,118 @@
+---
+sidebar_position: 2
+---
+
+# Issue trigger
+
+An issue-triggered skill runs when a work item in your issue tracker is of a given type
+**and** in a given status. This is how Codee does development work: it picks the issue up,
+does the work, and moves the issue to the next status.
+
+```yaml
+---
+name: task-developer
+description: Implement a standalone Issue Tracker task and submit a pull request.
+disable-model-invocation: true
+x-codee-trigger: issue
+x-codee-issue-status: ['AI Ready for development', 'AI In Progress']
+x-codee-issue-type: task
+argument-hint: <TASK_ID>
+---
+```
+
+## Setup
+
+### 1. Connect a tasks provider
+
+Issue triggers are the only trigger that needs a tasks provider. Set up Jira or Azure
+DevOps under **Settings → Tasks provider** and use **Verify connection** to check it. See
+[Configuration](../configuration#tasks-provider-configuration).
+
+Nothing is polled until the provider is configured.
+
+### 2. Map the work items
+
+Codee has its own work items, and each one is mapped to the work item types your provider
+actually uses. `story` and `task` always exist:
+
+| Codee work item | Jira | Azure DevOps |
+| --- | --- | --- |
+| `story` | `Story` | `User Story` |
+| `task` | `Task` | `Task` |
+
+Add a row under **Settings → Tasks provider → Work items** for anything else you want
+skills for. See [Configuration](../configuration#work-items).
+
+### 3. Create the statuses
+
+Create the statuses your skills will trigger on, and the transitions between them, in
+your provider's workflow.
+
+The two tutorials walk through this for each provider:
+
+- [Working on tasks in Jira](../tutorials/working-on-tasks-in-jira)
+- [Working on tasks in Azure DevOps](../tutorials/working-on-tasks-in-azure-devops)
+
+### 4. Declare the trigger
+
+```yaml
+x-codee-trigger: issue
+x-codee-issue-type: task
+x-codee-issue-status: ['AI Ready for development', 'AI In Progress']
+```
+
+`x-codee-issue-type` takes **one** Codee work item, and it has to be one of the work items
+configured in Settings. A skill for a `bug` row you added yourself uses
+`x-codee-issue-type: bug`.
+
+`x-codee-issue-status` takes one status or a list. Names are matched case-insensitively,
+but otherwise they have to match the provider exactly — `AI Ready for CR` and
+`AI ready for code review` are different statuses.
+
+### 5. Say where the issue goes next
+
+Codee does not move the issue for you. The skill body tells the agent to do it:
+
+```markdown
+Move the task to `AI In Progress` before doing any work.
+Move it to `AI Ready for CR` once the change is complete and its pull request is open.
+```
+
+Moving the issue out of the triggering status is what stops it being picked up again on
+the next poll. A skill that triggers on `AI Ready for development` and leaves the issue
+there runs again every minute.
+
+The **Workflow** page draws the statuses and the skills that connect them, which is the
+fastest way to see where an issue can get stuck.
+
+## How the match works
+
+On each tick Codee asks the provider for issues in every status any issue skill triggers
+on, narrowed by the mapped work item types and by
+[Custom JQL / WIQL](../configuration#custom-jql--wiql) if you set one. For each issue it
+finds the first skill whose issue type and status both match, and runs it as:
+
+```
+/task-developer PROJ-4192
+```
+
+The skill name in that command is the **folder name** under `.claude/skills/`, so keep the
+folder name and the `name` field the same.
+
+One issue type and status pair should be claimed by one skill. If two skills claim the
+same pair, the first one found wins and the other never runs.
+
+## Things worth knowing
+
+- **Subtasks of a Codee story are skipped.** When a story is Codee's, its children are
+  driven by the story's own run rather than picked up on their own.
+- **A task already running is not started twice.** An issue with an agent in flight is
+  skipped on later ticks until that agent finishes.
+- **Failures are retried.** If the agent fails, the issue keeps its status, so the next
+  poll picks it up again. Both attempts are on the **Runs** page.
+- **Over the parallel cap, issues wait.** Anything beyond
+  [Max parallel tasks](../configuration#max-parallel-tasks) keeps its status and is picked
+  up on a later tick.
+- **Every run is a fresh session.** Codee never resumes a previous one, so a skill that
+  picks work back up has to find its own state: the issue's comments, the branch, the open
+  pull request.

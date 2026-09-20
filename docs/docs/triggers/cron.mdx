@@ -1,0 +1,87 @@
+---
+sidebar_position: 3
+---
+
+# Cron trigger
+
+A cron-triggered skill runs on a schedule. Use it for recurring work nobody files a ticket
+for: a nightly log review, a weekly dependency check, a report every Monday morning.
+
+```yaml
+---
+name: cron-research-5xx-errors
+description: Investigate frequent 5xx errors from the last 24 hours and report the findings.
+disable-model-invocation: true
+x-codee-trigger: cron
+x-codee-cron: 0 0 * * 2-6
+---
+```
+
+Codee ships with this skill, so you have a working example in
+`.claude/skills/cron-research-5xx-errors/SKILL.md`.
+
+## Setup
+
+There is nothing to connect. Add the two fields and the skill starts running on schedule.
+
+### The cron expression
+
+`x-codee-cron` is a standard five-field expression:
+
+```
+minute hour day-of-month month day-of-week
+│      │    │            │     │
+0-59   0-23 1-31         1-12  0-7 (0 and 7 are both Sunday)
+```
+
+Each field takes `*`, a number, a `1-5` range, a `1,3,5` list, and a `*/15` step.
+
+| Expression | Runs |
+| --- | --- |
+| `0 0 * * *` | every day at midnight |
+| `0 0 * * 2-6` | midnight, Tuesday through Saturday |
+| `*/30 * * * *` | every 30 minutes |
+| `0 9 * * 1` | Mondays at 09:00 |
+| `0 6 1 * *` | 06:00 on the first of the month |
+
+When both day-of-month and day-of-week are restricted, either one matching is enough —
+the same rule standard cron uses.
+
+In the UI, pick `cron trigger` as the **Skill type** and fill in **Cron expression**.
+Below the field, Codee describes the schedule in words. Check it before you save.
+
+:::warning[Times are the server's local time]
+
+Codee compares the expression against the local clock of the machine the executor runs on.
+There is no timezone field. If that machine is on UTC, `0 9 * * 1` is 09:00 UTC.
+:::
+
+### The prompt
+
+The body of the skill file is sent to the agent as it is.
+
+Write it as a standing instruction, and say what the output should be — a ticket, a
+comment, a commit. An agent run that only prints to a log nobody reads is wasted:
+
+```markdown
+# 5xx Error Review
+
+1. Review available gateway, ingress, and application logs for the last 24 hours.
+2. Group 5xx responses by root cause or failing endpoint.
+3. Investigate the three most frequent groups.
+4. For each group, record frequency, impact, evidence, likely cause, and recommended action.
+5. Create one Issue Tracker report, or update an existing open issue when it covers the same errors.
+
+Do not make speculative code changes. Clearly separate confirmed findings from hypotheses.
+```
+
+## Running one now
+
+Open the skill in the UI and click **Run on next tick**. It runs once on the next tick,
+ignoring the schedule, and the schedule is untouched.
+
+## Things worth knowing
+
+- **One run at a time, and it blocks the tick.** Every other trigger on that tick waits
+  for it. Keep scheduled work short, or accept that it delays the rest.
+- **Several skills can share a schedule.** They run one after another in the same tick.
