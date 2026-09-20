@@ -6,6 +6,13 @@ Codee works with Jira and Azure DevOps as tasks providers, new providers are qui
 
 As agents it currently works with Claude Code, Github Copilot and Codex.
 
+## Documentation
+
+Full documentation is at [fusebase-dev.github.io/codee](https://fusebase-dev.github.io/codee/), covering
+installation, configuration and tutorials for working on tasks in Jira and Azure DevOps. There is also a
+[click-through demo of the admin UI](https://fusebase-dev.github.io/codee/demo/) that runs without installing
+anything.
+
 ## Run Codee
 
 Codee lives in its own directory, where it keeps skills, memory, temp files and config.
