@@ -40,6 +40,12 @@ skill will pick up either. If a list of type names is not enough, for example wh
 is Codee's only if it has a certain label, switch the row to **JQL (Advanced)** and write
 the condition yourself.
 
+<figure className="image-block">
+  <img src={require('./img/work_items.png').default} alt="Creating a work item" />
+  <figcaption>Codee's Settings for work items.</figcaption>
+</figure>
+
+
 **Add work item** adds a work item of your own, for example a `bug` row mapped to `Bug`. It
 is worked by skills that declare `x-codee-issue-type: bug` and gets its own graph on the
 Workflow page. Add a work item when it needs skills of its own; add another type to an
@@ -59,6 +65,11 @@ makes is attributed to that user. Create a separate one for it rather than reusi
 person's account, so a glance at an issue's history tells you what the AI did and what a
 person did. Its email and API token are what you paste into
 **Settings → Tasks provider**.
+
+<figure className="image-block">
+  <img src={require('./img/jira_settings.png').default} alt="Settings for Jira connection" />
+  <figcaption>Codee's Settings for Jira connection.</figcaption>
+</figure>
 
 On Jira Cloud:
 
