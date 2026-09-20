@@ -8,37 +8,24 @@ Codee works in Azure DevOps like a teammate does. It watches your organization f
 items in a state it handles, picks them up, does the work, and moves the work item to the
 next state.
 
-To hand a work item to Codee, **set it to an `AI` state**. That is the whole handover — the
-`AI` states are what your team and Codee agree mean "this one is the AI's now", which is why
-they must be states nothing else in your process uses.
+To hand a work item to Codee, **move it into a state Codee watches**. What marks a work item
+as the AI's is that state together with the other two filters: the work item type, through
+the types mapped to Codee's work items, and a custom WIQL if you set one. This tutorial uses
+dedicated `AI` states that nothing else in your process touches, which is the simplest
+version of that agreement. If you would rather reuse the states you already have, let the
+work item type or the WIQL be what separates Codee's work items from everyone else's.
 
-Nothing is filtered on the assignee. A work item reaching an `AI` state is picked up whoever
-it is assigned to, so leave it with whoever owns it — you will want it back on them when
-Codee hands it to `AI Ready for Human review`.
-
-There is one more requirement: the work item has to be of a type you listed under
-**Settings → Tasks provider → Work items**. Codee ignores every other type, even in a
-matching state.
-
-You do not have to create anything in Azure DevOps for that. Codee has two work items of
-its own, `story` and `task`, and out of the box they are mapped to the standard `User Story`
-and `Task`, which is what this tutorial uses. You can map them to other types, map several
-types to one row, or add work items of your own — see
+You do not have to create anything in Azure DevOps for the types. Codee has two work items
+of its own, `story` and `task`, and out of the box they are mapped to the standard
+`User Story` and `Task`, which is what this tutorial uses. You can map them to other types,
+map several types to one row, or add work items of your own. See
 [Which work items Codee polls](#which-work-items-codee-polls).
 
 :::warning[The `AI` states have to be Codee's alone]
 
-Because state is the only handover, any work item of a mapped type that lands in one of
-these states gets worked on. Do not reuse an existing state your team already moves work
-items through, and do not add an `AI` state to a type Codee should not be driving.
-:::
-
-:::tip[You can still narrow the queue yourself]
-
-**Settings → Tasks provider → Custom WIQL** adds one more `AND` condition to every poll, so
-an organization that does want an owner filter — or a tag, or an area path — writes it
-there. `[System.AssignedTo] = @Me` restores the assignee filter Codee used to apply on its
-own. See [Configuration](../configuration).
+Any work item of a mapped type that lands in one of these states gets worked on. Do not
+reuse an existing state your team already moves work items through, and do not add an `AI`
+state to a type Codee should not be driving.
 :::
 
 This tutorial shows how to set up the account and the app registration, how to map the work
@@ -77,10 +64,6 @@ Create a separate Entra ID user for Codee instead of reusing a person's account:
 - It is the account whose project access decides what a poll can see, so its membership is
   how you keep Codee out of projects it has no business in.
 
-Its identity has no effect on *which* work items are picked up — the poll does not filter on
-an assignee — so this account needs permission to *act* in a project and to read it, not to
-be assigned work in it.
-
 1. Pick an email address for Codee, for example `codee@yourcompany.com`, in the Entra ID
    directory that backs your Azure DevOps organization.
 2. Add it to the organization: **Organization settings → Users → Add users**. Give it the
@@ -96,9 +79,9 @@ projects and act on a work item in them.
 
 ## Which work items Codee polls
 
-Skills trigger on Codee's own work item names (`x-codee-issue-type: story`,
-`x-codee-issue-type: task`). **Settings → Tasks provider → Work items** is where you map
-each of those to the types your organization uses. Out of the box:
+Codee has work items of its own, `story` and `task`.
+**Settings → Tasks provider → Work items** is where you map each of them to the types your
+organization uses. Out of the box:
 
 | Codee work item | Azure DevOps type |
 | --- | --- |
@@ -113,9 +96,9 @@ lists the types defined across the organization's projects, and pick the right o
 row. On Scrum, map `story` to `Product Backlog Item`; on Basic, map `task` to `Issue`.
 
 One row can name several types. If your team works bugs the same way it works tasks, map
-`task` to both `Task` and `Bug`, and every task skill will pick up either. If no list of
-type names covers what you need — a `Bug` that is Codee's only when it is tagged — switch
-the row to **WIQL (Advanced)** and write the condition yourself.
+`task` to both `Task` and `Bug`, and every task skill will pick up either. If a list of type
+names is not enough, for example when a `Bug` is Codee's only if it has a certain tag,
+switch the row to **WIQL (Advanced)** and write the condition yourself.
 
 **Add work item** adds a row of your own, for example a `bug` mapped to your `Bug` type.
 Skills can then declare `x-codee-issue-type: bug`, and the Workflow page draws that work
@@ -152,11 +135,12 @@ WIQL condition gives you the same separation without new types, so it is worth t
 
 ### Why separate states
 
-Type says the work item is one Codee handles at all. State is the only thing that says the
-work item is Codee's now, and what Codee should do with it.
+Type says the work item is one Codee handles at all. In this tutorial, state is the only
+thing that says the work item is Codee's now, and what Codee should do with it.
 
 Codee polls for work items whose `System.State` matches a skill's `x-codee-issue-status`
-trigger. The `AI` prefix keeps Codee's stages visible on the board.
+trigger. The `AI` prefix sorts Codee's stages next to each other and shows on the board that
+the work item is Codee's.
 
 ### Create an inherited process
 
@@ -582,5 +566,3 @@ Work through these in order - they follow the query Codee actually runs:
    Empty them to rule them out.
 6. **Is its parent a story?** Then it is skipped on purpose - its parent's run drives it.
    With the default mapping that means any `Task` under a `User Story`.
-
-Note that the assignee is *not* on this list: it is not part of the query at all.
