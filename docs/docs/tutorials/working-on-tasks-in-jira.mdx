@@ -7,12 +7,12 @@ sidebar_position: 1
 Codee works in Jira like a teammate does. It watches your project for issues in a status
 it handles, picks them up, does the work, and moves the issue to the next status.
 
-To hand an issue to Codee, **set it to an `AI` status**. That is the whole handover — the
-`AI` statuses are what your team and Codee agree mean "this one is the AI's now", which is
-why they must be statuses nothing else in your workflow uses.
-
-For a story, also add the `CodeeStory` label, which tells Codee to drive the whole story
-and its subtasks from the story issue.
+To hand an issue to Codee, **move it into a status Codee watches**. What marks an issue as
+the AI's is that status together with the other two filters: the issue type, through the
+types mapped to Codee's work items, and a custom JQL if you set one. This tutorial uses
+dedicated `AI` statuses that nothing else in your workflow touches, which is the simplest
+version of that agreement. If you would rather reuse the statuses you already have, let the
+work item type or the JQL be what separates Codee's issues from everyone else's.
 
 This tutorial shows how to create those statuses and how a story and a task move through
 them.
@@ -24,10 +24,9 @@ Codee polls the project you set under **Settings → Tasks provider → Project 
 **Settings → Tasks provider → Work items** and in one of the statuses its skills trigger
 on.
 
-You do not have to create anything in Jira for that. Codee has work items of its own, the
-names skills declare in `x-codee-issue-type`, and that section maps each of them to the
-issue types your project already uses. `story` and `task` are always there, mapped to Jira's
-`Story` and `Task` by default:
+You do not have to create anything in Jira for that. Codee has work items of its own, and
+that section maps each of them to the issue types your project already uses. `story` and
+`task` are always there, mapped to Jira's `Story` and `Task` by default:
 
 | Codee work item | Jira issue type |
 | --- | --- |
@@ -37,44 +36,21 @@ issue types your project already uses. `story` and `task` are always there, mapp
 To change either one, click **Load types from provider**, which lists the issue types of the
 configured project, and pick the right one. A row can name several types, so if your team
 works bugs the same way it works tasks, map `task` to both `Task` and `Bug` and every task
-skill will pick up either. If no list of type names covers what you need — a `Bug` that is
-Codee's only when it has a label — switch the row to **JQL (Advanced)** and write the
-condition yourself.
+skill will pick up either. If a list of type names is not enough, for example when a `Bug`
+is Codee's only if it has a certain label, switch the row to **JQL (Advanced)** and write
+the condition yourself.
 
 **Add work item** adds a work item of your own, for example a `bug` row mapped to `Bug`. It
 is worked by skills that declare `x-codee-issue-type: bug` and gets its own graph on the
 Workflow page. Add a work item when it needs skills of its own; add another type to an
 existing row when it does not. See [Configuration](../configuration#work-items).
 
-Nothing is filtered on the assignee. An issue reaching an `AI` status is picked up whoever
-it is assigned to, so leave it with whoever owns it — you will want it back on them when
-Codee hands it to `AI Ready for Human review`.
-
-If you do want the queue narrowed further, **Settings → Tasks provider → Custom JQL** adds
-one more `AND` condition to every poll — an assignee, a label, a component. See
-[Configuration](../configuration).
-
 :::warning[The `AI` statuses have to be Codee's alone]
 
-Because status is the only handover, any issue of a mapped type that lands in one of these
-statuses gets worked on. Do not reuse an existing status your team already moves issues
-through, and do not add an `AI` status to a workflow Codee should not be driving.
+Any issue of a mapped type that lands in one of these statuses gets worked on. Do not reuse
+an existing status your team already moves issues through, and do not add an `AI` status to
+a workflow Codee should not be driving.
 :::
-
-:::tip[Label the story `CodeeStory`]
-
-Add the `CodeeStory` label to a story you hand to Codee. Codee then runs the whole story
-from the story issue itself and manages the subtasks inside that run, moving their statuses
-itself to keep track of where each one is. You do not need to assign them or move them
-along.
-
-The label also stops Codee from picking the subtasks up separately. Without it, any
-subtask that sits in a matching status is treated as its own piece of work.
-:::
-
-Stories and tasks share one queue, ordered by priority first and then oldest. So the Jira
-**Priority** field controls what Codee works on next: raise the priority of an issue and
-Codee takes it before the others waiting.
 
 ### Set up the Codee account
 
@@ -83,10 +59,6 @@ makes is attributed to that user. Create a separate one for it rather than reusi
 person's account, so a glance at an issue's history tells you what the AI did and what a
 person did. Its email and API token are what you paste into
 **Settings → Tasks provider**.
-
-Its identity has no effect on what gets picked up — the poll does not filter on an
-assignee — so this account needs permission to *act* in the project, not to be assigned
-work in it.
 
 On Jira Cloud:
 
@@ -116,8 +88,8 @@ project and act on an issue in it.
 
 ### Why separate statuses
 
-Status is the only thing that says an issue is Codee's, and what Codee should do with it
-now.
+In this tutorial, status is the only thing that says an issue is Codee's, and what Codee
+should do with it now.
 
 Codee polls Jira for issues whose status matches a skill's `x-codee-issue-status` trigger.
 The `AI` statuses exist so that anyone looking at the board can see at a glance which
@@ -133,8 +105,8 @@ Nothing here is fixed. You can create different statuses, have them run differen
 and wire different transitions between them. Codee is fully customizable here.
 :::
 
-Create these eight statuses. The `AI` prefix keeps them together in lists and makes it
-clear on the board who owns the issue.
+Create these eight statuses. The `AI` prefix sorts them next to each other in lists and
+shows on the board that the issue is Codee's.
 
 The `Assignee` column says who acts next. It is a convention for your board, not
 something Codee reads — the status alone decides what it picks up.
