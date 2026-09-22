@@ -126,6 +126,7 @@ def trigger_cron_skills(
                 f"[cron_skills] Claude response for {skill.name} ({len(response)} chars)")
             runs_db.record_run(skill.name, "cron", session_id,
                                "succeeded", message=skill.body,
+                               user_message=skill.body, response=response,
                                main_context=main_context)
         except Exception as exc:
             # Don't advance the state slot: leave the job "due" so a later tick
@@ -135,6 +136,7 @@ def trigger_cron_skills(
                 f"[cron_skills] Failed to run {skill.name}, will retry: {exc}")
             runs_db.record_run(skill.name, "cron", session_id, "failed",
                                error=str(exc)[:500], message=skill.body,
+                               user_message=skill.body,
                                main_context=main_context)
             continue
         if is_forced:

@@ -266,6 +266,8 @@ class RunTaskLoggingTest(unittest.TestCase):
         self.assertEqual(run["status"], "succeeded")
         self.assertEqual(run["session_id"], "sid-1")
         self.assertEqual(run["message"], "/story-developer NIM-1")
+        self.assertEqual(run["user_message"], "/story-developer NIM-1")
+        self.assertEqual(run["response"], "done")
 
     def test_failed_run_is_recorded_with_the_error(self) -> None:
         with patch.object(executor, "_run_agent", side_effect=RuntimeError("over limit")):
@@ -298,6 +300,7 @@ class RunTaskLoggingTest(unittest.TestCase):
 
         run_record, = self._runs()
         self.assertEqual(run_record["message"], "/story-developer 4124")
+        self.assertEqual(run_record["user_message"], prompt)
         # The agent still gets the wording it can act on.
         self.assertEqual(run.call_args.args[0], prompt)
 

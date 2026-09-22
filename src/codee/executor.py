@@ -314,6 +314,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
                            started_at=started_at, message=shown,
+                           user_message=message, response=response,
                            main_context=context)
     except Exception as exc:
         # Over-limit / transient failure: leave the task in its current
@@ -322,7 +323,8 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
         log.debug("%s failed with:\n%s", task_id, traceback.format_exc())
         runs_db.record_run(skill_name, "issue", session_id, "failed",
                            error=str(exc)[:500], started_at=started_at,
-                           message=shown, main_context=context)
+                           message=shown, user_message=message,
+                           main_context=context)
     finally:
         with _inflight_lock:
             _inflight.discard(task_id)

@@ -254,7 +254,10 @@ class RunRecord(BaseModel):
     status: str
     error: str
     started_at: str
+    session_id: str
     message: str
+    user_message: str
+    response: str
     preview: str
     viewer_url: str
 
@@ -798,7 +801,10 @@ class AdminState(rx.State):
                 status=run["status"],
                 error=run.get("error") or "",
                 started_at=run["started_at"],
+                session_id=run.get("session_id") or "",
                 message=message,
+                user_message=(run.get("user_message") or message).strip(),
+                response=(run.get("response") or "").strip(),
                 preview=preview[:120] + ("..." if len(preview) > 120 else ""),
                 viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
                             if SERVICE.session_viewer and run.get("session_id") else ""),
@@ -2386,6 +2392,9 @@ def run_row(run: RunRecord) -> rx.Component:
                                 rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
                       rx.text(run.started_at, color=MUTED, font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
+                          rx.text("Thread ID: ", run.session_id, color=MUTED,
+                              font_size="0.8rem",
+                              font_family="IBM Plex Mono, monospace"),
                       rx.text(run.preview, color=MUTED),
                       rx.cond(run.error != "", rx.text(
                           run.error, color="#b42318", font_size="0.85rem")),
@@ -2394,8 +2403,14 @@ def run_row(run: RunRecord) -> rx.Component:
             rx.cond(run.viewer_url != "", rx.link(rx.icon("external-link", size=16), href=run.viewer_url,
                                                   is_external=True, aria_label="View session", color=ACCENT)),
             gap="1rem", align="start", width="100%"),
-        rx.cond(run.message != "", rx.accordion.root(rx.accordion.item(
-            header="Full message", content=rx.text(run.message, white_space="pre-wrap"), value=run.started_at),
+        rx.cond((run.user_message != "") | (run.response != ""), rx.accordion.root(rx.accordion.item(
+            header="Run info", content=rx.vstack(
+                rx.text("User message", font_weight="600"),
+            rx.text(run.user_message, white_space="pre-wrap"),
+                rx.cond(run.response != "", rx.fragment(
+                    rx.text("LLM response", font_weight="600", margin_top="0.75rem"),
+                    rx.text(run.response, white_space="pre-wrap"))),
+                spacing="2", align="start", width="100%"), value=run.started_at),
             collapsible=True, width="100%")),
         padding="1rem", background=SURFACE, border=BORDER, width="100%")
 
