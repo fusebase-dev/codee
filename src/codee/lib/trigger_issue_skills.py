@@ -34,6 +34,10 @@ class IssueTriggeredSkill:
     # The agent this skill asks to be run by (``x-codee-agent``), empty when it
     # names none and the default agent from Settings should drive it.
     agent: str = ""
+    # What the skill calls the value it's invoked with (``argument-hint:
+    # <STORY_ID>``), empty when it names none. Agents that spell the invocation
+    # out instead of sending a slash command label the task id with it.
+    argument_name: str = ""
 
 
 def find_issue_triggered_skills(
@@ -91,6 +95,7 @@ def find_issue_triggered_skills(
             issue_type=issue_type,
             model=str(metadata.get("model", "")).strip(),
             agent=str(metadata.get("x-codee-agent", "") or "").strip(),
+            argument_name=_argument_name(metadata.get("argument-hint")),
         ))
     return skills
 
@@ -122,6 +127,18 @@ def _parse_frontmatter(contents: str) -> dict[str, Any]:
         return {}
     parsed = yaml.safe_load(parts[1]) or {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _argument_name(value: Any) -> str:
+    """The name a skill's ``argument-hint`` gives its first argument.
+
+    ``<STORY_ID>`` names ``STORY_ID`` and ``<TASK_ID> [continue]`` names
+    ``TASK_ID``: an issue trigger passes exactly one value, and that value is
+    the first the hint describes. Anything optional behind it is the skill's
+    own business and never reaches the invocation.
+    """
+    words = str(value or "").strip().split()
+    return words[0].strip("<>[]").strip() if words else ""
 
 
 def _status_values(value: Any) -> tuple[str, ...]:

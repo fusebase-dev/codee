@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
@@ -186,6 +187,33 @@ class AgentForSkillTest(unittest.TestCase):
                       executor.coding_agent)
 
 
+class SkillPromptTest(unittest.TestCase):
+    """The invocation a skill gets is phrased by the agent that will run it."""
+
+    SKILL = Path("/repo/.claude/skills/story-code-reviewer/SKILL.md")
+
+    def test_claude_code_gets_the_slash_command(self) -> None:
+        agent = ClaudeCodeAgent(Settings(), Path("/repo"))
+
+        self.assertEqual(
+            agent.skill_prompt("story-code-reviewer", self.SKILL, "90939",
+                               "STORY_ID"),
+            "/story-code-reviewer 90939",
+        )
+
+    def test_copilot_gets_told_to_read_the_skill_file(self) -> None:
+        # `copilot` resolves no slash command and the skill hides itself with
+        # disable-model-invocation, so the path has to be spelled out.
+        agent = GitHubCopilotAgent(Settings(), Path("/repo"))
+
+        self.assertEqual(
+            agent.skill_prompt("story-code-reviewer", self.SKILL, "90939",
+                               "STORY_ID"),
+            "Read .claude/skills/story-code-reviewer/SKILL.md and follow its "
+            "instructions exactly. STORY_ID = 90939",
+        )
+
+
 class RunAgentSelectionTest(unittest.TestCase):
     """The agent a run lands on is the one the triggering skill asked for."""
 
@@ -257,6 +285,48 @@ class RunTaskLoggingTest(unittest.TestCase):
                              side_effect=TypeError("missing 1 required positional argument")):
             self.assertEqual(executor._run_agent("/story-developer NIM-4", "sid-4"),
                              "done")
+
+    def test_the_run_log_shows_the_command_not_the_agents_wording(self) -> None:
+        # A Copilot run is prompted with the skill's file path, but the run log
+        # is still the slash command, so both agents' runs read the same.
+        prompt = ("Read .claude/skills/story-developer/SKILL.md and follow its "
+                  "instructions exactly. STORY_ID = 4124")
+
+        with patch.object(executor, "_run_agent", return_value="done") as run:
+            executor._run_task("NIM-5", prompt, "sid-5", "story-developer",
+                               label="/story-developer 4124")
+
+        run_record, = self._runs()
+        self.assertEqual(run_record["message"], "/story-developer 4124")
+        # The agent still gets the wording it can act on.
+        self.assertEqual(run.call_args.args[0], prompt)
+
+    def test_a_failed_run_is_logged_under_the_command_too(self) -> None:
+        with patch.object(executor, "_run_agent", side_effect=RuntimeError("boom")):
+            executor._run_task("NIM-6", "Read .claude/skills/x/SKILL.md ...",
+                               "sid-6", "story-developer",
+                               label="/story-developer 4124")
+
+        run_record, = self._runs()
+        self.assertEqual(run_record["message"], "/story-developer 4124")
+
+    def test_the_live_job_row_carries_the_command(self) -> None:
+        with patch.object(executor.coding_agent, "run", return_value="done"), \
+                patch.object(runs_db, "start_job",
+                             return_value="job-1") as started:
+            executor._run_agent("Read .claude/skills/x/SKILL.md ...", "sid-7",
+                                label="/story-developer 4124")
+
+        self.assertEqual(started.call_args.args[1], "/story-developer 4124")
+
+    def test_a_run_with_no_label_is_shown_as_its_prompt(self) -> None:
+        # Cron, email and SQS hand over a skill body and have no command to show.
+        with patch.object(executor, "_run_agent", return_value="done"):
+            executor._run_task("NIM-7", "Do the nightly sweep", "sid-8",
+                               "nightly")
+
+        run_record, = self._runs()
+        self.assertEqual(run_record["message"], "Do the nightly sweep")
 
     def test_counts_include_issue_runs(self) -> None:
         with patch.object(executor, "_run_agent", return_value="done"):

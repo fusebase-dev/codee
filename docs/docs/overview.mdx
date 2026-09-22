@@ -53,6 +53,12 @@ This means that this skill will be triggered on a work item with type `story` (`
 
 Codee will run this skill for a specific task like this: `/story-developer TSK-4192`.
 
+Agents that do not resolve `.claude/skills` slash commands are pointed at the skill file
+instead — GitHub Copilot gets
+`Read .claude/skills/story-developer/SKILL.md and follow its instructions exactly. STORY_ID = TSK-4192`,
+where `STORY_ID` is the name from `argument-hint`. The dashboard and the run log still show
+the run as `/story-developer TSK-4192` whichever agent picked it up.
+
 ### Skill triggers
 
 A trigger is what makes Codee run a skill on its own. There are four:

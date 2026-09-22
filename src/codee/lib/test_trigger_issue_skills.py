@@ -19,6 +19,27 @@ class IssueTriggeredSkillsTest(unittest.TestCase):
         directory.mkdir()
         (directory / "SKILL.md").write_text(f"---\n{frontmatter}---\nBody\n")
 
+    def test_reads_the_argument_name_out_of_the_argument_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            common = ("disable-model-invocation: true\nx-codee-trigger: issue\n"
+                      "x-codee-issue-status: [Ready]\nx-codee-issue-type: story\n")
+            self._skill(root, "bracketed",
+                        common + "argument-hint: <STORY_ID>\n")
+            self._skill(root, "bare", common + "argument-hint: STORY_ID\n")
+            self._skill(root, "several",
+                        common + "argument-hint: <TASK_ID> [continue]\n")
+            self._skill(root, "none", common)
+
+            names = {skill.slug: skill.argument_name
+                     for skill in find_issue_triggered_skills(root)}
+
+            self.assertEqual(names["bracketed"], "STORY_ID")
+            self.assertEqual(names["bare"], "STORY_ID")
+            # Only the first argument is passed; optional extras are dropped.
+            self.assertEqual(names["several"], "TASK_ID")
+            self.assertEqual(names["none"], "")
+
     def test_reads_the_model_frontmatter_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

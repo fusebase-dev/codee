@@ -35,6 +35,10 @@ DEFAULT_MAX_AI_CREDITS = 1000
 # than a misconfigured cap, so a smaller override is raised to it instead.
 MIN_AI_CREDITS = 30
 
+# What to call the value an issue trigger passes when the skill's frontmatter
+# carries no ``argument-hint`` to name it.
+DEFAULT_ARGUMENT_NAME = "ARGUMENT"
+
 
 def _max_ai_credits() -> str:
     """The per-run credit cap, read fresh so a changed env applies to the next run."""
@@ -66,6 +70,22 @@ class GitHubCopilotAgent(AbstractCodingAgent):
     @classmethod
     def best_model(cls) -> str:
         return cls.BEST_MODEL
+
+    def skill_prompt(self, slug: str, path: Path, argument: str = "",
+                     argument_name: str = "") -> str:
+        """Point copilot at the skill file instead of sending a slash command.
+
+        `copilot` has no slash command for `.claude/skills`, and every
+        issue-triggered skill sets ``disable-model-invocation: true``, so it
+        won't pick the skill up on its own either. Naming the file and telling
+        it to follow what's inside is the only way in. The path is relative to
+        the working directory the run gets, which is where the CLI starts.
+        """
+        prompt = (f"Read {_relative(path, self._cwd)} and follow its "
+                  "instructions exactly.")
+        if argument:
+            prompt += f" {argument_name or DEFAULT_ARGUMENT_NAME} = {argument}"
+        return prompt
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:
@@ -147,6 +167,14 @@ class GitHubCopilotAgent(AbstractCodingAgent):
                 f"Copilot run produced no response: {_detail(errors, stderr)}"
             )
         return reply
+
+
+def _relative(path: Path, cwd: Path) -> str:
+    """``path`` as the CLI will see it from ``cwd``, or absolute if it's outside."""
+    try:
+        return str(path.relative_to(cwd))
+    except ValueError:
+        return str(path)
 
 
 def _fetch_acp_models() -> list[AgentModel]:

@@ -44,7 +44,8 @@ POLL_INTERVAL = 60  # 1 minute
 SESSIONS_FILE = context.data_dir / "sessions.json"
 # The project Codee operates on — same root the trigger modules scan for
 # `.claude/skills`. The coding agent is spawned with this as its cwd, so the
-# `/<slug>` messages we build from those skills actually resolve.
+# invocations we build from those skills — a `/<slug>` command, or a path to the
+# skill file for agents that don't resolve one — actually resolve.
 REPO_ROOT = project_root()
 
 # Task agents run concurrently, one thread each, so one long agent (up to 2h)
@@ -246,7 +247,7 @@ def _pull_latest_code() -> bool:
 
 
 def _run_agent(user_message: str, session_id: str, model: str = "",
-               agent_code: str = "") -> str:
+               agent_code: str = "", label: str = "") -> str:
     """Run the skill's coding agent and return its response text.
 
     ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
@@ -254,9 +255,14 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
     its ``x-codee-agent:`` frontmatter and picks which agent runs at all, empty
     for the default one. Wraps the agent run in job tracking; the agent itself
     raises on any failure so callers can retry.
+
+    ``label`` is how the run should read on the dashboard when that differs
+    from the prompt — an issue run is always shown as ``/<slug> <task id>``,
+    whatever wording the agent needed. Empty means the prompt is the label.
     """
     agent = _agent_for_skill(agent_code)
-    job_id = runs_db.start_job(session_id, user_message, agent=agent.DISPLAY_NAME,
+    job_id = runs_db.start_job(session_id, label or user_message,
+                               agent=agent.DISPLAY_NAME,
                                model=model, main_context=context)
     log.debug("job %s started: session=%s message=%r model=%r agent=%s",
               job_id, session_id, user_message, model, agent.describe())
@@ -288,21 +294,26 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
 
 
 def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
-              model: str = "", agent_code: str = "") -> None:
+              model: str = "", agent_code: str = "", label: str = "") -> None:
     """Pool worker: run one task's coding agent, then release its in-flight slot.
 
     Logs the outcome to the runs table like the cron/email/sqs triggers do, so
     issue-triggered coding runs show up on the dashboard too. Stamped with the
     launch time (not the finish time) so the hourly chart buckets it where it
     actually started — an agent can run for hours.
+
+    ``label`` is what the dashboard and the run log show instead of ``message``,
+    so every issue run reads as its ``/<slug> <task id>`` command no matter how
+    the agent had to be asked. The prompt itself is in the debug log.
     """
     started_at = datetime.now(timezone.utc).isoformat()
+    shown = label or message
     try:
-        response = _run_agent(message, session_id, model, agent_code)
+        response = _run_agent(message, session_id, model, agent_code, label)
         log.info("Agent response for %s (%d chars): %s",
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
-                           started_at=started_at, message=message,
+                           started_at=started_at, message=shown,
                            main_context=context)
     except Exception as exc:
         # Over-limit / transient failure: leave the task in its current
@@ -311,14 +322,14 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
         log.debug("%s failed with:\n%s", task_id, traceback.format_exc())
         runs_db.record_run(skill_name, "issue", session_id, "failed",
                            error=str(exc)[:500], started_at=started_at,
-                           message=message, main_context=context)
+                           message=shown, main_context=context)
     finally:
         with _inflight_lock:
             _inflight.discard(task_id)
 
 
 def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
-                 model: str = "", agent_code: str = "") -> bool:
+                 model: str = "", agent_code: str = "", label: str = "") -> bool:
     """Start a task's agent unless one is already in flight or we're at the cap.
 
     Returns True if launched, False if skipped — as a duplicate, or because
@@ -342,7 +353,7 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
     # killing it mid-run, which is what the thread pool used to give us.
     threading.Thread(target=_run_task, name=f"task-agent-{task_id}",
                      args=(task_id, message, session_id, skill_name, model,
-                           agent_code)).start()
+                           agent_code, label)).start()
     log.info("Started an agent for %s (%d running, max %d).",
              task_id, depth, limit)
     return True
@@ -424,13 +435,19 @@ def run_once() -> None:
             log.debug("No issue trigger matches %s (%s, %s); skipping",
                       task_id, status, issue_type)
             continue
-        message = f"/{skill.slug} {task_id}"
+        # How a skill is invoked is the agent's business: Claude Code resolves
+        # the slash command out of `.claude/skills`, Copilot has to be pointed
+        # at the file. The command stays the label either way, so one issue run
+        # reads the same on the dashboard whichever agent picked it up.
+        label = f"/{skill.slug} {task_id}"
+        message = _agent_for_skill(skill.agent).skill_prompt(
+            skill.slug, skill.path, task_id, skill.argument_name)
 
         log.info("Processing %s (%s, %s): %s  session-id=%s",
                  task_id, status, issue_type, summary, session_id)
 
         _submit_task(task_id, message, session_id, skill.name,
-                     skill.model, skill.agent)
+                     skill.model, skill.agent, label)
 
 
 def main() -> None:

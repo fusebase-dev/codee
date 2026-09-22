@@ -29,6 +29,51 @@ def _completed(stdout: str = "", stderr: str = "", returncode: int = 0):
         args=["copilot"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+class CopilotSkillPromptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.agent = GitHubCopilotAgent(Settings(), Path("/repo"))
+
+    def _prompt(self, path: Path, argument: str = "", argument_name: str = "") -> str:
+        return self.agent.skill_prompt("story-code-reviewer", path, argument,
+                                       argument_name)
+
+    def test_names_the_skill_file_instead_of_a_slash_command(self) -> None:
+        prompt = self._prompt(
+            Path("/repo/.claude/skills/story-code-reviewer/SKILL.md"),
+            "90939", "STORY_ID")
+
+        self.assertEqual(
+            prompt,
+            "Read .claude/skills/story-code-reviewer/SKILL.md and follow its "
+            "instructions exactly. STORY_ID = 90939",
+        )
+
+    def test_a_skill_that_names_no_argument_gets_a_generic_label(self) -> None:
+        prompt = self._prompt(
+            Path("/repo/.claude/skills/story-code-reviewer/SKILL.md"), "90939")
+
+        self.assertTrue(prompt.endswith("ARGUMENT = 90939"), prompt)
+
+    def test_no_argument_leaves_the_instruction_alone(self) -> None:
+        prompt = self._prompt(
+            Path("/repo/.claude/skills/story-code-reviewer/SKILL.md"))
+
+        self.assertEqual(
+            prompt,
+            "Read .claude/skills/story-code-reviewer/SKILL.md and follow its "
+            "instructions exactly.",
+        )
+
+    def test_a_skill_outside_the_working_directory_keeps_its_full_path(self) -> None:
+        prompt = self._prompt(Path("/elsewhere/skills/reviewer/SKILL.md"), "7", "ID")
+
+        self.assertEqual(
+            prompt,
+            "Read /elsewhere/skills/reviewer/SKILL.md and follow its "
+            "instructions exactly. ID = 7",
+        )
+
+
 class CopilotRunTest(unittest.TestCase):
     def setUp(self) -> None:
         self.agent = GitHubCopilotAgent(Settings(), Path("/repo"))

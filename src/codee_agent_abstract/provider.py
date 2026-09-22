@@ -69,6 +69,21 @@ class AbstractCodingAgent(ABC):
         """
         ...
 
+    def skill_prompt(self, slug: str, path: Path, argument: str = "",
+                     argument_name: str = "") -> str:
+        """The message that makes this agent run the skill stored at ``path``.
+
+        The default is the slash command Claude Code resolves out of
+        ``.claude/skills``. Agents that don't read those skills — every
+        issue-triggered one carries ``disable-model-invocation: true``, so they
+        won't find it on their own either — override this and name the file.
+
+        ``argument`` is the single value the trigger passes (a task id) and
+        ``argument_name`` is what the skill's ``argument-hint`` calls it, empty
+        when it names none.
+        """
+        return f"/{slug} {argument}".strip()
+
     @classmethod
     def best_model(cls) -> str:
         """The id to pass for "the most capable model", for callers with no skill.
