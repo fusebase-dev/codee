@@ -64,6 +64,16 @@ def _percent(value: float) -> int:
     return -1 if value < 0 else round(value)
 
 
+def local_datetime(value: rx.Var) -> rx.Component:
+    """Render an ISO timestamp in the browser's locale and timezone."""
+    return rx.moment(
+        date=value,
+        local=True,
+        locale=rx.Var(_js_expr="navigator.language"),
+        format="L LT",
+    )
+
+
 def _save_toast(persisted: bool, pushed: bool, message: str) -> Any:
     """Warn instead of erroring when the change landed on disk but not in Git."""
     if not persisted:
@@ -1849,7 +1859,8 @@ def usage_meter(label: str, percent: rx.Var, resets: rx.Var) -> rx.Component:
         # reset time on an account at 4% is noise.
         rx.cond(
             (resets != "") & (percent >= 80),
-            rx.text("resets " + resets, color=MUTED, font_size="0.68rem"),
+            rx.text("resets ", local_datetime(resets), color=MUTED,
+                    font_size="0.68rem"),
             rx.fragment()),
         spacing="1", width="100%")
 
@@ -2390,7 +2401,8 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.flex(
             rx.vstack(rx.hstack(rx.text(run.skill_name, font_weight="600"),
                                 rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
-                      rx.text(run.started_at, color=MUTED, font_size="0.8rem",
+                      rx.text(local_datetime(run.started_at), color=MUTED,
+                          font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
                           rx.text("Thread ID: ", run.session_id, color=MUTED,
                               font_size="0.8rem",
