@@ -422,9 +422,9 @@ class TasksProviderTest(unittest.TestCase):
 
         self.assertEqual(tasks[0].issue_type, "task")
 
-    def test_a_child_of_any_mapped_story_type_is_flagged(self) -> None:
-        # Both types are the story this installation drives its children from,
-        # so a child of either has to be left to the story's own run.
+    def test_a_child_of_any_mapped_type_is_flagged(self) -> None:
+        # Every type a row names is polled in its own right, so a child of any
+        # of them is left to the run the parent gets.
         settings = _settings(organization_url="https://dev.azure.com/acme",
                              client_id="client-1", client_secret="secret-1")
         settings.work_item_types = {"azure_devops": {
@@ -434,7 +434,7 @@ class TasksProviderTest(unittest.TestCase):
 
         tasks = self._tasks_with_parent_type("Feature")
 
-        self.assertTrue(tasks[0].is_parent_codee_story)
+        self.assertTrue(tasks[0].is_parent_codee_work_item)
 
     def test_a_work_item_with_a_query_is_asked_for_in_its_own_words(self) -> None:
         # The advanced answer: what a `bug` is cannot be said with type names
@@ -497,91 +497,26 @@ class TasksProviderTest(unittest.TestCase):
         self.provider = AzureDevOpsTasksProvider(settings, self.context)
         self._connect()
 
-    def test_a_child_of_a_queried_story_is_flagged(self) -> None:
-        # A story picked out by a condition has no type to recognize it by, so
-        # the condition is put to Azure DevOps with this page's parent ids.
+    def test_a_work_item_selected_by_wiql_shields_nothing(self) -> None:
+        # Nothing in a parent says whether the condition would have claimed it,
+        # so a work item written as WIQL takes no child out of the poll. Only
+        # the types a row names do that.
         self._queried_story_provider()
 
-        tasks = self._tasks_with_parent_type("Feature", story_parents=[30])
+        tasks = self._tasks_with_parent_type("Feature")
 
-        self.assertTrue(tasks[0].is_parent_codee_story)
+        self.assertFalse(tasks[0].is_parent_codee_work_item)
 
-    def test_a_queried_story_shields_its_children_in_any_state(self) -> None:
-        # The parent is a story the poll itself never saw — it rests in a state
-        # no skill triggers on — and its children are still its own to drive,
-        # exactly as a story named by its type would be.
-        self._queried_story_provider()
-
-        tasks = self._tasks_with_parent_type(
-            "Feature", story_ids=[], story_parents=[30])
-
-        self.assertTrue(tasks[0].is_parent_codee_story)
-
-    def test_a_parent_the_story_condition_rejects_is_not_flagged(self) -> None:
-        self._queried_story_provider()
-
-        tasks = self._tasks_with_parent_type("Feature", story_parents=[])
-
-        self.assertFalse(tasks[0].is_parent_codee_story)
-
-    def test_the_parent_query_asks_only_about_this_page_s_parents(self) -> None:
-        self._queried_story_provider()
-        items = _response({"value": [
-            {"id": 31, "fields": {"System.Title": "A child",
-                                  "System.State": "Ready",
-                                  "System.WorkItemType": "Task",
-                                  "System.Parent": 30}},
-        ]})
-        parents = _response({"value": [
-            {"id": 30, "fields": {"System.Title": "The parent",
-                                  "System.State": "Done",
-                                  "System.WorkItemType": "Feature"}},
-        ]})
-
-        with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[*_wiql_results([], [31]), items, parents,
-                                *_wiql_results([30])]) as post:
-            self.provider.get_tasks(["Ready"])
-
-        query = post.call_args_list[-1].kwargs["json"]["query"]
-        self.assertIn("([System.Tags] CONTAINS 'codee-story')", query)
-        self.assertIn("[System.Id] IN (30)", query)
-        # No state clause: a story shields its children whatever state it is in.
-        self.assertNotIn("[System.State]", query)
-
-    def test_a_types_story_asks_nothing_extra_about_its_parents(self) -> None:
-        # The parent's own type is already in hand, so the question is free.
+    def test_nothing_extra_is_asked_about_the_parents(self) -> None:
+        # A parent's own type comes back with it, so the answer costs no
+        # request of its own: one query per work item, the batch read of what
+        # they found, and one more for their parents.
         self._connect()
+
         tasks = self._tasks_with_parent_type("User Story")
 
-        self.assertTrue(tasks[0].is_parent_codee_story)
-
-    def test_children_wait_when_the_parent_query_fails(self) -> None:
-        # A tick that does too little is caught by the next one; a child worked
-        # beside the story already working it is two agents on one change.
-        self._queried_story_provider()
-        items = _response({"value": [
-            {"id": 31, "fields": {"System.Title": "A child",
-                                  "System.State": "Ready",
-                                  "System.WorkItemType": "Task",
-                                  "System.Parent": 30}},
-        ]})
-        parents = _response({"value": [
-            {"id": 30, "fields": {"System.Title": "The parent",
-                                  "System.State": "Done",
-                                  "System.WorkItemType": "Feature"}},
-        ]})
-        rejected = Mock(status_code=400, text="")
-        rejected.json.return_value = {"message": "TF51005: no such field."}
-        rejected.raise_for_status.side_effect = requests.HTTPError(
-            "400 Client Error", response=rejected)
-
-        with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=[*_wiql_results([], [31]), items, parents,
-                                rejected]):
-            tasks = self.provider.get_tasks(["Ready"])
-
-        self.assertTrue(tasks[0].is_parent_codee_story)
+        self.assertTrue(tasks[0].is_parent_codee_work_item)
+        self.assertEqual(self.post.call_count, 4)
 
     def test_work_items_are_interleaved_rather_than_concatenated(self) -> None:
         # Each query is priority-ordered on its own, and nothing orders them
@@ -744,20 +679,29 @@ class TasksProviderTest(unittest.TestCase):
 
         self.assertEqual(tasks[0].issue_type, "story")
 
-    def test_a_child_of_a_codee_story_is_flagged(self) -> None:
+    def test_a_child_of_a_mapped_parent_type_is_flagged(self) -> None:
         self._connect()
         tasks = self._tasks_with_parent_type("User Story")
 
-        self.assertTrue(tasks[0].is_parent_codee_story)
+        self.assertTrue(tasks[0].is_parent_codee_work_item)
 
-    def test_a_child_of_an_unmapped_story_type_is_not_flagged(self) -> None:
+    def test_a_child_of_a_mapped_task_type_is_flagged_too(self) -> None:
+        # The rule is not about stories: a Task under a Task is worked inside
+        # the parent's own run just the same.
         self._connect()
-        # "Story" is not the type this installation mapped its story to, and
+
+        tasks = self._tasks_with_parent_type("Task")
+
+        self.assertTrue(tasks[0].is_parent_codee_work_item)
+
+    def test_a_child_of_an_unmapped_parent_type_is_not_flagged(self) -> None:
+        self._connect()
+        # "Story" is not a type this installation pointed a work item at, and
         # the accidental collision with the Codee name must not read as one.
         tasks = self._tasks_with_parent_type("Story")
 
         self.assertEqual(tasks[0].parent.issue_type, "Story")
-        self.assertFalse(tasks[0].is_parent_codee_story)
+        self.assertFalse(tasks[0].is_parent_codee_work_item)
 
     def test_a_task_without_a_parent_is_not_flagged(self) -> None:
         self._connect()
@@ -771,16 +715,14 @@ class TasksProviderTest(unittest.TestCase):
                    side_effect=[*_wiql_results([], [31]), items]):
             tasks = self.provider.get_tasks(["Ready"])
 
-        self.assertFalse(tasks[0].is_parent_codee_story)
+        self.assertFalse(tasks[0].is_parent_codee_work_item)
 
     def _tasks_with_parent_type(self, parent_type: str,
-                                story_ids: list[int] | None = None,
-                                story_parents: list[int] | None = None) -> list:
+                                story_ids: list[int] | None = None) -> list:
         """One task under one parent, as a poll returns it.
 
-        ``story_parents`` is what the extra query answers when the story work
-        item is selected by a condition: which of this page's parents it
-        claims. Left out where the story names types, since nothing is asked.
+        The mock it ran against is left on ``self.post``, for the tests that
+        care what answering the parent cost.
         """
         items = _response({"value": [
             {"id": 31, "fields": {"System.Title": "A child",
@@ -794,11 +736,10 @@ class TasksProviderTest(unittest.TestCase):
                                   "System.WorkItemType": parent_type}},
         ]})
 
-        responses = [*_wiql_results(story_ids or [], [31]), items, parents]
-        if story_parents is not None:
-            responses.extend(_wiql_results(story_parents))
         with patch("codee_tasks_azure_devops.provider.requests.post",
-                   side_effect=responses):
+                   side_effect=[*_wiql_results(story_ids or [], [31]),
+                                items, parents]) as post:
+            self.post = post
             return self.provider.get_tasks(["Ready"])
 
     def test_empty_result_skips_the_batch_call(self) -> None:

@@ -104,8 +104,12 @@ same pair, the first one found wins and the other never runs.
 
 ## Things worth knowing
 
-- **Subtasks of a Codee story are skipped.** When a story is Codee's, its children are
-  driven by the story's own run rather than picked up on their own.
+- **Children of a mapped work item are skipped.** An issue whose parent is of a type
+  mapped to a Codee work item is driven by the parent's own run rather than picked up on
+  its own. With the default mapping that covers a `Task` under a `Story` and a `Task`
+  under a `Task`. Only the types on a row count: a work item written as a JQL or WIQL
+  condition takes no children out of the queue, since nothing in a parent says whether
+  that condition claims it.
 - **A task already running is not started twice.** An issue with an agent in flight is
   skipped on later ticks until that agent finishes.
 - **Failures are retried.** If the agent fails, the issue keeps its status, so the next

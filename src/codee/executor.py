@@ -11,8 +11,8 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_main_context.context import (
-    CodeeMainContext, CodingAgent, STORY_ISSUE_TYPE, Settings,
-    codee_issue_types, data_dir, load_settings, project_root)
+    CodeeMainContext, CodingAgent, Settings, codee_issue_types, data_dir,
+    load_settings, project_root)
 from codee_main_context.logging import configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
@@ -422,12 +422,16 @@ def run_once() -> None:
         log.info("Incoming %s (%s, %s, %s): %s",
                  task_id, status, issue_type, priority, summary)
 
-        # Children of a Codee-owned story are driven by that story's own agent
-        # run. What marks a story as Codee-owned is the provider's business.
-        if (issue_type.casefold() != STORY_ISSUE_TYPE
-                and task.is_parent_codee_story):
-            log.debug("Skipping %s: parent %s is a Codee story",
-                      task_id, task.parent.key)
+        # An item whose parent is one Codee polls in its own right is left
+        # alone: the parent's own run is what decides what its children need,
+        # and picking the child up here as well is two agents on one change.
+        # Its type is what says so — a work item selected by a query of the
+        # user's own shields nothing, since nothing in a parent says whether
+        # that condition would have claimed it.
+        if task.is_parent_codee_work_item:
+            log.debug("Skipping %s: its parent %s is a %s, which Codee polls "
+                      "in its own right",
+                      task_id, task.parent.key, task.parent.work_item_type)
             continue
 
         skill = match_issue_skill(issue_skills, status, issue_type)

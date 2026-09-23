@@ -12,8 +12,11 @@ from codee_main_context.context import (
 from codee_tasks_azure_devops.provider import AzureDevOpsTasksProvider
 from codee_tasks_jira.provider import JiraTasksProvider
 
+from codee_tasks_abstract.provider import Task
+
 from codee import executor, tasks_providers
 from codee.lib import runs_db
+from codee.lib.trigger_issue_skills import IssueTriggeredSkill
 
 
 class RefreshConfigTest(unittest.TestCase):
@@ -411,3 +414,84 @@ class _Exploding:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _polled_task(key: str, issue_type: str = "task",
+                 parent_type: str | None = None) -> Task:
+    """One task as a provider hands it over, optionally under a parent.
+
+    ``codee_work_item_types`` is what every provider fills in from the type
+    rows in Settings; here it stands for the default mapping, `story` pointed
+    at "Story" and `task` at "Task".
+    """
+    parent = None
+    if parent_type is not None:
+        parent = Task(key=f"{key}-parent", summary="The parent",
+                      status="Active", issue_type=parent_type.casefold(),
+                      priority="High", work_item_type=parent_type)
+    return Task(key=key, summary="Some work", status="Ready",
+                issue_type=issue_type, priority="High",
+                work_item_type=issue_type.capitalize(), parent=parent,
+                codee_work_item_types=frozenset({"story", "task"}))
+
+
+class ParentWorkItemSkipTest(unittest.TestCase):
+    """A poll leaves an item whose parent Codee polls to that parent's run."""
+
+    def setUp(self) -> None:
+        self.provider = Mock()
+        self.provider.is_configured.return_value = True
+        self.skills = [
+            IssueTriggeredSkill(name="Task developer", slug="task-developer",
+                                path=Path("/repo/.claude/skills/task/SKILL.md"),
+                                statuses=("Ready",), issue_type="task"),
+            IssueTriggeredSkill(name="Story developer", slug="story-developer",
+                                path=Path("/repo/.claude/skills/story/SKILL.md"),
+                                statuses=("Ready",), issue_type="story"),
+        ]
+        for name in ("trigger_cron_skills", "trigger_aws_sqs_skills",
+                     "trigger_email_skills", "_refresh_config"):
+            patcher = patch.object(executor, name)
+            self.addCleanup(patcher.stop)
+            patcher.start()
+        for name, result in (("_pull_latest_code", True),
+                             ("_load_sessions", {}),
+                             ("find_issue_triggered_skills", self.skills)):
+            patcher = patch.object(executor, name, return_value=result)
+            self.addCleanup(patcher.stop)
+            patcher.start()
+        provider = patch.object(executor, "tasks_provider", self.provider)
+        self.addCleanup(provider.stop)
+        provider.start()
+
+    def _submitted(self, *tasks: Task) -> list[str]:
+        """The task ids a poll over ``tasks`` actually launched an agent for."""
+        self.provider.get_tasks.return_value = list(tasks)
+        with patch.object(executor, "_submit_task") as submit:
+            executor.run_once()
+        return [call.args[0] for call in submit.call_args_list]
+
+    def test_an_item_under_a_mapped_parent_is_left_to_that_parents_run(self) -> None:
+        self.assertEqual(
+            self._submitted(_polled_task("NIM-1", parent_type="Story")), [])
+
+    def test_a_parent_mapped_to_any_work_item_counts(self) -> None:
+        # Not only the story: a task under a task is worked by the parent's
+        # own run just the same.
+        self.assertEqual(
+            self._submitted(_polled_task("NIM-2", parent_type="Task")), [])
+
+    def test_a_story_under_a_mapped_parent_is_skipped_too(self) -> None:
+        # The rule is about the parent, not about what the child is.
+        self.assertEqual(
+            self._submitted(_polled_task("NIM-3", issue_type="story",
+                                         parent_type="Story")), [])
+
+    def test_an_item_under_an_unmapped_parent_is_worked(self) -> None:
+        # An Epic is nothing Codee polls, so nothing else will do this work.
+        self.assertEqual(
+            self._submitted(_polled_task("NIM-4", parent_type="Epic")),
+            ["NIM-4"])
+
+    def test_an_item_with_no_parent_is_worked(self) -> None:
+        self.assertEqual(self._submitted(_polled_task("NIM-5")), ["NIM-5"])

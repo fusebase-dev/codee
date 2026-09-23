@@ -1,4 +1,3 @@
-from typing import Callable
 from urllib.parse import quote
 
 import requests
@@ -13,10 +12,6 @@ from codee_tasks_abstract.provider import (
 
 
 log = get_logger(__name__)
-
-# The label that marks a JIRA story as Codee-owned. Children of such a story
-# are driven by the story's own agent run, so the executor leaves them alone.
-CODEE_STORY_LABEL = "CodeeStory"
 
 # Atlassian's own MCP server, run straight from PyPI through `uvx` so the only
 # thing that has to exist on the machine is uv — no install step to keep in sync
@@ -57,43 +52,6 @@ def _describe_error(exc: requests.RequestException) -> str:
         f": {detail[:300]}" if detail else "")
 
 
-class JiraTask(Task):
-    """A JIRA task whose labels are fetched the first time they're read.
-
-    A parent reference in the search response carries no labels, so resolving
-    them eagerly would cost an extra request per tick even when the caller
-    never inspects them. Deferring the fetch keeps the common path request-free;
-    the result is cached so repeated reads don't re-fetch.
-    """
-
-    def __init__(self, labels_loader: Callable[[], list[str]] | None = None, **kwargs):
-        self._labels_loader = labels_loader
-        self._resolved_labels: list[str] | None = None
-        super().__init__(**kwargs)
-
-    @property
-    def labels(self) -> list[str]:
-        if self._resolved_labels is None:
-            if self._raw_labels is not None:
-                self._resolved_labels = self._raw_labels
-            elif self._labels_loader is not None:
-                self._resolved_labels = self._labels_loader()
-            else:
-                self._resolved_labels = []
-        return self._resolved_labels
-
-    @labels.setter
-    def labels(self, value: list[str] | None) -> None:
-        # Set by Task.__init__; None means "not present in the response".
-        self._raw_labels = value
-
-    @property
-    def is_parent_codee_story(self) -> bool:
-        """In JIRA a Codee-owned story is marked with the CodeeStory label."""
-        return (self.parent is not None
-                and CODEE_STORY_LABEL in self.parent.labels)
-
-
 class JiraTasksProvider(AbstractTasksProvider):
     """Fetches AI-owned issues from JIRA and maps them to provider-agnostic Tasks."""
 
@@ -116,6 +74,12 @@ class JiraTasksProvider(AbstractTasksProvider):
         # query asked for — a parent is fetched without a type filter.
         self._work_items = work_item_mappings(settings, TasksProvider.JIRA)
         self._codee_types = codee_work_items(self._work_items)
+        # The same mapping read as a set of backend types: an issue whose
+        # parent is one of them is left to that parent's own run. Only the
+        # types are in it — ``codee_work_items`` leaves out the work items
+        # selected by a JQL condition, which is also what the executor's rule
+        # is defined in terms of.
+        self._codee_parent_types = frozenset(self._codee_types)
         # An extra JQL condition the user narrowed the poll with, empty unless
         # one was configured. Kept as written: it is theirs to get right, and
         # JIRA says what is wrong with it far better than a parser here could.
@@ -397,12 +361,14 @@ class JiraTasksProvider(AbstractTasksProvider):
         """
         fields = issue.get("fields", {})
         parent_issue = fields.get("parent")
-        return JiraTask(
+        jira_type = fields.get("issuetype", {}).get("name", "")
+        return Task(
             key=issue["key"],
             summary=fields.get("summary", ""),
             status=fields.get("status", {}).get("name", ""),
-            issue_type=issue_type or self._codee_issue_type(
-                fields.get("issuetype", {}).get("name", "")),
+            work_item_type=jira_type,
+            codee_work_item_types=self._codee_parent_types,
+            issue_type=issue_type or self._codee_issue_type(jira_type),
             priority=(fields.get("priority") or {}).get("name", "Unknown"),
             labels=fields.get("labels") or [],
             parent=self._to_parent_task(
@@ -410,33 +376,21 @@ class JiraTasksProvider(AbstractTasksProvider):
         )
 
     def _to_parent_task(self, parent_issue: dict) -> Task:
-        # Labels aren't included for a parent, so defer the fetch until read.
-        key = parent_issue["key"]
+        """The issue above a Codee one, out of the reference JIRA inlined.
+
+        Costs no request: a search response carries the parent's own fields,
+        including the type that decides whether this issue is left to the
+        parent's run. Its own parent is not resolved — the executor looks one
+        level up, and the reference carries no grandparent anyway.
+        """
         fields = parent_issue.get("fields", {})
-        return JiraTask(
-            key=key,
+        jira_type = fields.get("issuetype", {}).get("name", "")
+        return Task(
+            key=parent_issue["key"],
             summary=fields.get("summary", ""),
             status=fields.get("status", {}).get("name", ""),
-            issue_type=self._codee_issue_type(
-                fields.get("issuetype", {}).get("name", "")),
+            work_item_type=jira_type,
+            issue_type=self._codee_issue_type(jira_type),
             priority=(fields.get("priority") or {}).get("name", "Unknown"),
-            labels=fields.get("labels"),
-            labels_loader=lambda: self._fetch_issue_labels(key),
+            labels=fields.get("labels") or [],
         )
-
-    def _fetch_issue_labels(self, issue_key: str) -> list[str]:
-        """Fetch labels for a single JIRA issue."""
-        url = f"{self._base_url}/rest/api/3/issue/{issue_key}"
-        try:
-            resp = requests.get(
-                url,
-                params={"fields": "labels"},
-                auth=(self._user_email, self._api_token),
-                headers={"Accept": "application/json"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.json().get("fields", {}).get("labels", [])
-        except requests.RequestException as exc:
-            log.error("Failed to fetch labels for %s: %s", issue_key, exc)
-            return []

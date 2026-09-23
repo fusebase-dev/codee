@@ -29,17 +29,38 @@ class Task:
     priority: str
     labels: list[str] = field(default_factory=list)
     parent: "Task | None" = None
+    # What the backend itself calls this item's type ("User Story", "Bug"), as
+    # opposed to ``issue_type``, which carries the Codee work item it was
+    # polled as. Both are kept because the mapping between them is lossy in
+    # both directions: a type Codee was never pointed at passes through
+    # unmapped and may collide with a Codee name by accident, and a work item
+    # found by a query of the user's own is named by that query rather than by
+    # any type at all.
+    work_item_type: str = ""
+    # Every backend type this installation pointed a Codee work item at,
+    # case-folded. Empty for a provider with no such mapping, which is what
+    # leaves ``is_parent_codee_work_item`` answering "no" for it.
+    codee_work_item_types: frozenset[str] = frozenset()
 
     @property
-    def is_parent_codee_story(self) -> bool:
-        """Whether this task hangs under a story Codee owns.
+    def is_parent_codee_work_item(self) -> bool:
+        """Whether this item hangs under one Codee polls in its own right.
 
-        What marks a story as Codee-owned is provider-specific — a label in
-        JIRA, a work item type in Azure DevOps — so each provider answers this
-        for its own tasks. The executor only asks the question. A provider that
-        has no notion of Codee stories inherits "no parent story".
+        A parent of a mapped type gets its own agent run, and that run is what
+        decides what its children need — so the child is left alone here
+        rather than worked a second time beside it. Whatever state the parent
+        rests in, and whether or not the poll itself returned it, the answer is
+        the same one its type gives.
+
+        Only types answer it. A work item the user selects with a query of
+        their own (JQL, WIQL) names no type, and nothing in a parent says
+        whether that condition would have claimed it — so such a work item
+        shields nothing, and its children are polled on their own terms.
         """
-        return False
+        parent = self.parent
+        if parent is None or not parent.work_item_type:
+            return False
+        return parent.work_item_type.casefold() in self.codee_work_item_types
 
 
 def merge_work_item_tasks(results: list[list["Task"]]) -> list["Task"]:

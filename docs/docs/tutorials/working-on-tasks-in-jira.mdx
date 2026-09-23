@@ -51,6 +51,11 @@ is worked by skills that declare `x-codee-issue-type: bug` and gets its own grap
 Workflow page. Add a work item when it needs skills of its own; add another type to an
 existing row when it does not. See [Configuration](../configuration#work-items).
 
+Children of a mapped type are not picked up on their own: Codee works on them inside their
+parent's run, so a `Task` whose parent is a `Story` — or another `Task` — is skipped on
+purpose. Only the types on a row do that; a row switched to **JQL (Advanced)** does not,
+because nothing in a parent says whether the condition claims it.
+
 :::warning[The `AI` statuses have to be Codee's alone]
 
 Any issue of a mapped type that lands in one of these statuses gets worked on. Do not reuse

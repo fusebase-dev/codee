@@ -26,12 +26,13 @@ def _configure(provider: JiraTasksProvider,
                   else work_item_mappings(Settings()))
     provider._work_items = work_items
     provider._codee_types = codee_work_items(work_items)
+    provider._codee_parent_types = frozenset(provider._codee_types)
     provider._task_filter = ""
     return provider
 
 
-def _issue(key: str = "CORE-1",
-           parent_labels: list[str] | None = None) -> dict:
+def _issue(key: str = "CORE-1", parent_type: str | None = None) -> dict:
+    """One search result, hanging under a parent of ``parent_type`` if given."""
     issue = {"key": key, "fields": {
         "summary": "A task",
         "status": {"name": "Ready"},
@@ -39,48 +40,72 @@ def _issue(key: str = "CORE-1",
         "priority": {"name": "High"},
         "labels": [],
     }}
-    if parent_labels is not None:
+    if parent_type is not None:
         issue["fields"]["parent"] = {
             "key": "CORE-9",
             "fields": {"summary": "A story",
                        "status": {"name": "In Progress"},
-                       "issuetype": {"name": "Story"},
-                       "labels": parent_labels},
+                       "issuetype": {"name": parent_type},
+                       "labels": ["backend"]},
         }
     return issue
 
 
-class JiraParentStoryTest(unittest.TestCase):
+class JiraParentWorkItemTest(unittest.TestCase):
+    """Which issues are left to the run of the issue above them."""
+
     def setUp(self) -> None:
         self.provider = _configure(
             JiraTasksProvider.__new__(JiraTasksProvider))
 
-    def test_parent_with_the_label_is_a_codee_story(self) -> None:
-        task = self.provider._to_task(_issue(parent_labels=["CodeeStory", "backend"]))
+    def test_a_parent_of_a_mapped_type_is_a_codee_work_item(self) -> None:
+        task = self.provider._to_task(_issue(parent_type="Story"))
 
-        self.assertTrue(task.is_parent_codee_story)
+        self.assertTrue(task.is_parent_codee_work_item)
 
-    def test_parent_without_the_label_is_not(self) -> None:
-        task = self.provider._to_task(_issue(parent_labels=["backend"]))
+    def test_a_parent_mapped_to_the_same_work_item_counts_too(self) -> None:
+        # Not only the story: a task under a task gets its work from the
+        # parent's own run just the same, whichever row selected the parent.
+        task = self.provider._to_task(_issue(parent_type="Task"))
 
-        self.assertFalse(task.is_parent_codee_story)
+        self.assertTrue(task.is_parent_codee_work_item)
 
-    def test_a_task_with_no_parent_is_not(self) -> None:
+    def test_a_parent_no_row_selects_is_not_one(self) -> None:
+        # An Epic above a Codee story is nothing Codee polls, so the issue
+        # under it is worked on its own.
+        task = self.provider._to_task(_issue(parent_type="Epic"))
+
+        self.assertFalse(task.is_parent_codee_work_item)
+
+    def test_the_type_is_matched_however_it_is_cased(self) -> None:
+        task = self.provider._to_task(_issue(parent_type="story"))
+
+        self.assertTrue(task.is_parent_codee_work_item)
+
+    def test_an_issue_with_no_parent_is_not(self) -> None:
         task = self.provider._to_task(_issue())
 
-        self.assertFalse(task.is_parent_codee_story)
+        self.assertFalse(task.is_parent_codee_work_item)
 
-    def test_labels_missing_from_the_parent_are_fetched_once(self) -> None:
-        parent = _issue(parent_labels=[])
-        del parent["fields"]["parent"]["fields"]["labels"]
-        task = self.provider._to_task(parent)
+    def test_a_work_item_selected_by_jql_shields_nothing(self) -> None:
+        # Nothing in a parent says whether the condition would have claimed it,
+        # so a work item written as JQL takes no children out of the poll.
+        provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
+                              {"story": "labels = CodeeStory",
+                               "task": ["Task"]})
 
-        with patch.object(self.provider, "_fetch_issue_labels",
-                          return_value=["CodeeStory"]) as fetch:
-            self.assertTrue(task.is_parent_codee_story)
-            self.assertTrue(task.is_parent_codee_story)
+        task = provider._to_task(_issue(parent_type="Story"))
 
-        fetch.assert_called_once_with("CORE-9")
+        self.assertFalse(task.is_parent_codee_work_item)
+
+    def test_the_parent_comes_out_of_the_search_response(self) -> None:
+        # Its type is already inlined there, so the answer costs no request.
+        with patch("codee_tasks_jira.provider.requests.get") as get:
+            task = self.provider._to_task(_issue(parent_type="Story"))
+
+            self.assertTrue(task.is_parent_codee_work_item)
+        get.assert_not_called()
+        self.assertEqual(task.parent.key, "CORE-9")
 
 
 def _error(status: int, payload: dict | None = None) -> requests.HTTPError:
@@ -425,7 +450,7 @@ class JiraIssueTypeMappingTest(unittest.TestCase):
         provider = _configure(JiraTasksProvider.__new__(JiraTasksProvider),
                               {"story": ["Epic"], "task": ["Task"]})
 
-        task = provider._to_task(_issue(parent_labels=["backend"]))
+        task = provider._to_task(_issue(parent_type="Story"))
 
         self.assertEqual(task.parent.issue_type, "Story")
 

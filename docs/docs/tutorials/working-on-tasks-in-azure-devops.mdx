@@ -106,9 +106,11 @@ item its own graph. You cannot remove `story` and `task`, because the skills Cod
 with trigger on them, but you can change what they are mapped to.
 [Configuration](../configuration#work-items) describes every field in that section.
 
-A type that no row selects is ignored, whatever state it is in. Children of a story are not
-picked up on their own either: Codee works on them inside the story's run, so a `Task` whose
-parent is a mapped `User Story` is skipped on purpose.
+A type that no row selects is ignored, whatever state it is in. Children of a mapped type
+are not picked up on their own either: Codee works on them inside their parent's run, so a
+`Task` whose parent is a mapped `User Story` — or a mapped `Task` — is skipped on purpose.
+Only the types on a row shield their children that way; a row switched to **WIQL
+(Advanced)** does not, because nothing in a parent says whether the condition claims it.
 
 ### Using a separate type for Codee
 
@@ -384,8 +386,8 @@ then implements them one by one.
 The whole flow is driven by the **story** work item: it is of a type mapped to `story` —
 `User Story` out of the box — and its state is what triggers each run. The children are
 worked on inside those runs, and Codee moves their states itself to track where each one
-is. Because their parent is a story, Codee skips them in the queue instead of treating each
-as separate work.
+is. Because their parent is of a mapped type, Codee skips them in the queue instead of
+treating each as separate work.
 
 ```mermaid
 flowchart TD
@@ -564,5 +566,6 @@ Work through these in order - they follow the query Codee actually runs:
    **Settings → Tasks provider → Custom WIQL** is `AND`ed onto every poll and can only
    narrow it. The same goes for a **WIQL (Advanced)** condition on the work item's own row.
    Empty them to rule them out.
-6. **Is its parent a story?** Then it is skipped on purpose - its parent's run drives it.
-   With the default mapping that means any `Task` under a `User Story`.
+6. **Is its parent of a mapped type?** Then it is skipped on purpose - its parent's run
+   drives it. With the default mapping that means any work item under a `User Story` or a
+   `Task`. A parent selected by a **WIQL (Advanced)** row does not count.

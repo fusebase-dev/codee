@@ -9,8 +9,8 @@ from urllib.parse import quote
 
 import requests
 from codee_main_context.context import (
-    CodeeMainContext, STORY_ISSUE_TYPE, Settings, TASK_ISSUE_TYPE,
-    TasksProvider, WorkItemMapping, codee_work_items, data_dir, task_filter,
+    CodeeMainContext, Settings, TASK_ISSUE_TYPE, TasksProvider,
+    WorkItemMapping, codee_work_items, data_dir, task_filter,
     work_item_mappings)
 from codee_main_context.logging import get_logger
 from codee_tasks_abstract.provider import (
@@ -70,7 +70,7 @@ _TIMEOUT = 30
 
 def _describe_task(task: Task) -> str:
     """One work item as a log fragment: what it is and what Codee decided it is."""
-    raw = getattr(task, "work_item_type", "")
+    raw = task.work_item_type
     mapped = f"{raw}->{task.issue_type}" if raw != task.issue_type else task.issue_type
     return f"{task.key} [{task.status}/{mapped}]"
 
@@ -98,46 +98,6 @@ def _describe_error(exc: requests.RequestException) -> str:
         f": {detail[:300]}" if detail else "")
 
 
-class AzureDevOpsWorkItem(Task):
-    """A Task that remembers the raw Azure DevOps work item type.
-
-    ``issue_type`` carries the mapped Codee name, and that mapping is lossy in
-    both directions: a type Codee was never pointed at passes through unmapped
-    and may collide with a Codee name by accident. Comparing the raw type
-    against ``story_work_item_types`` — the backend types this installation
-    mapped its story to — is what keeps that accident from reading as a real
-    Codee story.
-    """
-
-    def __init__(self, work_item_type: str = "",
-                 story_work_item_types: list[str] | None = None,
-                 story_keys: frozenset[str] | set[str] = frozenset(),
-                 **kwargs):
-        self.work_item_type = work_item_type
-        self.story_work_item_types = list(story_work_item_types or [])
-        self.story_keys = story_keys
-        super().__init__(**kwargs)
-
-    @property
-    def is_parent_codee_story(self) -> bool:
-        """In Azure DevOps a Codee-owned story is a type mapped to "story".
-
-        Or, where the story is selected by a WIQL condition instead of a type
-        list, a parent that condition claims — which the provider establishes
-        by putting the condition to Azure DevOps with this page's parent ids.
-        Whatever state the story is resting in, and whether or not the poll
-        itself returned it, the answer is the same one its type would have
-        given.
-        """
-        parent = self.parent
-        if not isinstance(parent, AzureDevOpsWorkItem):
-            return False
-        if parent.key in self.story_keys:
-            return True
-        return parent.work_item_type.casefold() in {
-            story_type.casefold() for story_type in self.story_work_item_types}
-
-
 class AzureDevOpsTasksProvider(AbstractTasksProvider):
     """Fetches the organization's Codee work items as provider-agnostic Tasks."""
 
@@ -158,8 +118,12 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         self._work_items = work_item_mappings(
             settings, TasksProvider.AZURE_DEVOPS)
         self._codee_types = codee_work_items(self._work_items)
-        self._story_work_item_types = list(self._work_item(
-            STORY_ISSUE_TYPE).types)
+        # The same mapping read as a set of backend types: a work item whose
+        # parent is one of them is left to that parent's own run. Only the
+        # types are in it — ``codee_work_items`` leaves out the work items
+        # selected by a WIQL condition, which is also what the executor's rule
+        # is defined in terms of.
+        self._codee_parent_types = frozenset(self._codee_types)
         # An extra WIQL condition the user narrowed the poll with, empty unless
         # one was configured. Kept as written: it is theirs to get right, and
         # Azure DevOps explains a rejected query better than a parser here could.
@@ -399,11 +363,9 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
         # The batch endpoint doesn't preserve the WIQL ordering, so each work
         # item's tasks are rebuilt in the order its own query asked for.
         by_id = {item["id"]: item for item in items}
-        story_keys = self._codee_story_parents(token, parents, raise_errors)
         results = []
         for mapping, found in ids_by_work_item:
-            tasks = [self._to_task(by_id[item_id], parents, mapping.name,
-                                   story_keys)
+            tasks = [self._to_task(by_id[item_id], parents, mapping.name)
                      for item_id in found if item_id in by_id]
             log.debug("WIQL for work item %s matched %d work item(s)%s",
                       mapping.name, len(tasks),
@@ -411,48 +373,6 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
                       if tasks else "")
             results.append(tasks)
         return merge_work_item_tasks(results)
-
-    def _codee_story_parents(self, token: str, parents: dict[int, dict],
-                             raise_errors: bool) -> set[str]:
-        """Which of this page's parents are stories Codee owns.
-
-        A child of one is driven by the story's own agent run, so the executor
-        has to be told which parents those are. Where the story work item names
-        types, the parent's own type answers it and nothing is asked. Where it
-        is selected by a condition, the condition is put to Azure DevOps with
-        the parents' ids — one query for the whole page, not one per parent,
-        and no state clause: a story shields its children whatever state it is
-        resting in, exactly as its type would have.
-
-        When that query fails, every parent is treated as a story. A tick that
-        does too little is caught by the next one; a child worked beside the
-        story that is already working it is two agents on one change.
-        """
-        story = self._work_item(STORY_ISSUE_TYPE)
-        if not (story.is_query and parents):
-            return set()
-        ids = ", ".join(str(parent_id) for parent_id in sorted(parents))
-        query = ("SELECT [System.Id] FROM WorkItems "
-                 f"WHERE ({story.query}) AND [System.Id] IN ({ids})")
-        log.debug("WIQL for the parents of this page: %s", query)
-        try:
-            response = requests.post(
-                f"{self._config.organization_url}/_apis/wit/wiql",
-                params={"api-version": API_VERSION, "$top": _MAX_TASKS},
-                json={"query": query},
-                headers=self._headers(token),
-                timeout=_TIMEOUT,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            if raise_errors:
-                raise TasksProviderError(_describe_error(exc)) from exc
-            log.error("Azure DevOps could not say which parents are stories, "
-                      "so their children wait for the next poll: %s",
-                      _describe_error(exc))
-            return {str(parent_id) for parent_id in parents}
-        return {str(item["id"])
-                for item in response.json().get("workItems") or []}
 
     def _work_item_ids(self, token: str, mapping: WorkItemMapping,
                        statuses: list[str], raise_errors: bool) -> list[int]:
@@ -604,26 +524,20 @@ class AzureDevOpsTasksProvider(AbstractTasksProvider):
                 "Accept": "application/json"}
 
     def _to_task(self, item: dict, parents: dict[int, dict],
-                 issue_type: str = "",
-                 story_keys: frozenset[str] | set[str] = frozenset()) -> Task:
+                 issue_type: str = "") -> Task:
         """One work item as the executor reads it.
 
         ``issue_type`` is the Codee work item whose query returned it, which is
         the only thing that can name an item a custom condition matched. Left
         out for a parent, which no query asked for: it falls back to whichever
         work item claims the type Azure DevOps gave it.
-
-        ``story_keys`` are the parents established as Codee stories, which is
-        how a child of a story selected by a custom condition is still
-        recognized as one — its type alone cannot say so.
         """
         fields = item.get("fields", {})
         parent = parents.get(fields.get("System.Parent"))
         work_item_type = fields.get("System.WorkItemType", "")
-        return AzureDevOpsWorkItem(
+        return Task(
             work_item_type=work_item_type,
-            story_work_item_types=self._story_work_item_types,
-            story_keys=story_keys,
+            codee_work_item_types=self._codee_parent_types,
             key=str(item["id"]),
             summary=fields.get("System.Title", ""),
             status=fields.get("System.State", ""),
