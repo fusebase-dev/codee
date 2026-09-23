@@ -105,6 +105,15 @@ class CodexRunTest(unittest.TestCase):
         self.assertNotIn(SESSION, self._cmd())
         self.assertNotIn("resume", self._cmd())
 
+    def test_continuing_resumes_the_thread(self) -> None:
+        with patch("subprocess.Popen", return_value=_completed(_turn())) as popen:
+            response = self.agent.continue_conversation("And now?", THREAD)
+
+        self.assertEqual(response, "Done, PR is up.")
+        cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[:3], ["codex", "exec", "resume"])
+        self.assertEqual(cmd[-3:], ["--", THREAD, "And now?"])
+
     def test_the_thread_codex_opened_is_reported_back(self) -> None:
         # What the dashboard links its session viewer to while the run is live.
         self._run(_completed(_turn()))

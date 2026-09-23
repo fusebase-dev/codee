@@ -65,7 +65,8 @@ class CopilotSkillPromptTest(unittest.TestCase):
         )
 
     def test_a_skill_outside_the_working_directory_keeps_its_full_path(self) -> None:
-        prompt = self._prompt(Path("/elsewhere/skills/reviewer/SKILL.md"), "7", "ID")
+        prompt = self._prompt(
+            Path("/elsewhere/skills/reviewer/SKILL.md"), "7", "ID")
 
         self.assertEqual(
             prompt,
@@ -85,7 +86,8 @@ class CopilotRunTest(unittest.TestCase):
 
     def test_returns_the_last_assistant_message(self) -> None:
         stdout = _stream(
-            _event("assistant.message", {"content": "Looking at it", "toolRequests": [{}]}),
+            _event("assistant.message", {
+                   "content": "Looking at it", "toolRequests": [{}]}),
             _event("tool.execution_complete", {}),
             _event("assistant.message", {"content": "Done, PR is up.\n"}),
             _event("result", exitCode=0, sessionId=SESSION),
@@ -118,6 +120,15 @@ class CopilotRunTest(unittest.TestCase):
         self.assertEqual(self.captured.call_args.kwargs["cwd"], Path("/repo"))
         self.assertEqual(self.captured.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(self.captured.call_args.kwargs["errors"], "replace")
+
+    def test_continuing_reuses_the_same_session_id(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+        with patch("subprocess.run", return_value=_completed(stdout)) as run:
+            self.agent.continue_conversation("And now?", SESSION)
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--session-id") + 1], SESSION)
 
     def test_missing_captured_streams_do_not_raise_type_error(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -159,7 +170,8 @@ class CopilotRunTest(unittest.TestCase):
 
     def test_a_failed_run_raises_with_the_session_error(self) -> None:
         stdout = _stream(
-            _event("session.error", {"errorType": "quota", "message": "quota exceeded"}),
+            _event("session.error", {
+                   "errorType": "quota", "message": "quota exceeded"}),
             _event("result", exitCode=1),
         )
 
@@ -193,7 +205,8 @@ class CopilotCreditCapTest(unittest.TestCase):
             else:
                 os.environ[MAX_AI_CREDITS_ENV_VAR] = value
             with patch("subprocess.run", return_value=_completed(stdout)) as run:
-                GitHubCopilotAgent(Settings(), Path("/repo")).run("/do-it", SESSION)
+                GitHubCopilotAgent(Settings(), Path(
+                    "/repo")).run("/do-it", SESSION)
         cmd = run.call_args.args[0]
         return cmd[cmd.index("--max-ai-credits") + 1]
 
@@ -222,9 +235,12 @@ class CopilotModelCatalogTest(unittest.TestCase):
 
     def test_reads_the_session_new_result_past_other_traffic(self) -> None:
         lines = self._queue(
-            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}),
-            json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s1"}}),
+            json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "result": {"protocolVersion": 1}}),
+            json.dumps(
+                {"jsonrpc": "2.0", "method": "session/update", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2,
+                       "result": {"sessionId": "s1"}}),
         )
 
         result = _await_result(Mock(poll=Mock(return_value=None)), lines, 2)
@@ -243,7 +259,8 @@ class CopilotModelCatalogTest(unittest.TestCase):
     def test_a_catalog_becomes_id_and_name_pairs(self) -> None:
         result = {"models": {"availableModels": [
             {"modelId": "claude-opus-5", "name": "Claude Opus 5"},
-            {"modelId": "gpt-5.4"},          # no display name: falls back to the id
+            # no display name: falls back to the id
+            {"modelId": "gpt-5.4"},
             {"name": "nameless"},            # no id at all: unusable, skipped
         ]}}
 

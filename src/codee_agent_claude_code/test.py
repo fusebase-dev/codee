@@ -34,7 +34,8 @@ def _response(status_code: int, text: str = "", json_body=None):
     response = Mock(spec=["status_code", "text", "json"])
     response.status_code = status_code
     response.text = text
-    response.json = Mock(return_value=json_body if json_body is not None else {})
+    response.json = Mock(
+        return_value=json_body if json_body is not None else {})
     return response
 
 
@@ -55,6 +56,14 @@ class ClaudeCodeRunTest(unittest.TestCase):
         cmd = self._run(model="opus")
 
         self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
+
+    def test_continuing_uses_resume_instead_of_starting_a_session(self) -> None:
+        with patch("subprocess.run", return_value=_completed()) as run:
+            self.agent.continue_conversation("And now?", SESSION)
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--resume") + 1], SESSION)
+        self.assertNotIn("--session-id", cmd)
 
     def test_cli_output_is_decoded_as_utf8(self) -> None:
         with patch("subprocess.run", return_value=_completed()) as run:
@@ -129,7 +138,8 @@ class ClaudeCodeUsageTest(unittest.TestCase):
         # the executor to a key by looking like an error.
         self.assertFalse(read_usage({}).limited)
         self.assertFalse(read_usage({"five_hour": None}).limited)
-        self.assertFalse(read_usage({"five_hour": {"utilization": None}}).limited)
+        self.assertFalse(read_usage(
+            {"five_hour": {"utilization": None}}).limited)
 
     def test_a_rejected_key_counts_as_spent(self) -> None:
         # Expired or revoked. As unusable as an exhausted one, and the same

@@ -101,12 +101,36 @@ class CodexAgent(AbstractCodingAgent):
                 f"Codex run produced no response: {_detail(errors, result.stderr)}")
         return reply
 
+    def continue_conversation(
+        self,
+        user_message: str,
+        session_id: str,
+        model: str = "",
+        on_session_id: Callable[[str], None] | None = None,
+    ) -> str:
+        result = self._exec(user_message, model, on_session_id, session_id)
+        reply, completed, errors = _parse_events(result.stdout)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Codex CLI exited {result.returncode}: "
+                f"{_detail(errors, result.stderr)}"
+            )
+        if not completed:
+            raise RuntimeError(
+                f"Codex run errored: {_detail(errors, result.stderr)}")
+        if not reply:
+            raise RuntimeError(
+                f"Codex run produced no response: {_detail(errors, result.stderr)}")
+        return reply
+
     def _exec(self, user_message: str, model: str,
-              on_session_id: Callable[[str], None] | None = None
+              on_session_id: Callable[[str], None] | None = None,
+              resume_session_id: str = "",
               ) -> subprocess.CompletedProcess:
         """One headless ``codex exec`` in a thread of its own."""
         cmd = [
-            self.CLI_COMMAND, "exec",
+            self.CLI_COMMAND, "exec", *
+            (["resume"] if resume_session_id else []),
             "--json",
             # Codee's project root is a repository in the normal case but need
             # not be one, and `codex exec` refuses to start outside git.
@@ -124,7 +148,10 @@ class CodexAgent(AbstractCodingAgent):
         cmd += _mcp_overrides(self._cwd)
         # The prompt goes last, behind `--`, so a skill whose slug collides with
         # a subcommand (`codex exec review`) still reaches the model.
-        cmd += ["--", user_message]
+        cmd += ["--"]
+        if resume_session_id:
+            cmd += [resume_session_id]
+        cmd += [user_message]
 
         log.debug("cwd=%s cmd=%s", self._cwd, " ".join(cmd))
         # Streamed rather than collected at the end: the thread id is on the

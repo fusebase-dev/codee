@@ -58,10 +58,25 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         # answer is known before the run starts.
         if on_session_id:
             on_session_id(session_id)
+        return self._run(user_message, session_id, model, False)
+
+    def continue_conversation(
+        self,
+        user_message: str,
+        session_id: str,
+        model: str = "",
+        on_session_id: Callable[[str], None] | None = None,
+    ) -> str:
+        if on_session_id:
+            on_session_id(session_id)
+        return self._run(user_message, session_id, model, True)
+
+    def _run(self, user_message: str, session_id: str, model: str,
+             resume: bool) -> str:
         cmd = [
             self.CLI_COMMAND,
             "-p", user_message,
-            "--session-id", session_id,
+            "--resume" if resume else "--session-id", session_id,
             "--max-budget-usd", self.MAX_BUDGET_USD,
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
@@ -91,7 +106,7 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         log.debug("claude exited %d (%d bytes stdout, %d bytes stderr)",
-              result.returncode, len(stdout), len(stderr))
+                  result.returncode, len(stdout), len(stderr))
 
         # Raise on any non-success so callers retry. Over-limit exits non-zero;
         # a completed-but-errored run sets is_error in the JSON.

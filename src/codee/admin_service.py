@@ -192,6 +192,7 @@ class WorkflowGeneration:
     workflow: dict[str, Any] | None = None
     error: str = ""
 
+
 # The checks the settings page runs against the tasks provider, in the order it
 # shows them: the second is only worth attempting once the first passes.
 TASKS_CHECK = "Tasks can be pulled"
@@ -893,7 +894,8 @@ class AdminService:
         # and how long it stands. Shared by every visitor to the dashboard,
         # because it is a property of the accounts rather than of whoever is
         # looking at them.
-        self._usage_cache: dict[int, tuple[ConnectedAccount, float, float]] = {}
+        self._usage_cache: dict[int,
+                                tuple[ConnectedAccount, float, float]] = {}
         self._usage_lock = threading.Lock()
 
     def _git_push(self, message: str) -> tuple[bool, str]:
@@ -1221,7 +1223,8 @@ class AdminService:
         name belongs on the other item's graph, so it is kept out of this one.
         """
         if not skills:
-            report(f"No issue-trigger skills for work item {issue_type.capitalize()}.")
+            report(
+                f"No issue-trigger skills for work item {issue_type.capitalize()}.")
             return {"nodes": [], "edges": [], "warnings": []}
 
         documents = []
@@ -1414,7 +1417,8 @@ class AdminService:
                  for status in (transition["source"], transition["target"])}
         statuses, foreign_statuses = _own_work_item_statuses(
             statuses, scope, triggered | moved,
-            dict.fromkeys(document for _, document in skill_documents.values()),
+            dict.fromkeys(document for _,
+                          document in skill_documents.values()),
         )
         if foreign_statuses:
             report(
@@ -1831,7 +1835,7 @@ class AdminService:
             existing, _ = parse_skill(current_path.read_text())
             extra = {key: value for key, value in existing.items()
                      if key not in MANAGED}
-        action =f"rename {old_slug} -> {name}" if name != old_slug else f"update {name}"
+        action = f"rename {old_slug} -> {name}" if name != old_slug else f"update {name}"
         saved, pushed, message = self._write_and_push(
             current_path,
             build_skill(frontmatter, extra, skill["body"]),
@@ -2439,6 +2443,29 @@ class AdminService:
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 
+    def test_agent_conversation(
+        self, agent_code: str, user_message: str, session_id: str = "",
+        model: str = "",
+    ) -> tuple[str, str]:
+        """Run one turn with the selected agent and return reply plus session id."""
+        selected = resolve_agent_code(agent_code)
+        if selected is None:
+            raise RuntimeError(f"Unsupported coding agent: {agent_code}")
+        agent = build_coding_agent(self.context.settings, self.root, selected)
+        actual_session_id = session_id or str(uuid.uuid4())
+
+        def opened(opened_session_id: str) -> None:
+            nonlocal actual_session_id
+            actual_session_id = opened_session_id
+
+        if session_id:
+            response = agent.continue_conversation(
+                user_message, session_id, model, on_session_id=opened)
+        else:
+            response = agent.run(
+                user_message, actual_session_id, model, on_session_id=opened)
+        return response, actual_session_id
+
     def setup_tasks_mcp(
         self,
         tasks_provider: str,
@@ -2600,7 +2627,8 @@ def _format_token_expiry(expires_at: str | None) -> str:
         return "refreshes on next check"
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=timezone.utc)
-    minutes = int((deadline - datetime.now(timezone.utc)).total_seconds() // 60)
+    minutes = int(
+        (deadline - datetime.now(timezone.utc)).total_seconds() // 60)
     if minutes < 1:
         return "refreshes on next check"
     if minutes < 60:

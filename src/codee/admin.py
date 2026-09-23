@@ -101,6 +101,11 @@ class ModelOption(BaseModel):
     name: str
 
 
+class ConversationMessage(BaseModel):
+    role: str
+    content: str
+
+
 class ClaudeAccount(BaseModel):
     """One connected Claude account as the settings page lists it.
 
@@ -356,6 +361,16 @@ class AdminState(rx.State):
     tasks_provider: str = "jira"
     coding_agent: str = "claude_code"
     max_parallel_agents: str = "3"
+    agent_test_open: bool = False
+    agent_test_input: str = ""
+    agent_test_session_id: str = ""
+    agent_test_messages: list[ConversationMessage] = []
+    agent_test_sending: bool = False
+    agent_test_generation: int = 0
+    agent_test_model: str = ""
+    agent_test_models: list[ModelOption] = []
+    agent_test_model_query: str = ""
+    agent_test_models_loading: bool = False
     # Whether the executor runs Claude Code on the connected accounts instead
     # of leaving ~/.claude/.credentials.json alone.
     claude_code_rotate_keys: bool = False
@@ -461,6 +476,32 @@ class AdminState(rx.State):
         """The search text when it names no known model, so it can be used as-is."""
         query = self.model_query.strip()
         if not query or any(model.id == query for model in self.agent_models):
+            return ""
+        return query
+
+    @rx.var
+    def filtered_agent_test_models(self) -> list[ModelOption]:
+        query = self.agent_test_model_query.strip().lower()
+        return [
+            model for model in self.agent_test_models
+            if not query or query in f"{model.name} {model.id}".lower()
+        ]
+
+    @rx.var
+    def agent_test_model_label(self) -> str:
+        if not self.agent_test_model:
+            return "Agent default"
+        for model in self.agent_test_models:
+            if model.id == self.agent_test_model:
+                return model.name
+        return self.agent_test_model
+
+    @rx.var
+    def custom_agent_test_model_query(self) -> str:
+        query = self.agent_test_model_query.strip()
+        if not query or any(
+            model.id == query for model in self.agent_test_models
+        ):
             return ""
         return query
 
@@ -1516,6 +1557,89 @@ class AdminState(rx.State):
         error = self._persist_settings()
         return rx.toast.error(error) if error else rx.toast.success("Settings saved")
 
+    def open_agent_test(self) -> Any:
+        self.agent_test_input = ""
+        self.agent_test_session_id = ""
+        self.agent_test_messages = []
+        self.agent_test_sending = False
+        self.agent_test_generation += 1
+        self.agent_test_model = ""
+        self.agent_test_models = []
+        self.agent_test_model_query = ""
+        self.agent_test_open = True
+        return AdminState.load_agent_test_models
+
+    def set_agent_test_open(self, open_: bool) -> None:
+        self.agent_test_open = open_
+        if not open_:
+            self.agent_test_generation += 1
+            self.agent_test_sending = False
+
+    def set_agent_test_input(self, value: str) -> None:
+        self.agent_test_input = value
+
+    def set_agent_test_model_query(self, value: str) -> None:
+        self.agent_test_model_query = value
+
+    def choose_agent_test_model(self, model_id: str) -> None:
+        self.agent_test_model = model_id.strip()
+        self.agent_test_model_query = ""
+
+    @rx.event(background=True)
+    async def load_agent_test_models(self) -> None:
+        async with self:
+            agent = self.coding_agent
+            self.agent_test_models_loading = True
+        try:
+            models = await asyncio.to_thread(SERVICE.list_agent_models, agent)
+        except Exception:
+            models = []
+        async with self:
+            if self.coding_agent != agent:
+                return
+            self.agent_test_models = [ModelOption(**model) for model in models]
+            self.agent_test_models_loading = False
+
+    @rx.event(background=True)
+    async def send_agent_test_message(self) -> Any:
+        async with self:
+            message = self.agent_test_input.strip()
+            if not message or self.agent_test_sending:
+                return
+            agent = self.coding_agent
+            session_id = self.agent_test_session_id
+            model = self.agent_test_model
+            generation = self.agent_test_generation
+            self.agent_test_input = ""
+            self.agent_test_sending = True
+            self.agent_test_messages = [
+                *self.agent_test_messages,
+                ConversationMessage(role="user", content=message),
+            ]
+        try:
+            response, session_id = await asyncio.to_thread(
+                SERVICE.test_agent_conversation,
+                agent,
+                message,
+                session_id,
+                model,
+            )
+        except Exception as error:
+            async with self:
+                if self.agent_test_generation == generation:
+                    self.agent_test_sending = False
+            yield rx.toast.error(f"The coding agent failed: {error}")
+            return
+        async with self:
+            if self.agent_test_generation != generation:
+                return
+            self.agent_test_session_id = session_id
+            self.agent_test_messages = [
+                *self.agent_test_messages,
+                ConversationMessage(role="assistant", content=response),
+            ]
+            self.agent_test_sending = False
+
 
 ACCENT = "var(--codee-accent)"
 ACCENT_DEEP = "var(--codee-accent-deep)"
@@ -2065,7 +2189,7 @@ def model_menu_item(button: rx.Component) -> rx.Component:
     return rx.popover.close(rx.flex(button, width="100%"), width="100%")
 
 
-def model_option_row(option: ModelOption) -> rx.Component:
+def _model_option_row(option: ModelOption, choose_model: Any) -> rx.Component:
     """One row of the model picker: friendly name left, model code right."""
     return model_menu_item(
         rx.button(
@@ -2077,7 +2201,15 @@ def model_option_row(option: ModelOption) -> rx.Component:
                       align="center", spacing="2", width="100%"),
             variant="ghost", color_scheme="gray", width="100%",
             justify_content="start", padding="0.45rem 0.6rem",
-            on_click=AdminState.choose_model(option.id)))
+            on_click=choose_model(option.id)))
+
+
+def model_option_row(option: ModelOption) -> rx.Component:
+    return _model_option_row(option, AdminState.choose_model)
+
+
+def agent_test_model_option_row(option: ModelOption) -> rx.Component:
+    return _model_option_row(option, AdminState.choose_agent_test_model)
 
 
 def agent_picker() -> rx.Component:
@@ -2402,9 +2534,9 @@ def run_row(run: RunRecord) -> rx.Component:
             rx.vstack(rx.hstack(rx.text(run.skill_name, font_weight="600"),
                                 rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
                       rx.text(local_datetime(run.started_at), color=MUTED,
-                          font_size="0.8rem",
+                              font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
-                          rx.text("Thread ID: ", run.session_id, color=MUTED,
+                      rx.text("Thread ID: ", run.session_id, color=MUTED,
                               font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
                       rx.text(run.preview, color=MUTED),
@@ -2418,9 +2550,10 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.cond((run.user_message != "") | (run.response != ""), rx.accordion.root(rx.accordion.item(
             header="Run info", content=rx.vstack(
                 rx.text("User message", font_weight="600"),
-            rx.text(run.user_message, white_space="pre-wrap"),
+                rx.text(run.user_message, white_space="pre-wrap"),
                 rx.cond(run.response != "", rx.fragment(
-                    rx.text("LLM response", font_weight="600", margin_top="0.75rem"),
+                    rx.text("LLM response", font_weight="600",
+                            margin_top="0.75rem"),
                     rx.text(run.response, white_space="pre-wrap"))),
                 spacing="2", align="start", width="100%"), value=run.started_at),
             collapsible=True, width="100%")),
@@ -2644,7 +2777,8 @@ def workflow_page() -> rx.Component:
             rx.center(
                 rx.vstack(
                     rx.spinner(size="3"),
-                    rx.foreach(AdminState.workflow_progress, workflow_progress_line),
+                    rx.foreach(AdminState.workflow_progress,
+                               workflow_progress_line),
                     spacing="3",
                     align="center",
                     width="100%",
@@ -3221,6 +3355,130 @@ def claude_code_setting() -> rx.Component:
         padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
 
 
+def conversation_message(message: ConversationMessage) -> rx.Component:
+    is_user = message.role == "user"
+    return rx.box(
+        rx.text(message.content, white_space="pre-wrap"),
+        align_self=rx.cond(is_user, "end", "start"),
+        background=rx.cond(is_user, ACTIVE, SURFACE),
+        border=rx.cond(is_user, "none", BORDER),
+        border_radius="6px",
+        padding="0.65rem 0.8rem",
+        max_width="85%",
+    )
+
+
+def agent_test_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Test conversation"),
+            rx.dialog.description(
+                "Chat with the selected coding agent in the Codee project.",
+                color=MUTED),
+            field(
+                "Model",
+                rx.popover.root(
+                    rx.popover.trigger(
+                        rx.button(
+                            rx.hstack(
+                                rx.text(AdminState.agent_test_model_label),
+                                rx.spacer(),
+                                rx.icon("chevrons-up-down", size=14),
+                                align="center", width="100%"),
+                            variant="surface", color_scheme="gray",
+                            width="100%", type="button")),
+                    rx.popover.content(
+                        rx.vstack(
+                            rx.input(
+                                placeholder=(
+                                    "Search models, or type a model code"),
+                                value=AdminState.agent_test_model_query,
+                                on_change=AdminState.set_agent_test_model_query,
+                                auto_focus=True, width="100%"),
+                            rx.cond(
+                                AdminState.custom_agent_test_model_query != "",
+                                model_menu_item(
+                                    rx.button(
+                                        rx.hstack(
+                                            rx.icon("plus", size=14),
+                                            rx.text("Use "),
+                                            rx.code(
+                                                AdminState.custom_agent_test_model_query),
+                                            align="center", spacing="2"),
+                                        variant="soft", width="100%",
+                                        justify_content="start",
+                                        padding="0.45rem 0.6rem",
+                                        on_click=AdminState.choose_agent_test_model(
+                                            AdminState.custom_agent_test_model_query)))),
+                            rx.scroll_area(
+                                rx.vstack(
+                                    model_menu_item(
+                                        rx.button(
+                                            "Agent default", variant="ghost",
+                                            color_scheme="gray", width="100%",
+                                            justify_content="start",
+                                            padding="0.45rem 0.6rem",
+                                            on_click=AdminState.choose_agent_test_model(""))),
+                                    rx.foreach(
+                                        AdminState.filtered_agent_test_models,
+                                        agent_test_model_option_row),
+                                    rx.cond(
+                                        AdminState.agent_test_models_loading,
+                                        rx.text(
+                                            "Loading models from the coding agent…",
+                                            color=MUTED, font_size="0.8rem",
+                                            padding="0.5rem")),
+                                    spacing="1", width="100%"),
+                                type="auto", scrollbars="vertical",
+                                max_height="15rem", width="100%"),
+                            spacing="2", width="100%"),
+                        width="24rem", max_width="calc(100vw - 3rem)")),
+                rx.text(
+                    rx.cond(
+                        AdminState.agent_test_model == "",
+                        "Runs on whatever that agent defaults to.",
+                        rx.fragment("Uses ",
+                                    rx.code(AdminState.agent_test_model),
+                                    " for this conversation.")),
+                    color=MUTED, font_size="0.82rem")),
+            rx.scroll_area(
+                rx.vstack(
+                    rx.cond(
+                        AdminState.agent_test_messages.length() == 0,
+                        rx.text("Send a message to start the conversation.",
+                                color=MUTED, font_size="0.9rem",
+                                align_self="center", margin_top="3rem"),
+                        rx.foreach(AdminState.agent_test_messages,
+                                   conversation_message)),
+                    width="100%", spacing="3"),
+                type="auto", scrollbars="vertical", height="22rem",
+                width="100%", margin_top="1rem"),
+            rx.form(
+                rx.hstack(
+                    rx.input(
+                        value=AdminState.agent_test_input,
+                        on_change=AdminState.set_agent_test_input,
+                        placeholder="Message the agent",
+                        disabled=AdminState.agent_test_sending,
+                        auto_focus=True,
+                        width="100%"),
+                    rx.button(rx.icon("send", size=16), type="submit",
+                              loading=AdminState.agent_test_sending,
+                              disabled=AdminState.agent_test_input == ""),
+                    spacing="2", width="100%"),
+                on_submit=AdminState.send_agent_test_message,
+                reset_on_submit=False,
+                width="100%", margin_top="1rem"),
+            rx.flex(
+                rx.dialog.close(rx.button("Close", variant="soft",
+                                          color_scheme="gray")),
+                justify="end", margin_top="1rem"),
+            max_width="38rem"),
+        open=AdminState.agent_test_open,
+        on_open_change=AdminState.set_agent_test_open,
+    )
+
+
 def settings_page() -> rx.Component:
     jira = TasksProvider.JIRA
     jira_fields = rx.vstack(
@@ -3248,10 +3506,20 @@ def settings_page() -> rx.Component:
             rx.heading("Coding agent", size="4", margin_bottom="1rem"),
             rx.vstack(
                 field("Default agent",
-                      rx.select(["claude_code", "github_copilot", "codex"],
-                                value=AdminState.coding_agent,
-                                on_change=AdminState.set_coding_agent,
-                                width="100%")),
+                      rx.grid(
+                          rx.select(
+                              ["claude_code", "github_copilot", "codex"],
+                              value=AdminState.coding_agent,
+                              on_change=AdminState.set_coding_agent,
+                              width="100%"),
+                          rx.button(rx.icon("messages-square", size=16),
+                                    "Test conversation", variant="outline",
+                                    white_space="nowrap",
+                                    on_click=AdminState.open_agent_test),
+                          grid_template_columns=rx.breakpoints(
+                              initial="minmax(0, 1fr)",
+                              md="minmax(0, 1fr) auto"),
+                          width="100%", gap="0.75rem")),
                 field("Max parallel tasks",
                       rx.input(value=AdminState.max_parallel_agents,
                                on_change=AdminState.set_max_parallel_agents,
@@ -3277,6 +3545,7 @@ def settings_page() -> rx.Component:
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         rx.button(rx.icon("save", size=16), "Save settings",
                   on_click=AdminState.save_settings),
+        agent_test_dialog(),
         spacing="5", align="start", width="100%"))
 
 

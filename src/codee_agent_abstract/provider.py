@@ -69,6 +69,21 @@ class AbstractCodingAgent(ABC):
         """
         ...
 
+    def continue_conversation(
+        self,
+        user_message: str,
+        session_id: str,
+        model: str = "",
+        on_session_id: Callable[[str], None] | None = None,
+    ) -> str:
+        """Continue an existing agent conversation and return its final reply.
+
+        Agents whose normal run command resumes when given an existing session
+        need no special implementation. Agents with a distinct resume command
+        override this method.
+        """
+        return self.run(user_message, session_id, model, on_session_id)
+
     def skill_prompt(self, slug: str, path: Path, argument: str = "",
                      argument_name: str = "") -> str:
         """The message that makes this agent run the skill stored at ``path``.

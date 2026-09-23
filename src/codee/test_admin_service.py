@@ -80,7 +80,8 @@ class NormalizeWorkItemsTest(unittest.TestCase):
             [("story", ["Story"], ""), ("task", ["Task", "Bug"], "")])
 
         self.assertEqual(error, "")
-        self.assertEqual(mapping, {"story": ["Story"], "task": ["Task", "Bug"]})
+        self.assertEqual(
+            mapping, {"story": ["Story"], "task": ["Task", "Bug"]})
 
     def test_a_type_listed_twice_in_one_row_is_kept_once(self) -> None:
         mapping, _, error = normalize_work_items(
@@ -162,6 +163,46 @@ class NormalizeWorkItemsTest(unittest.TestCase):
              ("Bug", ["Bug"], ""), ("bug", ["Defect"], "")])
 
         self.assertEqual(error, "'bug' is listed twice")
+
+
+class TestAgentConversationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = AdminService.__new__(AdminService)
+        self.service.root = Path("/repo")
+        self.service.context = Mock(settings=Settings())
+
+    @patch("codee.admin_service.build_coding_agent")
+    def test_first_turn_returns_the_agent_session_id(self, build_agent) -> None:
+        agent = build_agent.return_value
+
+        def run(message, session_id, model="", on_session_id=None):
+            on_session_id("agent-thread")
+            return "Final response"
+
+        agent.run.side_effect = run
+
+        response, session_id = self.service.test_agent_conversation(
+            "codex", "Hello", model="gpt-6-astra")
+
+        self.assertEqual(response, "Final response")
+        self.assertEqual(session_id, "agent-thread")
+        build_agent.assert_called_once_with(
+            self.service.context.settings, Path("/repo"), CodingAgent.CODEX)
+        self.assertEqual(agent.run.call_args.args[2], "gpt-6-astra")
+
+    @patch("codee.admin_service.build_coding_agent")
+    def test_later_turn_resumes_the_same_session(self, build_agent) -> None:
+        build_agent.return_value.continue_conversation.return_value = "Still here"
+
+        response, session_id = self.service.test_agent_conversation(
+            "github_copilot", "What did I ask?", "same-thread",
+            "claude-opus-5")
+
+        self.assertEqual((response, session_id), ("Still here", "same-thread"))
+        call = build_agent.return_value.continue_conversation.call_args
+        self.assertEqual(
+            call.args[:3],
+            ("What did I ask?", "same-thread", "claude-opus-5"))
 
 
 class AdminServiceWorkItemsTest(unittest.TestCase):
@@ -408,7 +449,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         self._connect("one@example.com")
         self._connect("two@example.com")
         second = self.service.claude_code_accounts()[1]
-        claude_code_accounts.set_current_account(second.id, self.service.context)
+        claude_code_accounts.set_current_account(
+            second.id, self.service.context)
 
         self.service.disconnect_claude_code_account(second.id)
 
@@ -423,7 +465,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
 
         self.service.disconnect_claude_code_account(account.id)
 
-        self.assertEqual(claude_code_accounts.accounts(self.service.context), [])
+        self.assertEqual(claude_code_accounts.accounts(
+            self.service.context), [])
 
     def test_switching_rotation_off_forgets_which_account_is_in_use(self) -> None:
         # So switching it back on later starts from the top rather than from
@@ -431,7 +474,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
         self._connect("one@example.com")
         self._connect("two@example.com")
         second = self.service.claude_code_accounts()[1]
-        claude_code_accounts.set_current_account(second.id, self.service.context)
+        claude_code_accounts.set_current_account(
+            second.id, self.service.context)
 
         self.service.save_settings("jira", "claude_code", 3, {}, None, None,
                                    "", False)
@@ -465,14 +509,16 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
             "access-1", "refresh-1", expires_at=far_future,
             refresh_expires_at=far_future))
 
-        self.assertFalse(self.service.claude_code_accounts()[0].needs_reconnect)
+        self.assertFalse(self.service.claude_code_accounts()
+                         [0].needs_reconnect)
 
     def test_an_account_with_no_known_window_is_not_flagged(self) -> None:
         # Zero means the API never said, which is not the same as expired.
         self._connect("one@example.com", tokens=claude_oauth.Tokens(
             "access-1", "refresh-1", expires_at=1, refresh_expires_at=0))
 
-        self.assertFalse(self.service.claude_code_accounts()[0].needs_reconnect)
+        self.assertFalse(self.service.claude_code_accounts()
+                         [0].needs_reconnect)
 
     def test_each_account_reports_both_of_its_windows(self) -> None:
         self._connect("one@example.com")
@@ -487,7 +533,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
 
         self.assertEqual(measured[0].session_percent, 12.0)
         self.assertEqual(measured[0].weekly_percent, 70.0)
-        self.assertEqual(measured[0].weekly_resets, "2026-09-16T09:00:00+00:00")
+        self.assertEqual(measured[0].weekly_resets,
+                         "2026-09-16T09:00:00+00:00")
         self.assertEqual(measured[0].usage_error, "")
 
     def test_the_reading_is_cached_rather_than_taken_every_redraw(self) -> None:
@@ -555,7 +602,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                 measured[1].id, self.service.context)
             again = self.service.claude_code_account_usage()
 
-        self.assertEqual([account.in_use for account in measured], [True, False])
+        self.assertEqual(
+            [account.in_use for account in measured], [True, False])
         self.assertEqual([account.in_use for account in again], [False, True])
         self.assertEqual(again[1].session_percent, 3.0)
 
@@ -594,7 +642,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
 
         self.assertEqual(measured[0].session_percent, 12.0)
         self.assertEqual(measured[0].weekly_percent, 70.0)
-        self.assertEqual(measured[0].session_resets, "2026-09-13T14:10:00+00:00")
+        self.assertEqual(measured[0].session_resets,
+                         "2026-09-13T14:10:00+00:00")
         self.assertEqual(measured[0].usage_error, "")
 
     def test_a_rate_limit_with_nothing_to_fall_back_on_says_so(self) -> None:
@@ -662,7 +711,8 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                       return_value=Usage(limited=False, windows={}, resets_at={})):
             measured = self.service.claude_code_account_usage()
 
-        self.assertEqual([account.in_use for account in measured], [True, False])
+        self.assertEqual(
+            [account.in_use for account in measured], [True, False])
 
     def test_no_accounts_means_no_requests(self) -> None:
         with patch("codee.admin_service.fetch_usage") as fetch:
@@ -1927,7 +1977,6 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
 
             self.assertEqual(generate.call_count, 1)
 
-
     def test_generate_workflow_regenerates_a_graph_from_an_older_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -2046,7 +2095,8 @@ class AdminServiceWorkflowAgentTest(unittest.TestCase):
 
             nodes = self._story_nodes(service)
 
-            self.assertNotIn("workflow-node--agent", nodes["Review"]["className"])
+            self.assertNotIn("workflow-node--agent",
+                             nodes["Review"]["className"])
             self.assertNotIn("style", nodes["Review"])
 
     def test_changing_the_agent_needs_no_second_inference(self) -> None:
@@ -2491,7 +2541,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
                 patch.object(ClaudeCodeAgent, "list_models") as claude_models:
             models = service.list_agent_models("codex")
 
-        self.assertEqual(models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra"}])
+        self.assertEqual(
+            models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra"}])
         claude_models.assert_not_called()
 
     def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
