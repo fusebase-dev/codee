@@ -74,6 +74,11 @@ class ClaudeCodeRunTest(unittest.TestCase):
         # The alias tracks the newest Opus, so no release needs an edit here.
         self.assertEqual(ClaudeCodeAgent.best_model(), "opus")
 
+    def test_opus_5_5_is_available_in_the_model_catalog(self) -> None:
+        models = [(model.id, model.name) for model in self.agent.list_models()]
+
+        self.assertIn(("claude-opus-5-5", "Claude Opus 5.5"), models)
+
 
 class ClaudeCodeUsageTest(unittest.TestCase):
     """Reading a subscription's remaining allowance out of the usage response."""

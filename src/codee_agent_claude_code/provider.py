@@ -14,6 +14,7 @@ log = get_logger(__name__)
 # maintained by hand. It only feeds the admin UI's picker — the editor also takes
 # a model id typed by hand, so a model missing here is still usable.
 MODELS = [
+    AgentModel("claude-opus-5-5", "Claude Opus 5.5"),
     AgentModel("claude-opus-5", "Claude Opus 5"),
     AgentModel("claude-sonnet-5", "Claude Sonnet 5"),
     AgentModel("claude-fable-5-1", "Claude Fable 5.1"),
