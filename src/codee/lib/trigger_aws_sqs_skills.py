@@ -80,11 +80,13 @@ def trigger_aws_sqs_skills(
             sqs_message_source.delete(message)
             runs_db.record_run(skill.name, "aws-sqs",
                                session_id, "succeeded", message=prompt,
+                               user_message=prompt, response=response,
                                main_context=main_context)
         except Exception as exc:
             print(f"[aws_sqs_skills] Failed to run {skill.name}: {exc}")
             runs_db.record_run(skill.name, "aws-sqs", session_id, "failed",
                                error=str(exc)[:500], message=prompt,
+                               user_message=prompt,
                                main_context=main_context)
 
 

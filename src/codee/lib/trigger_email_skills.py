@@ -89,12 +89,14 @@ def trigger_email_skills(
             path.unlink(missing_ok=True)
             runs_db.record_run(skill.name, "email", session_id,
                                "succeeded", message=prompt,
+                               user_message=prompt, response=response,
                                main_context=main_context)
         except Exception as exc:
             print(
                 f"[email_skills] Failed to run {skill.name} for {path.name}: {exc}")
             runs_db.record_run(skill.name, "email", session_id, "failed",
                                error=str(exc)[:500], message=prompt,
+                               user_message=prompt,
                                main_context=main_context)
 
 

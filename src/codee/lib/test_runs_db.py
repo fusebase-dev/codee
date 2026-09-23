@@ -130,6 +130,17 @@ def test_message_round_trip(tmp_path):
     assert by_skill == {"a": "hello", "b": "", "c": None}
 
 
+def test_response_round_trip(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.record_run("a", "cron", "s1", "succeeded", message="question",
+                       user_message="full question", response="final answer",
+                       main_context=ctx)
+
+    run, = runs_db.recent_runs(main_context=ctx)
+    assert run["user_message"] == "full question"
+    assert run["response"] == "final answer"
+
+
 # ---------------------------------------------------------------- active_jobs
 def test_active_job_lifecycle(tmp_path):
     ctx = _ctx(tmp_path)
@@ -210,7 +221,7 @@ def test_fmt_elapsed():
     assert runs_db.fmt_elapsed(3700) == "1h 1m"
 
 
-def test_migration_adds_message_column_without_data_loss(tmp_path):
+def test_migration_adds_run_detail_columns_without_data_loss(tmp_path):
     ctx = _ctx(tmp_path)
     # Build an old-schema DB (spec 001, no message column) with one row.
     with sqlite3.connect(_db_file(tmp_path)) as conn:
@@ -231,10 +242,15 @@ def test_migration_adds_message_column_without_data_loss(tmp_path):
     assert len(rows) == 1
     assert rows[0]["skill_name"] == "old"
     assert rows[0]["message"] is None  # pre-feature row reads as NULL
+    assert rows[0]["user_message"] is None
+    assert rows[0]["response"] is None
 
-    # New writes carry message; the upgraded DB round-trips it.
-    runs_db.record_run("new", "cron", "sid-new", "succeeded", message="m", main_context=ctx)
-    assert runs_db.recent_runs(main_context=ctx)[0]["message"] == "m"
+    # New writes carry both details; the upgraded DB round-trips them.
+    runs_db.record_run("new", "cron", "sid-new", "succeeded", message="m",
+                       user_message="u", response="r", main_context=ctx)
+    newest = runs_db.recent_runs(main_context=ctx)[0]
+    assert (newest["message"], newest["user_message"], newest["response"]) == (
+        "m", "u", "r")
 
 
 # The agent Codee names a session for is not always the agent that runs under
