@@ -142,6 +142,9 @@ class Settings:
     tasks_provider: TasksProvider = TasksProvider.JIRA
     # Which coding agent the executor drives to work on tasks.
     coding_agent: CodingAgent = CodingAgent.CLAUDE_CODE
+    # Text prepended to every prompt sent to GitHub Copilot. Other coding
+    # agents do not read this setting.
+    github_copilot_prompt_prefix: str = ""
     # Per-provider credentials, keyed by provider value -> {field key: value}.
     # Values for all providers are kept so switching provider preserves them.
     credentials: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -156,7 +159,8 @@ class Settings:
     # mandatory, settings written before one work item could name several types
     # hold a bare string where there is now a list, and a work item selected by
     # a query ignores its types entirely.
-    work_item_types: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    work_item_types: dict[str, dict[str, list[str]]
+                          ] = field(default_factory=dict)
     # The advanced answer to the same question: a condition in the provider's
     # own query language that picks one Codee work item out of the backend,
     # keyed by provider value -> {codee work item: condition}. Set for a work
@@ -202,6 +206,8 @@ def load_settings(data_dir: Path) -> Settings:
                 tasks_provider=TasksProvider(data["tasks_provider"]),
                 coding_agent=CodingAgent(
                     data.get("coding_agent", CodingAgent.CLAUDE_CODE.value)),
+                github_copilot_prompt_prefix=str(
+                    data.get("github_copilot_prompt_prefix", "")),
                 credentials=data.get("credentials", {}),
                 work_item_types=data.get("work_item_types", {}),
                 work_item_queries=data.get("work_item_queries", {}),
@@ -225,6 +231,7 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
     payload = json.dumps({
         "tasks_provider": settings.tasks_provider.value,
         "coding_agent": settings.coding_agent.value,
+        "github_copilot_prompt_prefix": settings.github_copilot_prompt_prefix,
         "credentials": settings.credentials,
         "work_item_types": settings.work_item_types,
         "work_item_queries": settings.work_item_queries,

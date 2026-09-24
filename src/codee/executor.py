@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import threading
 import time
@@ -9,11 +10,12 @@ from datetime import datetime, timezone
 from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
-from codee_agent_github_copilot.provider import GitHubCopilotAgent
+from codee_agent_github_copilot.provider import (
+    COPILOT_DEBUG_ENV_VAR, GitHubCopilotAgent)
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, codee_issue_types, data_dir,
     load_settings, project_root)
-from codee_main_context.logging import configure_logging, get_logger
+from codee_main_context.logging import DEBUG_ENV_VAR, configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
 from codee.coding_agents import resolve_agent_code
@@ -68,6 +70,13 @@ def _max_parallel_agents() -> int:
     simply launches nothing new until it is back under the limit.
     """
     return max(1, context.settings.max_parallel_agents)
+
+
+def _log_debug_environment() -> None:
+    if os.environ.get(COPILOT_DEBUG_ENV_VAR, "").strip().lower() == "true":
+        log.info("COPILOT_DEBUG=true (Copilot CLI debug logs enabled)")
+    if os.environ.get(DEBUG_ENV_VAR, "").strip() == "1":
+        log.info("CODEE_DEBUG=1 (Codee debug logging enabled)")
 
 
 def _load_sessions() -> dict[str, str]:
@@ -171,7 +180,13 @@ def _refresh_config() -> None:
         else:
             log.info("Reloaded tasks provider: %s", tasks_provider.describe())
 
-    if settings.coding_agent != previous.coding_agent:
+    coding_agent_changed = settings.coding_agent != previous.coding_agent
+    copilot_settings_changed = (
+        settings.coding_agent == CodingAgent.GITHUB_COPILOT
+        and settings.github_copilot_prompt_prefix
+        != previous.github_copilot_prompt_prefix
+    )
+    if coding_agent_changed or copilot_settings_changed:
         try:
             coding_agent = _build_coding_agent(settings)
         except Exception as exc:
@@ -276,7 +291,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
         """
         if agent_session_id == session_id:
             return
-        log.debug("job %s runs under agent session %s", job_id, agent_session_id)
+        log.debug("job %s runs under agent session %s",
+                  job_id, agent_session_id)
         runs_db.note_agent_session(session_id, agent_session_id)
         runs_db.set_job_session(job_id, agent_session_id, main_context=context)
 
@@ -460,6 +476,7 @@ def main() -> None:
     # Entry point: install the handler before anything logs. Level comes from
     # CODEE_DEBUG, which `codee-start --debug` exports for this subprocess.
     configure_logging()
+    _log_debug_environment()
 
     if not tasks_provider.is_configured():
         log.warning("tasks provider is not configured; task polling stays "

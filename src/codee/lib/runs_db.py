@@ -11,7 +11,7 @@ from codee_main_context.context import CodeeMainContext
 from codee_database.database import get_db_connection
 
 _COLUMNS = ("id", "skill_name", "trigger_type", "session_id", "status", "error",
-            "started_at", "message", "user_message", "response")
+            "started_at", "message", "user_message", "response", "debug_logs")
 
 # Codee names a session before the agent runs, but not every agent runs under
 # the name it was given: Codex mints its own thread id and reports it back mid
@@ -52,7 +52,8 @@ def init(main_context: CodeeMainContext) -> None:
                 started_at TEXT NOT NULL,
                 message TEXT,
                 user_message TEXT,
-                response TEXT
+                response TEXT,
+                debug_logs TEXT
             )"""
         )
         conn.execute(
@@ -65,6 +66,8 @@ def init(main_context: CodeeMainContext) -> None:
             conn.execute("ALTER TABLE runs ADD COLUMN response TEXT")
         if "user_message" not in cols:
             conn.execute("ALTER TABLE runs ADD COLUMN user_message TEXT")
+        if "debug_logs" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN debug_logs TEXT")
         # In-flight claude runs; a row lives only while its subprocess is running.
         conn.execute(
             """CREATE TABLE IF NOT EXISTS active_jobs (
@@ -77,28 +80,33 @@ def init(main_context: CodeeMainContext) -> None:
             )"""
         )
         # Migrate DBs created before the dashboard named the agent behind a run.
-        job_cols = {row[1] for row in conn.execute("PRAGMA table_info(active_jobs)")}
+        job_cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(active_jobs)")}
         for column in ("agent", "model"):
             if column not in job_cols:
-                conn.execute(f"ALTER TABLE active_jobs ADD COLUMN {column} TEXT")
+                conn.execute(
+                    f"ALTER TABLE active_jobs ADD COLUMN {column} TEXT")
 
 
 def record_run(skill_name, trigger_type, session_id, status, error=None, started_at=None,
-               message=None, user_message=None, response=None,
+               message=None, user_message=None, response=None, debug_logs=None,
                *, main_context: CodeeMainContext) -> None:
     """Insert one run row. Never raises to the caller (FR-009)."""
     try:
         init(main_context)
         session_id = agent_session(session_id)
+        if debug_logs is None:
+            debug_logs = getattr(response, "debug_logs", None)
         if started_at is None:
             started_at = datetime.now(timezone.utc).isoformat()
         with get_db_connection(main_context) as conn:
             conn.execute(
                 "INSERT INTO runs (skill_name, trigger_type, session_id, status, error,"
-                " started_at, message, user_message, response)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " started_at, message, user_message, response, debug_logs)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (skill_name, trigger_type, session_id,
-                 status, error, started_at, message, user_message, response),
+                 status, error, started_at, message, user_message, response,
+                 debug_logs),
             )
     except Exception as exc:  # ponytail: a logging miss must never abort the skill run
         print(f"[runs_db] Failed to record run for {skill_name}: {exc}")
@@ -112,7 +120,7 @@ def recent_runs(limit: int = 100, offset: int = 0, *,
         with get_db_connection(main_context) as conn:
             rows = conn.execute(
                 "SELECT id, skill_name, trigger_type, session_id, status, error,"
-                " started_at, message, user_message, response"
+                " started_at, message, user_message, response, debug_logs"
                 " FROM runs ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
                 (limit, max(offset, 0)),
             ).fetchall()

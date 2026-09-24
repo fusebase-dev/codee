@@ -19,6 +19,17 @@ class AgentModel:
     name: str
 
 
+class AgentResponse(str):
+    """Agent text with optional diagnostic output for the run record."""
+
+    debug_logs: str
+
+    def __new__(cls, response: str, debug_logs: str = "") -> "AgentResponse":
+        value = super().__new__(cls, response)
+        value.debug_logs = debug_logs
+        return value
+
+
 class AbstractCodingAgent(ABC):
     """Base class every coding agent (e.g. Claude Code) inherits from.
 

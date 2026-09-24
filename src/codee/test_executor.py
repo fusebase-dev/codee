@@ -19,6 +19,28 @@ from codee.lib import runs_db
 from codee.lib.trigger_issue_skills import IssueTriggeredSkill
 
 
+class DebugEnvironmentLoggingTest(unittest.TestCase):
+    def test_enabled_debug_flags_are_logged_at_startup(self) -> None:
+        with patch.dict(os.environ, {
+            "COPILOT_DEBUG": "TRUE",
+            "CODEE_DEBUG": "1",
+        }, clear=True), patch.object(executor.log, "info") as info:
+            executor._log_debug_environment()
+
+        info.assert_any_call(
+            "COPILOT_DEBUG=true (Copilot CLI debug logs enabled)")
+        info.assert_any_call("CODEE_DEBUG=1 (Codee debug logging enabled)")
+
+    def test_disabled_debug_flags_are_not_logged(self) -> None:
+        with patch.dict(os.environ, {
+            "COPILOT_DEBUG": "false",
+            "CODEE_DEBUG": "true",
+        }, clear=True), patch.object(executor.log, "info") as info:
+            executor._log_debug_environment()
+
+        info.assert_not_called()
+
+
 class RefreshConfigTest(unittest.TestCase):
     """The executor re-reads settings.json each poll, so edits need no restart."""
 
@@ -68,7 +90,8 @@ class RefreshConfigTest(unittest.TestCase):
 
         executor._refresh_config()
 
-        self.assertIsInstance(executor.tasks_provider, AzureDevOpsTasksProvider)
+        self.assertIsInstance(executor.tasks_provider,
+                              AzureDevOpsTasksProvider)
         self.assertEqual(executor.context.settings.tasks_provider,
                          TasksProvider.AZURE_DEVOPS)
 
@@ -143,6 +166,40 @@ class RefreshConfigTest(unittest.TestCase):
         self.assertIsInstance(executor.coding_agent, GitHubCopilotAgent)
         self.assertEqual(executor.context.settings.coding_agent,
                          CodingAgent.GITHUB_COPILOT)
+
+    def test_changing_copilot_prompt_prefix_rebuilds_the_default_agent(self) -> None:
+        self._save(coding_agent=CodingAgent.GITHUB_COPILOT)
+        executor._refresh_config()
+        original = executor.coding_agent
+
+        self._save(
+            coding_agent=CodingAgent.GITHUB_COPILOT,
+            github_copilot_prompt_prefix="Follow repository policy.",
+        )
+        executor._refresh_config()
+
+        self.assertIsNot(executor.coding_agent, original)
+        completed = Mock(
+            returncode=0,
+            stdout=(
+                '{"type":"assistant.message","data":{"content":"ok"}}\n'
+                '{"type":"result","exitCode":0}\n'
+            ),
+            stderr="",
+        )
+        issue_prompt = (
+            "Read .claude/skills/story-qa/SKILL.md and follow its "
+            "instructions exactly. STORY_ID = 92146"
+        )
+        with patch("codee_agent_github_copilot.provider.subprocess.run",
+                   return_value=completed) as run:
+            executor._agent_for_skill("").run(issue_prompt, "session-1")
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("-p") + 1],
+            f"Follow repository policy.\n\n{issue_prompt}",
+        )
 
     def test_broken_coding_agent_settings_keep_polling_with_the_old_one(self) -> None:
         self._save(coding_agent=CodingAgent.CLAUDE_CODE)
@@ -446,10 +503,12 @@ class ParentWorkItemSkipTest(unittest.TestCase):
         self.provider.is_configured.return_value = True
         self.skills = [
             IssueTriggeredSkill(name="Task developer", slug="task-developer",
-                                path=Path("/repo/.claude/skills/task/SKILL.md"),
+                                path=Path(
+                                    "/repo/.claude/skills/task/SKILL.md"),
                                 statuses=("Ready",), issue_type="task"),
             IssueTriggeredSkill(name="Story developer", slug="story-developer",
-                                path=Path("/repo/.claude/skills/story/SKILL.md"),
+                                path=Path(
+                                    "/repo/.claude/skills/story/SKILL.md"),
                                 statuses=("Ready",), issue_type="story"),
         ]
         for name in ("trigger_cron_skills", "trigger_aws_sqs_skills",

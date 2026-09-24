@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codee_agent_github_copilot.provider import (
-    MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent, _await_result)
+    COPILOT_DEBUG_ENV_VAR, MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent,
+    _await_result)
 from codee_main_context.context import Settings
 
 SESSION = "82232f47-df60-4cb3-8c3a-de12074c9205"
@@ -121,6 +122,22 @@ class CopilotRunTest(unittest.TestCase):
         self.assertEqual(self.captured.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(self.captured.call_args.kwargs["errors"], "replace")
 
+    def test_prepends_the_configured_prompt_prefix(self) -> None:
+        self.agent = GitHubCopilotAgent(
+            Settings(github_copilot_prompt_prefix="Follow repository policy."),
+            Path("/repo"),
+        )
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout))
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(
+            cmd[cmd.index("-p") + 1],
+            "Follow repository policy.\n\n/do-it CORE-1",
+        )
+
     def test_continuing_reuses_the_same_session_id(self) -> None:
         stdout = _stream(_event("assistant.message", {"content": "ok"}),
                          _event("result", exitCode=0))
@@ -152,6 +169,26 @@ class CopilotRunTest(unittest.TestCase):
         self._run(_completed(stdout))
 
         self.assertNotIn("--model", self.captured.call_args.args[0])
+
+    def test_debug_env_adds_log_level_and_preserves_stderr(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+        with patch.dict(os.environ, {COPILOT_DEBUG_ENV_VAR: "true"}):
+            response = self._run(_completed(stdout, stderr="debug line\n"))
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--log-level") + 1], "debug")
+        self.assertEqual(response, "ok")
+        self.assertEqual(response.debug_logs, "debug line\n")
+
+    def test_debug_env_must_be_true(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+        with patch.dict(os.environ, {COPILOT_DEBUG_ENV_VAR: "1"}):
+            response = self._run(_completed(stdout, stderr="not retained"))
+
+        self.assertNotIn("--log-level", self.captured.call_args.args[0])
+        self.assertEqual(response.debug_logs, "")
 
     def test_the_best_model_is_an_anthropic_catalog_id(self) -> None:
         # Copilot has no latest-tier alias, so this id is pinned by hand and only
@@ -187,6 +224,13 @@ class CopilotRunTest(unittest.TestCase):
     def test_output_that_is_not_the_event_stream_is_passed_through(self) -> None:
         self.assertEqual(self._run(_completed("plain text reply\n")),
                          "plain text reply\n")
+
+    def test_raw_output_keeps_debug_logs(self) -> None:
+        with patch.dict(os.environ, {COPILOT_DEBUG_ENV_VAR: "TRUE"}):
+            response = self._run(_completed("plain text reply\n", "debug\n"))
+
+        self.assertEqual(response, "plain text reply\n")
+        self.assertEqual(response.debug_logs, "debug\n")
 
     def test_a_timeout_raises(self) -> None:
         with patch("subprocess.run",

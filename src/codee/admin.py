@@ -38,6 +38,7 @@ USAGE_POLL_INTERVAL = 60
 # installed or uninstalled under a running Codee, and the answer shapes the
 # page rather than anything the user can change on it.
 CLAUDE_CODE_AVAILABLE = SERVICE.claude_code_available()
+GITHUB_COPILOT_AVAILABLE = SERVICE.github_copilot_available()
 
 
 def _skill_summary(skill: dict[str, str]) -> SkillSummary:
@@ -273,6 +274,7 @@ class RunRecord(BaseModel):
     message: str
     user_message: str
     response: str
+    debug_logs: str
     preview: str
     viewer_url: str
 
@@ -360,6 +362,7 @@ class AdminState(rx.State):
 
     tasks_provider: str = "jira"
     coding_agent: str = "claude_code"
+    github_copilot_prompt_prefix: str = ""
     max_parallel_agents: str = "3"
     agent_test_open: bool = False
     agent_test_input: str = ""
@@ -856,6 +859,7 @@ class AdminState(rx.State):
                 message=message,
                 user_message=(run.get("user_message") or message).strip(),
                 response=(run.get("response") or "").strip(),
+                debug_logs=run.get("debug_logs") or "",
                 preview=preview[:120] + ("..." if len(preview) > 120 else ""),
                 viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
                             if SERVICE.session_viewer and run.get("session_id") else ""),
@@ -971,6 +975,7 @@ class AdminState(rx.State):
         settings = SERVICE.load_settings()
         self.tasks_provider = settings.tasks_provider.value
         self.coding_agent = settings.coding_agent.value
+        self.github_copilot_prompt_prefix = settings.github_copilot_prompt_prefix
         self.max_parallel_agents = str(settings.max_parallel_agents)
         self.claude_code_rotate_keys = settings.claude_code_rotate_keys
         self._cancel_claude_code_sign_in()
@@ -1204,6 +1209,9 @@ class AdminState(rx.State):
 
     def set_coding_agent(self, value: str) -> None:
         self.coding_agent = value
+
+    def set_github_copilot_prompt_prefix(self, value: str) -> None:
+        self.github_copilot_prompt_prefix = value
 
     def set_max_parallel_agents(self, value: str) -> None:
         self.max_parallel_agents = value
@@ -1547,6 +1555,7 @@ class AdminState(rx.State):
             work_item_queries,
             self._task_filter(),
             self.claude_code_rotate_keys,
+            self.github_copilot_prompt_prefix,
         )
         # Saving is what picks the first account when rotation has just been
         # switched on, so the badge has to be redrawn from what that decided.
@@ -2547,7 +2556,7 @@ def run_row(run: RunRecord) -> rx.Component:
             rx.cond(run.viewer_url != "", rx.link(rx.icon("external-link", size=16), href=run.viewer_url,
                                                   is_external=True, aria_label="View session", color=ACCENT)),
             gap="1rem", align="start", width="100%"),
-        rx.cond((run.user_message != "") | (run.response != ""), rx.accordion.root(rx.accordion.item(
+        rx.cond((run.user_message != "") | (run.response != "") | (run.debug_logs != ""), rx.accordion.root(rx.accordion.item(
             header="Run info", content=rx.vstack(
                 rx.text("User message", font_weight="600"),
                 rx.text(run.user_message, white_space="pre-wrap"),
@@ -2555,6 +2564,12 @@ def run_row(run: RunRecord) -> rx.Component:
                     rx.text("LLM response", font_weight="600",
                             margin_top="0.75rem"),
                     rx.text(run.response, white_space="pre-wrap"))),
+                rx.cond(run.debug_logs != "", rx.fragment(
+                        rx.text("Debug logs", font_weight="600",
+                                margin_top="0.75rem"),
+                        rx.text(run.debug_logs, white_space="pre-wrap",
+                                font_family="IBM Plex Mono, monospace",
+                                font_size="0.8rem"))),
                 spacing="2", align="start", width="100%"), value=run.started_at),
             collapsible=True, width="100%")),
         padding="1rem", background=SURFACE, border=BORDER, width="100%")
@@ -3355,6 +3370,28 @@ def claude_code_setting() -> rx.Component:
         padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
 
 
+def github_copilot_setting() -> rx.Component:
+    """Settings used only by GitHub Copilot CLI runs."""
+    return rx.box(
+        rx.heading("GitHub Copilot", size="4", margin_bottom="1rem"),
+        field(
+            "Prompt prefix",
+            rx.text_area(
+                value=AdminState.github_copilot_prompt_prefix,
+                on_change=AdminState.set_github_copilot_prompt_prefix,
+                placeholder="Instructions added before every Copilot prompt",
+                width="100%",
+                min_height="7rem",
+            ),
+            rx.text(
+                "Added to the beginning of every prompt sent to GitHub Copilot.",
+                color=MUTED,
+                font_size="0.82rem",
+            ),
+        ),
+        padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
+
+
 def conversation_message(message: ConversationMessage) -> rx.Component:
     is_user = message.role == "user"
     return rx.box(
@@ -3532,6 +3569,7 @@ def settings_page() -> rx.Component:
         # which agents a machine has is not state: there is no event that could
         # ever flip it, and nothing on the page should be able to.
         claude_code_setting() if CLAUDE_CODE_AVAILABLE else rx.fragment(),
+        github_copilot_setting() if GITHUB_COPILOT_AVAILABLE else rx.fragment(),
         rx.box(
             rx.heading("Tasks provider", size="4", margin_bottom="1rem"),
             field("Provider", rx.select(["jira", "azure_devops"], value=AdminState.tasks_provider,

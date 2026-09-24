@@ -258,6 +258,21 @@ class AdminServiceWorkItemsTest(unittest.TestCase):
 
             self.assertEqual(load_settings(directory).task_filters["jira"], "")
 
+    def test_saving_preserves_the_github_copilot_prompt_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            service = self._service(directory)
+
+            service.save_settings(
+                "jira", "github_copilot", 3, {},
+                github_copilot_prompt_prefix="Follow repository policy.",
+            )
+
+            self.assertEqual(
+                load_settings(directory).github_copilot_prompt_prefix,
+                "Follow repository policy.",
+            )
+
     def test_saving_keeps_the_other_provider_s_work_item_queries(self) -> None:
         # A JQL condition means nothing to Azure DevOps, so each provider keeps
         # its own and switching between them loses neither.

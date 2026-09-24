@@ -30,7 +30,8 @@ def test_round_trip_newest_first(tmp_path):
                        started_at="2026-06-27T11:00:00+00:00", main_context=ctx)
 
     rows = runs_db.recent_runs(main_context=ctx)
-    assert [r["skill_name"] for r in rows] == ["skill-b", "skill-a"]  # newest first
+    assert [r["skill_name"] for r in rows] == [
+        "skill-b", "skill-a"]  # newest first
     assert rows[0]["trigger_type"] == "email"
     assert rows[0]["status"] == "failed"
     assert rows[0]["error"] == "boom"
@@ -74,7 +75,8 @@ def test_main_context_is_required():
             call()
         except TypeError:
             continue
-        raise AssertionError("main_context must be a required keyword argument")
+        raise AssertionError(
+            "main_context must be a required keyword argument")
 
 
 # ---------------------------------------------------------------- counts() (US1)
@@ -85,9 +87,12 @@ def _ago(hours):
 def test_counts_total_and_last_24h(tmp_path):
     ctx = _ctx(tmp_path)
     # Two inside the 24h window, one well outside, one exactly at the boundary (excluded, strict >).
-    runs_db.record_run("a", "cron", "s1", "succeeded", started_at=_ago(1), main_context=ctx)
-    runs_db.record_run("b", "cron", "s2", "succeeded", started_at=_ago(23), main_context=ctx)
-    runs_db.record_run("c", "cron", "s3", "succeeded", started_at=_ago(48), main_context=ctx)
+    runs_db.record_run("a", "cron", "s1", "succeeded",
+                       started_at=_ago(1), main_context=ctx)
+    runs_db.record_run("b", "cron", "s2", "succeeded",
+                       started_at=_ago(23), main_context=ctx)
+    runs_db.record_run("c", "cron", "s3", "succeeded",
+                       started_at=_ago(48), main_context=ctx)
     assert runs_db.counts(ctx) == {"total": 3, "last_24h": 2}
 
 
@@ -101,17 +106,22 @@ def test_counts_never_raises_on_bad_path(tmp_path):
 
 def test_runs_by_hour_buckets(tmp_path):
     ctx = _ctx(tmp_path)
-    runs_db.record_run("a", "cron", "s1", "succeeded", started_at=_ago(2), main_context=ctx)
-    runs_db.record_run("b", "cron", "s2", "succeeded", started_at=_ago(2.1), main_context=ctx)
-    runs_db.record_run("c", "cron", "s3", "succeeded", started_at=_ago(48), main_context=ctx)  # out of window
+    runs_db.record_run("a", "cron", "s1", "succeeded",
+                       started_at=_ago(2), main_context=ctx)
+    runs_db.record_run("b", "cron", "s2", "succeeded",
+                       started_at=_ago(2.1), main_context=ctx)
+    runs_db.record_run("c", "cron", "s3", "succeeded",
+                       started_at=_ago(48), main_context=ctx)  # out of window
 
     hourly = runs_db.runs_by_hour(ctx)
     assert len(hourly) == 24  # always 24 buckets
     # oldest-first: buckets are the last 24 hour labels in ascending time order
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    expected = [(now - timedelta(hours=h)).strftime("%H:00") for h in range(23, -1, -1)]
+    expected = [(now - timedelta(hours=h)).strftime("%H:00")
+                for h in range(23, -1, -1)]
     assert [h["hour"] for h in hourly] == expected
-    assert sum(h["runs"] for h in hourly) == 2  # 48h-old run excluded; the two ~2h-old runs counted
+    # 48h-old run excluded; the two ~2h-old runs counted
+    assert sum(h["runs"] for h in hourly) == 2
 
 
 def test_runs_by_hour_empty_and_bad_path(tmp_path):
@@ -123,10 +133,14 @@ def test_runs_by_hour_empty_and_bad_path(tmp_path):
 # ---------------------------------------------------------------- message column (US2)
 def test_message_round_trip(tmp_path):
     ctx = _ctx(tmp_path)
-    runs_db.record_run("a", "cron", "s1", "succeeded", message="hello", main_context=ctx)
-    runs_db.record_run("b", "email", "s2", "succeeded", message="", main_context=ctx)
-    runs_db.record_run("c", "aws-sqs", "s3", "succeeded", main_context=ctx)  # message defaults None
-    by_skill = {r["skill_name"]: r["message"] for r in runs_db.recent_runs(main_context=ctx)}
+    runs_db.record_run("a", "cron", "s1", "succeeded",
+                       message="hello", main_context=ctx)
+    runs_db.record_run("b", "email", "s2", "succeeded",
+                       message="", main_context=ctx)
+    runs_db.record_run("c", "aws-sqs", "s3", "succeeded",
+                       main_context=ctx)  # message defaults None
+    by_skill = {r["skill_name"]: r["message"]
+                for r in runs_db.recent_runs(main_context=ctx)}
     assert by_skill == {"a": "hello", "b": "", "c": None}
 
 
@@ -139,6 +153,19 @@ def test_response_round_trip(tmp_path):
     run, = runs_db.recent_runs(main_context=ctx)
     assert run["user_message"] == "full question"
     assert run["response"] == "final answer"
+
+
+def test_debug_logs_are_extracted_from_the_agent_response(tmp_path):
+    from codee_agent_abstract.provider import AgentResponse
+
+    ctx = _ctx(tmp_path)
+    response = AgentResponse("final answer", "debug one\ndebug two\n")
+    runs_db.record_run("a", "cron", "s1", "succeeded", response=response,
+                       main_context=ctx)
+
+    run, = runs_db.recent_runs(main_context=ctx)
+    assert run["response"] == "final answer"
+    assert run["debug_logs"] == "debug one\ndebug two\n"
 
 
 # ---------------------------------------------------------------- active_jobs
@@ -195,7 +222,8 @@ def test_active_jobs_elapsed_and_order(tmp_path):
     runs_db.start_job("young", "b", started_at=_ago(0.01), main_context=ctx)
     runs_db.start_job("old", "a", started_at=_ago(1), main_context=ctx)
     jobs = runs_db.active_jobs(ctx)
-    assert [j["session_id"] for j in jobs] == ["young", "old"]  # youngest first
+    assert [j["session_id"]
+            for j in jobs] == ["young", "old"]  # youngest first
     assert jobs[1]["elapsed"] >= 3500  # ~1h old
 
 
@@ -262,7 +290,8 @@ def test_set_job_session_repoints_a_live_job(tmp_path):
 
     runs_db.set_job_session(job_id, "codex-thread", main_context=ctx)
 
-    assert runs_db.active_jobs(main_context=ctx)[0]["session_id"] == "codex-thread"
+    assert runs_db.active_jobs(main_context=ctx)[
+        0]["session_id"] == "codex-thread"
 
 
 def test_set_job_session_is_a_no_op_without_a_job(tmp_path):
@@ -280,7 +309,8 @@ def test_a_noted_agent_session_is_what_the_run_records(tmp_path):
     runs_db.record_run("skill-a", "issue", "codee-sid", "succeeded",
                        main_context=ctx)
 
-    assert runs_db.recent_runs(main_context=ctx)[0]["session_id"] == "codex-thread"
+    assert runs_db.recent_runs(main_context=ctx)[
+        0]["session_id"] == "codex-thread"
 
 
 def test_the_note_is_consumed_so_a_later_run_keeps_its_own_id(tmp_path):

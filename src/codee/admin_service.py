@@ -26,6 +26,7 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_claude_code.usage import (
     SESSION_WINDOW, WEEKLY_WINDOW, UsageRateLimited, UsageUnavailable,
     fetch_usage)
+from codee_agent_github_copilot.provider import GitHubCopilotAgent
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
 from codee.coding_agents import (
@@ -2109,6 +2110,7 @@ class AdminService:
         work_item_queries: dict[str, str] | None = None,
         task_filter: str = "",
         claude_code_rotate_keys: bool = False,
+        github_copilot_prompt_prefix: str | None = None,
     ) -> None:
         current = self.context.settings
         all_credentials = dict(current.credentials)
@@ -2132,6 +2134,10 @@ class AdminService:
         self.context.settings = Settings(
             tasks_provider=TasksProvider(tasks_provider),
             coding_agent=CodingAgent(coding_agent),
+            github_copilot_prompt_prefix=(
+                current.github_copilot_prompt_prefix
+                if github_copilot_prompt_prefix is None
+                else github_copilot_prompt_prefix.strip()),
             credentials=all_credentials,
             work_item_types=all_work_items,
             work_item_queries=all_work_item_queries,
@@ -2151,6 +2157,10 @@ class AdminService:
         something that can never happen.
         """
         return ClaudeCodeAgent.is_installed()
+
+    def github_copilot_available(self) -> bool:
+        """Whether this machine has the GitHub Copilot CLI installed."""
+        return GitHubCopilotAgent.is_installed()
 
     def claude_code_accounts(self) -> list[ConnectedAccount]:
         """The connected accounts, in rotation order, for the settings page."""

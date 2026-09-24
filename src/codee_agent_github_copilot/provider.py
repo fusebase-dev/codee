@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel, AgentResponse
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -30,6 +30,7 @@ _SESSION_NEW_ID = 2
 # Ceiling on what one run may spend. AI credits bill at $0.04 each, so the
 # default is the same $20 cap the Claude Code agent puts on a run.
 MAX_AI_CREDITS_ENV_VAR = "CODEE_COPILOT_MAX_AI_CREDITS"
+COPILOT_DEBUG_ENV_VAR = "COPILOT_DEBUG"
 DEFAULT_MAX_AI_CREDITS = 1000
 # The CLI rejects anything lower outright, which reads as a broken agent rather
 # than a misconfigured cap, so a smaller override is raised to it instead.
@@ -66,6 +67,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
+        self._settings = settings
 
     @classmethod
     def best_model(cls) -> str:
@@ -103,6 +105,9 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         # answer is known before the run starts.
         if on_session_id:
             on_session_id(session_id)
+        prefix = self._settings.github_copilot_prompt_prefix.strip()
+        if prefix:
+            user_message = f"{prefix}\n\n{user_message}"
         cmd = [
             self.CLI_COMMAND,
             "-p", user_message,
@@ -119,6 +124,10 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         # body alone — so a skill's model only takes effect via this flag.
         if model:
             cmd += ["--model", model]
+        debug_enabled = os.environ.get(
+            COPILOT_DEBUG_ENV_VAR, "").strip().lower() == "true"
+        if debug_enabled:
+            cmd += ["--log-level", "debug"]
 
         log.info("Running copilot with message: %s", user_message)
         log.debug("cwd=%s cmd=%s", self._cwd, " ".join(cmd))
@@ -156,7 +165,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             # rather than failing a run that the CLI itself called successful.
             log.warning(
                 "copilot produced no result event; returning raw output")
-            return stdout
+            return AgentResponse(stdout, stderr if debug_enabled else "")
         if outcome.get("exitCode"):
             raise RuntimeError(
                 f"Copilot run errored (exit code {outcome['exitCode']}): "
@@ -166,7 +175,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             raise RuntimeError(
                 f"Copilot run produced no response: {_detail(errors, stderr)}"
             )
-        return reply
+        return AgentResponse(reply, stderr if debug_enabled else "")
 
 
 def _relative(path: Path, cwd: Path) -> str:
