@@ -59,6 +59,26 @@ from codee_main_context.context import (
     work_item_mappings,
 )
 
+
+def relative_age_label(value: str, now: datetime | None = None) -> str:
+    """Format an ISO timestamp as a compact minute, hour, or day age."""
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return ""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    elapsed = max(int((current - timestamp).total_seconds()), 0)
+    if elapsed < 3600:
+        amount, unit = max(elapsed // 60, 1), "minute"
+    elif elapsed < 86400:
+        amount, unit = elapsed // 3600, "hour"
+    else:
+        amount, unit = elapsed // 86400, "day"
+    return f"{amount} {unit}{'' if amount == 1 else 's'} ago"
+
+
 load_dotenv()
 
 MANAGED = {
@@ -2050,6 +2070,7 @@ class AdminService:
                     search: str = "") -> list[dict[str, Any]]:
         rows = runs_db.recent_runs(
             limit, offset, search=search, main_context=self.context)
+        now = datetime.now(timezone.utc)
         for row in rows:
             try:
                 elapsed = (datetime.fromisoformat(row["ended_at"])
@@ -2057,6 +2078,8 @@ class AdminService:
             except (TypeError, ValueError):
                 elapsed = 0
             row["duration_label"] = runs_db.fmt_elapsed(max(int(elapsed), 0))
+            row["relative_age_label"] = relative_age_label(
+                row["ended_at"], now)
         return rows
 
     def load_settings(self) -> Settings:

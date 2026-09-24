@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
@@ -19,7 +20,7 @@ from codee.admin_service import (
     USAGE_RATE_LIMIT_BACKOFF_SECONDS, WORKFLOW_CACHE_VERSION,
     WORKFLOW_HUMAN_EDGE_COLOR, AdminService, WorkflowGeneration,
     _remove_redundant_skill_transitions, azure_oauth, issue_prompt_task,
-    normalize_work_items, parse_skill, repository_name)
+    normalize_work_items, parse_skill, relative_age_label, repository_name)
 from codee.lib import runs_db
 from codee_agent_claude_code import oauth as claude_oauth
 from codee_agent_claude_code.account import AccountUnavailable
@@ -61,6 +62,19 @@ def _write_issue_skill(root: Path) -> Path:
 
 
 class RecentRunsTest(unittest.TestCase):
+    def test_formats_relative_age_in_minutes_hours_and_days(self) -> None:
+        now = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+        cases = [
+            ("2026-09-24T11:59:30+00:00", "1 minute ago"),
+            ("2026-09-24T11:58:00+00:00", "2 minutes ago"),
+            ("2026-09-24T10:00:00+00:00", "2 hours ago"),
+            ("2026-09-21T12:00:00+00:00", "3 days ago"),
+        ]
+
+        for timestamp, expected in cases:
+            with self.subTest(timestamp=timestamp):
+                self.assertEqual(relative_age_label(timestamp, now), expected)
+
     def test_formats_duration_from_start_and_end_times(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             context = CodeeMainContext(data_dir=Path(directory))

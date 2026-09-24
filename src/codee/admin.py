@@ -272,6 +272,7 @@ class RunRecord(BaseModel):
     started_at: str
     ended_at: str
     duration_label: str
+    relative_age_label: str
     session_id: str
     message: str
     user_message: str
@@ -863,6 +864,7 @@ class AdminState(rx.State):
                 started_at=run["started_at"],
                 ended_at=run["ended_at"],
                 duration_label=run["duration_label"],
+                relative_age_label=run["relative_age_label"],
                 session_id=run.get("session_id") or "",
                 message=message,
                 user_message=(run.get("user_message") or message).strip(),
@@ -2572,9 +2574,12 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.flex(
             rx.vstack(rx.hstack(rx.text(run.skill_name, font_weight="600"),
                                 rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
-                      rx.text(local_datetime(run.ended_at), color=MUTED,
-                              font_size="0.8rem",
-                              font_family="IBM Plex Mono, monospace"),
+                      rx.hstack(
+                      rx.text(local_datetime(run.ended_at)),
+                      rx.text("(", run.relative_age_label, ")"),
+                      color=MUTED, font_size="0.8rem",
+                      font_family="IBM Plex Mono, monospace",
+                      spacing="2"),
                       rx.text("Duration: ", run.duration_label, color=MUTED,
                               font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
