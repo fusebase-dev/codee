@@ -270,6 +270,8 @@ class RunRecord(BaseModel):
     status: str
     error: str
     started_at: str
+    ended_at: str
+    duration_label: str
     session_id: str
     message: str
     user_message: str
@@ -334,6 +336,7 @@ class AdminState(rx.State):
     runs: list[RunRecord] = []
     runs_has_more: bool = False
     runs_loading: bool = False
+    runs_query: str = ""
     session_viewer: str = SERVICE.session_viewer
 
     workflow_sections: list[WorkflowSection] = []
@@ -843,7 +846,8 @@ class AdminState(rx.State):
 
     def _fetch_runs_page(self, offset: int) -> list[RunRecord]:
         """One page of runs. Reads one row past the page to learn whether more exist."""
-        rows = SERVICE.recent_runs(RUNS_PAGE_SIZE + 1, offset)
+        rows = SERVICE.recent_runs(
+            RUNS_PAGE_SIZE + 1, offset, self.runs_query)
         self.runs_has_more = len(rows) > RUNS_PAGE_SIZE
         records = []
         for run in rows[:RUNS_PAGE_SIZE]:
@@ -855,6 +859,8 @@ class AdminState(rx.State):
                 status=run["status"],
                 error=run.get("error") or "",
                 started_at=run["started_at"],
+                ended_at=run["ended_at"],
+                duration_label=run["duration_label"],
                 session_id=run.get("session_id") or "",
                 message=message,
                 user_message=(run.get("user_message") or message).strip(),
@@ -868,6 +874,11 @@ class AdminState(rx.State):
 
     def load_runs(self) -> None:
         """Load (or reload) the first page. Runs on every visit to /runs."""
+        self.runs_loading = False
+        self.runs = self._fetch_runs_page(0)
+
+    def search_runs(self, value: str) -> None:
+        self.runs_query = value
         self.runs_loading = False
         self.runs = self._fetch_runs_page(0)
 
@@ -2542,7 +2553,10 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.flex(
             rx.vstack(rx.hstack(rx.text(run.skill_name, font_weight="600"),
                                 rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
-                      rx.text(local_datetime(run.started_at), color=MUTED,
+                      rx.text(local_datetime(run.ended_at), color=MUTED,
+                              font_size="0.8rem",
+                              font_family="IBM Plex Mono, monospace"),
+                      rx.text("Duration: ", run.duration_label, color=MUTED,
                               font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
                       rx.text("Thread ID: ", run.session_id, color=MUTED,
@@ -2570,7 +2584,7 @@ def run_row(run: RunRecord) -> rx.Component:
                         rx.text(run.debug_logs, white_space="pre-wrap",
                                 font_family="IBM Plex Mono, monospace",
                                 font_size="0.8rem"))),
-                spacing="2", align="start", width="100%"), value=run.started_at),
+                spacing="2", align="start", width="100%"), value=run.ended_at),
             collapsible=True, width="100%")),
         padding="1rem", background=SURFACE, border=BORDER, width="100%")
 
@@ -2586,8 +2600,15 @@ def runs_page() -> rx.Component:
                           on_click=AdminState.load_more_runs)),
         spacing="3", width="100%")
     return shell(rx.vstack(page_header("Runs", "Recent trigger executions and outcomes."),
+                           rx.input(placeholder="Search prompts and LLM responses",
+                                    type="search", value=AdminState.runs_query,
+                                    on_change=AdminState.search_runs,
+                                    debounce_timeout=300, width="100%"),
                            rx.cond(AdminState.runs.length() > 0, listing,
-                                   empty_state("history", "No runs recorded yet.")),
+                                   rx.cond(AdminState.runs_query != "",
+                                           empty_state(
+                                               "search-x", "No runs match your search."),
+                                           empty_state("history", "No runs recorded yet."))),
                            align="start", width="100%"))
 
 

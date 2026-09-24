@@ -25,17 +25,20 @@ def _db_file(data_dir: Path) -> Path:
 def test_round_trip_newest_first(tmp_path):
     ctx = _ctx(tmp_path)
     runs_db.record_run("skill-a", "cron", "sid-1", "succeeded",
-                       started_at="2026-06-27T10:00:00+00:00", main_context=ctx)
+                       started_at="2026-06-27T10:00:00+00:00",
+                       ended_at="2026-06-27T12:00:00+00:00", main_context=ctx)
     runs_db.record_run("skill-b", "email", "sid-2", "failed", error="boom",
-                       started_at="2026-06-27T11:00:00+00:00", main_context=ctx)
+                       started_at="2026-06-27T11:00:00+00:00",
+                       ended_at="2026-06-27T11:30:00+00:00", main_context=ctx)
 
     rows = runs_db.recent_runs(main_context=ctx)
     assert [r["skill_name"] for r in rows] == [
-        "skill-b", "skill-a"]  # newest first
-    assert rows[0]["trigger_type"] == "email"
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["error"] == "boom"
-    assert rows[0]["session_id"] == "sid-2"
+        "skill-a", "skill-b"]  # latest completion first
+    assert rows[0]["ended_at"] == "2026-06-27T12:00:00+00:00"
+    assert rows[1]["trigger_type"] == "email"
+    assert rows[1]["status"] == "failed"
+    assert rows[1]["error"] == "boom"
+    assert rows[1]["session_id"] == "sid-2"
 
 
 def test_empty_db_returns_empty_list(tmp_path):
@@ -56,6 +59,24 @@ def test_limit_and_offset_page_through_runs(tmp_path):
     assert [r["skill_name"] for r in page2] == ["skill-2", "skill-1"]
     assert [r["skill_name"] for r in page3] == ["skill-0"]
     assert runs_db.recent_runs(2, 5, main_context=ctx) == []
+
+
+def test_search_matches_prompt_and_response_before_pagination(tmp_path):
+    ctx = _ctx(tmp_path)
+    runs_db.record_run("a", "cron", "sid-a", "succeeded",
+                       message="Summarize invoices", response="Nothing relevant",
+                       ended_at="2026-06-27T10:00:00+00:00", main_context=ctx)
+    runs_db.record_run("b", "cron", "sid-b", "succeeded",
+                       user_message="Unrelated prompt", response="Invoice summary ready",
+                       ended_at="2026-06-27T11:00:00+00:00", main_context=ctx)
+    runs_db.record_run("c", "cron", "sid-c", "succeeded",
+                       message="Unrelated", response="No match",
+                       ended_at="2026-06-27T12:00:00+00:00", main_context=ctx)
+
+    rows = runs_db.recent_runs(1, search="invoice", main_context=ctx)
+    assert [row["session_id"] for row in rows] == ["sid-b"]
+    rows = runs_db.recent_runs(1, 1, search="invoice", main_context=ctx)
+    assert [row["session_id"] for row in rows] == ["sid-a"]
 
 
 def test_record_run_never_raises_on_bad_path(tmp_path):
@@ -272,6 +293,7 @@ def test_migration_adds_run_detail_columns_without_data_loss(tmp_path):
     assert rows[0]["message"] is None  # pre-feature row reads as NULL
     assert rows[0]["user_message"] is None
     assert rows[0]["response"] is None
+    assert rows[0]["ended_at"] == rows[0]["started_at"]
 
     # New writes carry both details; the upgraded DB round-trips them.
     runs_db.record_run("new", "cron", "sid-new", "succeeded", message="m",

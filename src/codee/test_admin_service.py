@@ -60,6 +60,24 @@ def _write_issue_skill(root: Path) -> Path:
     return skills_dir
 
 
+class RecentRunsTest(unittest.TestCase):
+    def test_formats_duration_from_start_and_end_times(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            context = CodeeMainContext(data_dir=Path(directory))
+            runs_db.record_run(
+                "skill", "cron", "sid", "succeeded",
+                started_at="2026-06-27T10:00:00+00:00",
+                ended_at="2026-06-27T10:02:05+00:00",
+                main_context=context,
+            )
+            service = AdminService.__new__(AdminService)
+            service.context = context
+
+            run, = service.recent_runs()
+
+        self.assertEqual(run["duration_label"], "2m 5s")
+
+
 class NormalizeWorkItemsTest(unittest.TestCase):
     """What the settings form's mapping rows have to satisfy before they save."""
 

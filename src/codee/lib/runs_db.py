@@ -11,7 +11,8 @@ from codee_main_context.context import CodeeMainContext
 from codee_database.database import get_db_connection
 
 _COLUMNS = ("id", "skill_name", "trigger_type", "session_id", "status", "error",
-            "started_at", "message", "user_message", "response", "debug_logs")
+            "started_at", "ended_at", "message", "user_message", "response",
+            "debug_logs")
 
 # Codee names a session before the agent runs, but not every agent runs under
 # the name it was given: Codex mints its own thread id and reports it back mid
@@ -50,6 +51,7 @@ def init(main_context: CodeeMainContext) -> None:
                 status TEXT NOT NULL,
                 error TEXT,
                 started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
                 message TEXT,
                 user_message TEXT,
                 response TEXT,
@@ -68,6 +70,12 @@ def init(main_context: CodeeMainContext) -> None:
             conn.execute("ALTER TABLE runs ADD COLUMN user_message TEXT")
         if "debug_logs" not in cols:
             conn.execute("ALTER TABLE runs ADD COLUMN debug_logs TEXT")
+        if "ended_at" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN ended_at TEXT")
+            conn.execute(
+                "UPDATE runs SET ended_at = started_at WHERE ended_at IS NULL")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_ended_at ON runs(ended_at DESC)")
         # In-flight claude runs; a row lives only while its subprocess is running.
         conn.execute(
             """CREATE TABLE IF NOT EXISTS active_jobs (
@@ -90,7 +98,7 @@ def init(main_context: CodeeMainContext) -> None:
 
 def record_run(skill_name, trigger_type, session_id, status, error=None, started_at=None,
                message=None, user_message=None, response=None, debug_logs=None,
-               *, main_context: CodeeMainContext) -> None:
+               ended_at=None, *, main_context: CodeeMainContext) -> None:
     """Insert one run row. Never raises to the caller (FR-009)."""
     try:
         init(main_context)
@@ -99,30 +107,43 @@ def record_run(skill_name, trigger_type, session_id, status, error=None, started
             debug_logs = getattr(response, "debug_logs", None)
         if started_at is None:
             started_at = datetime.now(timezone.utc).isoformat()
+        if ended_at is None:
+            ended_at = datetime.now(timezone.utc).isoformat()
         with get_db_connection(main_context) as conn:
             conn.execute(
                 "INSERT INTO runs (skill_name, trigger_type, session_id, status, error,"
-                " started_at, message, user_message, response, debug_logs)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " started_at, ended_at, message, user_message, response, debug_logs)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (skill_name, trigger_type, session_id,
-                 status, error, started_at, message, user_message, response,
+                 status, error, started_at, ended_at, message, user_message, response,
                  debug_logs),
             )
     except Exception as exc:  # ponytail: a logging miss must never abort the skill run
         print(f"[runs_db] Failed to record run for {skill_name}: {exc}")
 
 
-def recent_runs(limit: int = 100, offset: int = 0, *,
+def recent_runs(limit: int = 100, offset: int = 0, *, search: str = "",
                 main_context: CodeeMainContext) -> list[dict]:
-    """Most recent runs newest-first as dicts, skipping `offset` rows; [] on empty/missing DB (FR-006)."""
+    """Return matching runs newest-first; [] on an empty or missing DB."""
     try:
         init(main_context)
+        query = search.strip()
+        where = ""
+        params: list = []
+        if query:
+            where = (
+                " WHERE COALESCE(message, '') LIKE ?"
+                " OR COALESCE(user_message, '') LIKE ?"
+                " OR COALESCE(response, '') LIKE ?"
+            )
+            params.extend([f"%{query}%"] * 3)
+        params.extend((limit, max(offset, 0)))
         with get_db_connection(main_context) as conn:
             rows = conn.execute(
                 "SELECT id, skill_name, trigger_type, session_id, status, error,"
-                " started_at, message, user_message, response, debug_logs"
-                " FROM runs ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
-                (limit, max(offset, 0)),
+                " started_at, ended_at, message, user_message, response, debug_logs"
+                f" FROM runs{where} ORDER BY ended_at DESC, id DESC LIMIT ? OFFSET ?",
+                params,
             ).fetchall()
         return [dict(zip(_COLUMNS, row)) for row in rows]
     except Exception as exc:

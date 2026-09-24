@@ -2046,8 +2046,18 @@ class AdminService:
 
         return url
 
-    def recent_runs(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-        return runs_db.recent_runs(limit, offset, main_context=self.context)
+    def recent_runs(self, limit: int = 100, offset: int = 0,
+                    search: str = "") -> list[dict[str, Any]]:
+        rows = runs_db.recent_runs(
+            limit, offset, search=search, main_context=self.context)
+        for row in rows:
+            try:
+                elapsed = (datetime.fromisoformat(row["ended_at"])
+                           - datetime.fromisoformat(row["started_at"])).total_seconds()
+            except (TypeError, ValueError):
+                elapsed = 0
+            row["duration_label"] = runs_db.fmt_elapsed(max(int(elapsed), 0))
+        return rows
 
     def load_settings(self) -> Settings:
         self.context.settings = load_settings(self.data_dir)
