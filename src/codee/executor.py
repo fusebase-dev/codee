@@ -12,6 +12,7 @@ from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import (
     COPILOT_DEBUG_ENV_VAR, GitHubCopilotAgent)
+from codee_agent_opencode.provider import OpenCodeAgent
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, codee_issue_types, data_dir,
     load_settings, project_root)
@@ -39,6 +40,7 @@ _CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
     CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
     CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
     CodingAgent.CODEX: CodexAgent,
+    CodingAgent.OPENCODE: OpenCodeAgent,
 }
 
 POLL_INTERVAL = 60  # 1 minute

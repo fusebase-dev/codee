@@ -1,0 +1,1 @@
+"""OpenCode coding-agent integration."""

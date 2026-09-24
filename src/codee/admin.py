@@ -3566,7 +3566,7 @@ def settings_page() -> rx.Component:
                 field("Default agent",
                       rx.grid(
                           rx.select(
-                              ["claude_code", "github_copilot", "codex"],
+                              list(AGENT_NAMES),
                               value=AdminState.coding_agent,
                               on_change=AdminState.set_coding_agent,
                               width="100%"),

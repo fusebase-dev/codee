@@ -11,6 +11,7 @@ from codee_agent_abstract.provider import AbstractCodingAgent
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
+from codee_agent_opencode.provider import OpenCodeAgent
 from codee_main_context.context import CodingAgent, Settings
 
 # Concrete coding agents, keyed by the agent selected in settings.
@@ -18,6 +19,7 @@ CODING_AGENTS: dict[CodingAgent, type[AbstractCodingAgent]] = {
     CodingAgent.CLAUDE_CODE: ClaudeCodeAgent,
     CodingAgent.GITHUB_COPILOT: GitHubCopilotAgent,
     CodingAgent.CODEX: CodexAgent,
+    CodingAgent.OPENCODE: OpenCodeAgent,
 }
 
 

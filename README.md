@@ -4,7 +4,7 @@ The goal of this project is to provide an assistant that will integrate into you
 
 Codee works with Jira and Azure DevOps as tasks providers, new providers are quite easy to create, PRs are welcome.
 
-As agents it currently works with Claude Code, Github Copilot and Codex.
+As agents it currently works with Claude Code, GitHub Copilot, Codex and OpenCode.
 
 ## Documentation
 

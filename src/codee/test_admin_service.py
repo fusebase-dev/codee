@@ -2593,6 +2593,7 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
             {"code": "claude_code", "name": "Claude Code"},
             {"code": "github_copilot", "name": "GitHub Copilot"},
             {"code": "codex", "name": "Codex"},
+            {"code": "opencode", "name": "OpenCode"},
         ])
 
     def test_an_agent_that_cannot_be_asked_yields_an_empty_list(self) -> None:
