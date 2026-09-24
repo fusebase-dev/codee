@@ -337,6 +337,7 @@ class AdminState(rx.State):
     runs_has_more: bool = False
     runs_loading: bool = False
     runs_query: str = ""
+    runs_watch: int = 0
     session_viewer: str = SERVICE.session_viewer
 
     workflow_sections: list[WorkflowSection] = []
@@ -844,13 +845,14 @@ class AdminState(rx.State):
                                                  for account in measured]
             await asyncio.sleep(USAGE_POLL_INTERVAL)
 
-    def _fetch_runs_page(self, offset: int) -> list[RunRecord]:
+    def _fetch_runs_page(self, offset: int,
+                         limit: int = RUNS_PAGE_SIZE) -> list[RunRecord]:
         """One page of runs. Reads one row past the page to learn whether more exist."""
         rows = SERVICE.recent_runs(
-            RUNS_PAGE_SIZE + 1, offset, self.runs_query)
-        self.runs_has_more = len(rows) > RUNS_PAGE_SIZE
+            limit + 1, offset, self.runs_query)
+        self.runs_has_more = len(rows) > limit
         records = []
-        for run in rows[:RUNS_PAGE_SIZE]:
+        for run in rows[:limit]:
             message = (run.get("message") or "").strip()
             preview = message.splitlines()[0] if message else "No message"
             records.append(RunRecord(
@@ -890,6 +892,23 @@ class AdminState(rx.State):
             self.runs = self.runs + self._fetch_runs_page(len(self.runs))
         finally:
             self.runs_loading = False
+
+    @rx.event(background=True)
+    async def poll_runs(self) -> None:
+        """Keep recent runs current while the Runs page is on screen."""
+        async with self:
+            self.runs_watch += 1
+            watch = self.runs_watch
+        while True:
+            async with self:
+                if self.runs_watch != watch or self.active_route != "/runs":
+                    return
+                try:
+                    visible_count = max(RUNS_PAGE_SIZE, len(self.runs))
+                    self.runs = self._fetch_runs_page(0, visible_count)
+                except Exception as error:
+                    print(f"[admin] Failed to refresh runs: {error}")
+            await asyncio.sleep(1)
 
     @rx.event(background=True)
     async def load_workflow(self, force: bool = False) -> None:
@@ -3821,7 +3840,7 @@ app.add_page(repositories_page, route="/repositories",
              title="Repositories | Codee",
              on_load=AdminState.load_repositories)
 app.add_page(runs_page, route="/runs", title="Runs | Codee",
-             on_load=AdminState.load_runs)
+             on_load=AdminState.poll_runs)
 app.add_page(sessions_page, route="/sessions",
              title="Sessions | Codee", on_load=AdminState.load_settings)
 app.add_page(settings_page, route="/settings",
