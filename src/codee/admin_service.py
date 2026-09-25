@@ -35,6 +35,7 @@ from codee.lib import runs_db
 from codee.lib.claude_key_rotation import ensure_fresh
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
+from codee.lib.runtime_control import is_paused, set_paused
 from codee.lib.trigger_cron_skills import request_force_run
 from codee.lib.trigger_issue_skills import (
     IssueTriggeredSkill,
@@ -2049,7 +2050,13 @@ class AdminService:
             "active": active,
             "counts": runs_db.counts(main_context=self.context),
             "hourly": runs_db.runs_by_hour(main_context=self.context),
+            "paused": is_paused(self.context),
         }
+
+    def set_paused(self, paused: bool) -> bool:
+        """Allow or prevent future automated agent runs."""
+        set_paused(self.context, paused)
+        return is_paused(self.context)
 
     def _task_url(self) -> Callable[[str], str]:
         """How to link a work item key, per the configured tasks provider.

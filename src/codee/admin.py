@@ -319,6 +319,7 @@ class AdminState(rx.State):
     adding_repository: bool = False
 
     active_jobs: list[ActiveJob] = []
+    paused: bool = False
     total_runs: int = 0
     last_24h_runs: int = 0
     hourly_runs: list[dict[str, Any]] = []
@@ -779,9 +780,13 @@ class AdminState(rx.State):
     def _refresh_dashboard(self) -> None:
         dashboard = SERVICE.dashboard()
         self.active_jobs = [_active_job(job) for job in dashboard["active"]]
+        self.paused = dashboard["paused"]
         self.total_runs = dashboard["counts"]["total"]
         self.last_24h_runs = dashboard["counts"]["last_24h"]
         self.hourly_runs = dashboard["hourly"]
+
+    def toggle_pause(self) -> None:
+        self.paused = SERVICE.set_paused(not self.paused)
 
     @rx.event(background=True)
     async def poll_dashboard(self) -> None:
@@ -1977,6 +1982,16 @@ def running_panel() -> rx.Component:
                        padding="0.05rem 0.55rem", font_size="0.8rem", font_weight="600",
                        font_family=MONO, class_name="codee-breathe",
                        animation="codee-breathe 2.4s ease-in-out infinite"),
+            ),
+            rx.spacer(),
+            rx.button(
+                rx.cond(AdminState.paused,
+                        rx.icon("play", size=15),
+                        rx.icon("pause", size=15)),
+                rx.cond(AdminState.paused, "Unpause", "Pause"),
+                variant="outline",
+                color_scheme=rx.cond(AdminState.paused, "green", "gray"),
+                on_click=AdminState.toggle_pause,
             ),
             spacing="3",
             align="center",

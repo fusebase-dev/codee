@@ -62,6 +62,17 @@ def _write_issue_skill(root: Path) -> Path:
 
 
 class RecentRunsTest(unittest.TestCase):
+    def test_dashboard_pause_state_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = AdminService.__new__(AdminService)
+            service.data_dir = Path(directory)
+            service.context = CodeeMainContext(data_dir=service.data_dir)
+
+            self.assertFalse(service.set_paused(False))
+            self.assertTrue(service.set_paused(True))
+            self.assertTrue(service.dashboard()["paused"])
+            self.assertFalse(service.set_paused(False))
+
     def test_formats_relative_age_in_minutes_hours_and_days(self) -> None:
         now = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
         cases = [

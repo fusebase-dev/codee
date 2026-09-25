@@ -21,6 +21,7 @@ from codee_tasks_abstract.provider import AbstractTasksProvider
 
 from codee.coding_agents import resolve_agent_code
 from codee.lib import claude_key_rotation, runs_db
+from codee.lib.runtime_control import is_paused
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
 from codee.lib.trigger_email_skills import trigger_email_skills
@@ -359,6 +360,9 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
     against the next tick.
     """
     with _inflight_lock:
+        if is_paused(context):
+            log.debug("New agent work was paused before %s could start.", task_id)
+            return False
         if task_id in _inflight:
             log.debug("%s already running; skipping duplicate launch.", task_id)
             return False
@@ -386,6 +390,10 @@ def run_once() -> None:
 
     if not _pull_latest_code():
         log.warning("Failed to pull from the repo, still continuing...")
+
+    if is_paused(context):
+        log.info("New agent work is paused; active agents continue running.")
+        return
 
     trigger_cron_skills(_run_agent, main_context=context)
     trigger_aws_sqs_skills(_run_agent, main_context=context)

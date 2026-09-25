@@ -533,6 +533,27 @@ class ParentWorkItemSkipTest(unittest.TestCase):
             executor.run_once()
         return [call.args[0] for call in submit.call_args_list]
 
+    def test_paused_executor_starts_no_trigger_or_issue_work(self) -> None:
+        with patch.object(executor, "is_paused", return_value=True), \
+                patch.object(executor, "trigger_cron_skills") as cron, \
+                patch.object(executor, "trigger_aws_sqs_skills") as sqs, \
+                patch.object(executor, "trigger_email_skills") as email:
+            executor.run_once()
+
+        cron.assert_not_called()
+        sqs.assert_not_called()
+        email.assert_not_called()
+        self.provider.get_tasks.assert_not_called()
+
+    def test_pause_while_polling_prevents_issue_launch(self) -> None:
+        with patch.object(executor, "is_paused", return_value=True), \
+                patch.object(executor, "_run_task") as run_task:
+            launched = executor._submit_task(
+                "NIM-4", "prompt", "session", "Task developer")
+
+        self.assertFalse(launched)
+        run_task.assert_not_called()
+
     def test_an_item_under_a_mapped_parent_is_left_to_that_parents_run(self) -> None:
         self.assertEqual(
             self._submitted(_polled_task("NIM-1", parent_type="Story")), [])
