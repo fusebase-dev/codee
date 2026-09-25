@@ -1295,18 +1295,25 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the story to CR Needed when every subtask is implemented.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
-                '{"statuses":["Ready","Subtask Review","CR Needed"],'
-                '"transitions":[{"source":"Ready","target":"Subtask Review",'
-                '"label":"story-developer","evidence":"Move each subtask to '
-                'Subtask Review once its pull request is open."}],'
-                '"final_statuses":["CR Needed"]}',
+
+            def invalid_workflow(message, session_id, model, on_session_id):
+                on_session_id("agent-thread")
+                return (
+                    '{"statuses":["Ready","Subtask Review","CR Needed"],'
+                    '"transitions":[{"source":"Ready","target":"Subtask Review",'
+                    '"label":"story-developer","evidence":"Move each subtask to '
+                    'Subtask Review once its pull request is open."}],'
+                    '"final_statuses":["CR Needed"]}'
+                )
+
+            agent.run.side_effect = invalid_workflow
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","CR Needed"],'
                 '"transitions":[{"source":"Ready","target":"CR Needed",'
                 '"label":"story-developer","evidence":"Move the story to CR '
                 'Needed when every subtask is implemented."}],'
-                '"final_statuses":["CR Needed"]}',
-            ]
+                '"final_statuses":["CR Needed"]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1319,14 +1326,23 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             }):
                 workflow = service.generate_workflow()["story"]
 
-            self.assertEqual(agent.run.call_count, 2)
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(agent.continue_conversation.call_count, 1)
             self.assertIn(
                 "moves the subtask rather than the story",
-                agent.run.call_args.args[0],
+                agent.continue_conversation.call_args.args[0],
             )
             self.assertIn(
                 "The graph is the lifecycle of the story work item alone",
-                agent.run.call_args_list[0].args[0],
+                agent.run.call_args.args[0],
+            )
+            self.assertNotIn(
+                "The graph is the lifecycle of the story work item alone",
+                agent.continue_conversation.call_args.args[0],
+            )
+            self.assertEqual(
+                agent.continue_conversation.call_args.args[1],
+                "agent-thread",
             )
             self.assertEqual(
                 [node["data"]["label"] for node in workflow["nodes"]],
@@ -1396,12 +1412,14 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "After planning, move the story to [AI] Ready for human review.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["[AI] Decomposition needed",'
                 '"[AI] Ready for development","[AI] Ready for human review"],'
                 '"transitions":[{"source":"[AI] Decomposition needed",'
                 '"target":"[AI] Ready for development","label":"",'
-                '"evidence":""}],"final_statuses":[]}',
+                '"evidence":""}],"final_statuses":[]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["[AI] Decomposition needed",'
                 '"[AI] Ready for development","[AI] Ready for human review"],'
                 '"transitions":[{'
@@ -1409,8 +1427,8 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 '"target":"[AI] Ready for human review",'
                 '"label":"story-planner",'
                 '"evidence":"After planning, move the story to [AI] Ready for human review."}],'
-                '"final_statuses":["[AI] Ready for human review"]}',
-            ]
+                '"final_statuses":["[AI] Ready for human review"]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1423,8 +1441,9 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             }):
                 workflow = service.generate_workflow()["story"]
 
-            self.assertEqual(agent.run.call_count, 2)
-            retry_prompt = agent.run.call_args.args[0]
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(agent.continue_conversation.call_count, 1)
+            retry_prompt = agent.continue_conversation.call_args.args[0]
             self.assertIn(
                 'transition 1 ("[AI] Decomposition needed" -> '
                 '"[AI] Ready for development", label "") is labelled with a '
@@ -1515,16 +1534,18 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the issue to Review when work is done.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Ready","target":"Review","label":"develop",'
                 '"evidence":"Work the issue until it is done."}],'
-                '"final_statuses":["Review"]}',
+                '"final_statuses":["Review"]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Ready","target":"Review","label":"develop",'
                 '"evidence":"Move the issue to Review when work is done."}],'
-                '"final_statuses":["Review"]}',
-            ]
+                '"final_statuses":["Review"]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1568,18 +1589,20 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the issue to Review when work is done.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Blocked","target":"Review","label":"develop",'
                 '"evidence":"Move the issue to Review when work is done."},'
                 '{"source":"Ready","target":"Review","label":"develop",'
                 '"evidence":"Work the issue until it is done."}],'
-                '"final_statuses":["Done"]}',
+                '"final_statuses":["Done"]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Ready","target":"Review","label":"develop",'
                 '"evidence":"Move the issue to Review when work is done."}],'
-                '"final_statuses":["Review"]}',
-            ]
+                '"final_statuses":["Review"]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1592,7 +1615,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             }):
                 service.generate_workflow()
 
-            retry_prompt = agent.run.call_args.args[0]
+            retry_prompt = agent.continue_conversation.call_args.args[0]
             self.assertIn('transition 1 ("Blocked" -> "Review", label '
                           '"develop") uses "Blocked", which is missing from '
                           'statuses "Ready", "Review"', retry_prompt)
@@ -1615,16 +1638,18 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the issue to Done after approval.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["Ready","Review","Done"],"transitions":['
                 '{"source":"Ready","target":"Done","label":"review",'
                 '"evidence":"Move the issue to Done after approval."}],'
-                '"final_statuses":["Done"]}',
+                '"final_statuses":["Done"]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","Review","Done"],"transitions":['
                 '{"source":"Review","target":"Done","label":"review",'
                 '"evidence":"Move the issue to Done after approval."}],'
-                '"final_statuses":["Done"]}',
-            ]
+                '"final_statuses":["Done"]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1642,7 +1667,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 'a status "review" never has the issue in: its entry statuses '
                 'are "Review" and no other transition of that skill moves the '
                 'issue to "Ready".',
-                agent.run.call_args.args[0],
+                agent.continue_conversation.call_args.args[0],
             )
 
     def test_generate_workflow_warns_when_statuses_have_no_edges(self) -> None:
@@ -1854,15 +1879,17 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the issue to In Progress when work starts.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
                 '"final_statuses":[],"human_actions":[],'
                 '"human_transitions":[{"source":"Ready","target":"In Progress",'
-                '"evidence":"Move the issue to In Progress when work starts."}]}',
+                '"evidence":"Move the issue to In Progress when work starts."}]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
                 '"final_statuses":[],"human_actions":[],'
-                '"human_transitions":[]}',
-            ]
+                '"human_transitions":[]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1875,10 +1902,11 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             }):
                 service.generate_workflow()
 
-            self.assertEqual(agent.run.call_count, 2)
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(agent.continue_conversation.call_count, 1)
             self.assertIn(
                 "human transition source Ready is an entry status of a skill",
-                agent.run.call_args.args[0],
+                agent.continue_conversation.call_args.args[0],
             )
 
     def test_generate_workflow_rejects_a_human_action_for_an_unknown_status(
@@ -1896,13 +1924,15 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move the issue to In Progress when work starts.\n"
             )
             agent = Mock()
-            agent.run.side_effect = [
+            agent.run.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
                 '"final_statuses":[],"human_actions":[{"status":"Blocked",'
-                '"action":"Unblock the story."}]}',
+                '"action":"Unblock the story."}]}'
+            )
+            agent.continue_conversation.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
-                '"final_statuses":[],"human_actions":[]}',
-            ]
+                '"final_statuses":[],"human_actions":[]}'
+            )
             service = AdminService.__new__(AdminService)
             service.root = root
             service.skills_dir = skills_dir
@@ -1915,10 +1945,11 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             }):
                 service.generate_workflow()
 
-            self.assertEqual(agent.run.call_count, 2)
+            self.assertEqual(agent.run.call_count, 1)
+            self.assertEqual(agent.continue_conversation.call_count, 1)
             self.assertIn(
                 "each human action must name a declared status",
-                agent.run.call_args.args[0],
+                agent.continue_conversation.call_args.args[0],
             )
 
     def test_generate_workflow_returns_empty_without_issue_skills(self) -> None:

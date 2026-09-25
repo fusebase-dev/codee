@@ -1320,16 +1320,25 @@ class AdminService:
             f"Generating workflow for work item {issue_type.capitalize()} "
             f"from {_count(len(skills), 'issue-trigger skill')}..."
         )
+        session_id = str(uuid.uuid4())
+
+        def opened(agent_session_id: str) -> None:
+            nonlocal session_id
+            session_id = agent_session_id
+
         validation_error = ""
         for attempt in range(2):
-            request = prompt
             if validation_error:
-                request += (
-                    "\n\nYour previous response was invalid: "
-                    f"{validation_error}. Return corrected JSON only."
+                response = agent.continue_conversation(
+                    "Your previous response was invalid: "
+                    f"{validation_error}. Return corrected JSON only.",
+                    session_id,
+                    agent.best_model(),
+                    opened,
                 )
-            response = agent.run(
-                request, str(uuid.uuid4()), agent.best_model())
+            else:
+                response = agent.run(
+                    prompt, session_id, agent.best_model(), opened)
             payload_text = _strip_code_fence(response)
             try:
                 payload = json.loads(payload_text)
