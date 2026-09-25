@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import reflex as rx
@@ -264,6 +265,48 @@ class WorkflowSection(BaseModel):
     warnings: list[str] = []
 
 
+class RunTextPart(BaseModel):
+    text: str
+    matched: bool = False
+
+
+def _highlight_parts(text: str, query: str) -> list[RunTextPart]:
+    """Split plain text into safely rendered, case-insensitive search matches."""
+    query = query.strip()
+    if not text or not query:
+        return []
+    parts = []
+    position = 0
+    for match in re.finditer(re.escape(query), text, re.IGNORECASE):
+        if match.start() > position:
+            parts.append(RunTextPart(text=text[position:match.start()]))
+        parts.append(RunTextPart(text=match.group(), matched=True))
+        position = match.end()
+    if not parts:
+        return []
+    if position < len(text):
+        parts.append(RunTextPart(text=text[position:]))
+    return parts
+
+
+def _run_preview(message: str, user_message: str, response: str,
+                 query: str) -> str:
+    """Show the first hit in the row, including hits buried in responses."""
+    query = query.strip()
+    if query:
+        for label, text in (("", message), ("Prompt: ", user_message),
+                            ("LLM response: ", response)):
+            match = re.search(re.escape(query), text, re.IGNORECASE)
+            if match:
+                start = max(0, match.start() - 30)
+                end = max(start + 120 - len(label), match.end())
+                excerpt = text[start:end].replace("\n", " ")
+                return (label + ("..." if start else "") + excerpt
+                        + ("..." if end < len(text) else ""))
+    first_line = message.splitlines()[0] if message else "No message"
+    return first_line[:120] + ("..." if len(first_line) > 120 else "")
+
+
 class RunRecord(BaseModel):
     skill_name: str
     trigger_type: str
@@ -280,6 +323,10 @@ class RunRecord(BaseModel):
     debug_logs: str
     preview: str
     viewer_url: str
+    preview_parts: list[RunTextPart] = []
+    message_parts: list[RunTextPart] = []
+    user_message_parts: list[RunTextPart] = []
+    response_parts: list[RunTextPart] = []
 
 
 class AdminState(rx.State):
@@ -865,7 +912,10 @@ class AdminState(rx.State):
         records = []
         for run in rows[:limit]:
             message = (run.get("message") or "").strip()
-            preview = message.splitlines()[0] if message else "No message"
+            user_message = (run.get("user_message") or message).strip()
+            response = (run.get("response") or "").strip()
+            preview = _run_preview(message, user_message,
+                                   response, self.runs_query)
             records.append(RunRecord(
                 skill_name=run["skill_name"],
                 trigger_type=run["trigger_type"],
@@ -877,12 +927,17 @@ class AdminState(rx.State):
                 relative_age_label=run["relative_age_label"],
                 session_id=run.get("session_id") or "",
                 message=message,
-                user_message=(run.get("user_message") or message).strip(),
-                response=(run.get("response") or "").strip(),
+                user_message=user_message,
+                response=response,
                 debug_logs=run.get("debug_logs") or "",
-                preview=preview[:120] + ("..." if len(preview) > 120 else ""),
+                preview=preview,
                 viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
                             if SERVICE.session_viewer and run.get("session_id") else ""),
+                preview_parts=_highlight_parts(preview, self.runs_query),
+                message_parts=_highlight_parts(message, self.runs_query),
+                user_message_parts=_highlight_parts(
+                    user_message, self.runs_query),
+                response_parts=_highlight_parts(response, self.runs_query),
             ))
         return records
 
@@ -1989,14 +2044,17 @@ def running_panel() -> rx.Component:
                        animation="codee-breathe 2.4s ease-in-out infinite"),
             ),
             rx.spacer(),
-            rx.button(
-                rx.cond(AdminState.paused,
-                        rx.icon("play", size=15),
-                        rx.icon("pause", size=15)),
-                rx.cond(AdminState.paused, "Unpause", "Pause"),
-                variant="outline",
-                color_scheme=rx.cond(AdminState.paused, "green", "gray"),
-                on_click=AdminState.toggle_pause,
+            rx.cond(
+                is_running | ~AdminState.paused,
+                rx.button(
+                    rx.cond(AdminState.paused,
+                            rx.icon("play", size=15),
+                            rx.icon("pause", size=15)),
+                    rx.cond(AdminState.paused, "Unpause", "Pause"),
+                    variant="outline",
+                    color_scheme=rx.cond(AdminState.paused, "green", "gray"),
+                    on_click=AdminState.toggle_pause,
+                ),
             ),
             spacing="3",
             align="center",
@@ -2007,9 +2065,20 @@ def running_panel() -> rx.Component:
             is_running,
             rx.vstack(rx.foreach(AdminState.active_jobs, active_job_row),
                       spacing="2", width="100%"),
-            rx.hstack(rx.icon("moon", size=16, color=SUBTLE_ICON),
-                      rx.text("No sessions running right now.", color=MUTED),
-                      spacing="2", align="center"),
+            rx.cond(
+                AdminState.paused,
+                rx.hstack(
+                    rx.icon("pause", size=16, color=SUBTLE_ICON),
+                    rx.text("All work is on pause right now.", color=MUTED),
+                    rx.button(rx.icon("play", size=15), "Unpause",
+                              variant="outline", color_scheme="green",
+                              on_click=AdminState.toggle_pause),
+                    spacing="3", align="center", flex_wrap="wrap",
+                ),
+                rx.hstack(rx.icon("moon", size=16, color=SUBTLE_ICON),
+                          rx.text("No sessions running right now.", color=MUTED),
+                          spacing="2", align="center"),
+            ),
         ),
         padding="1.25rem",
         background=SURFACE,
@@ -2446,11 +2515,21 @@ def skills_page() -> rx.Component:
                 rx.button(rx.icon("plus", size=16), "Create",
                           on_click=AdminState.create_skill),
                 gap="0.75rem", width="100%"),
-        rx.grid(rx.input(placeholder="Search skills", value=AdminState.skill_query,
-                         on_change=AdminState.set_skill_query, width="100%"),
-                rx.select(["All", *SKILL_TYPES], value=AdminState.skill_filter,
-                          on_change=AdminState.set_skill_filter, width="100%"),
-                columns=rx.breakpoints(initial="1", md="3fr 1fr"), gap="0.75rem", width="100%"),
+        rx.grid(rx.box(
+            rx.input(placeholder="Search skills", value=AdminState.skill_query,
+                     on_change=AdminState.set_skill_query,
+                     padding_right="2.5rem", width="100%"),
+            rx.cond(AdminState.skill_query != "",
+                    rx.icon_button(rx.icon("x", size=16), variant="ghost", size="1",
+                                   aria_label="Clear skills search",
+                                   on_click=AdminState.set_skill_query(
+                        ""),
+                        position="absolute", right="0.5rem", top="50%",
+                        transform="translateY(-50%)")),
+            position="relative", width="100%"),
+            rx.select(["All", *SKILL_TYPES], value=AdminState.skill_filter,
+                      on_change=AdminState.set_skill_filter, width="100%"),
+            columns=rx.breakpoints(initial="1", md="3fr 1fr"), gap="0.75rem", width="100%"),
         rx.cond(AdminState.agents_card_visible | (AdminState.filtered_skills.length() > 0),
                 rx.grid(rx.cond(AdminState.agents_card_visible, agents_card()),
                         rx.foreach(AdminState.filtered_skills, skill_card),
@@ -2587,6 +2666,20 @@ def repositories_page() -> rx.Component:
         spacing="5", align="start", width="100%"))
 
 
+def highlighted_run_text(text: rx.Var, parts: rx.Var, **props: Any) -> rx.Component:
+    """Render match segments as text nodes, never as injected HTML."""
+    return rx.cond(
+        parts.length() > 0,
+        rx.text(rx.foreach(parts, lambda part: rx.cond(
+            part.matched,
+            rx.el.mark(part.text, background=rx.color_mode_cond("#ffe082", "#705419"),
+                       color=rx.color_mode_cond("#593d00", "#fff4b8"),
+                       border_radius="2px"),
+            rx.el.span(part.text))), **props),
+        rx.text(text, **props),
+    )
+
+
 def run_row(run: RunRecord) -> rx.Component:
     return rx.box(
         rx.flex(
@@ -2604,7 +2697,8 @@ def run_row(run: RunRecord) -> rx.Component:
                       rx.text("Thread ID: ", run.session_id, color=MUTED,
                               font_size="0.8rem",
                               font_family="IBM Plex Mono, monospace"),
-                      rx.text(run.preview, color=MUTED),
+                      highlighted_run_text(
+                          run.preview, run.preview_parts, color=MUTED),
                       rx.cond(run.error != "", rx.text(
                           run.error, color="#b42318", font_size="0.85rem")),
                       spacing="2", align="start", flex="1"),
@@ -2615,11 +2709,19 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.cond((run.user_message != "") | (run.response != "") | (run.debug_logs != ""), rx.accordion.root(rx.accordion.item(
             header="Run info", content=rx.vstack(
                 rx.text("User message", font_weight="600"),
-                rx.text(run.user_message, white_space="pre-wrap"),
+                highlighted_run_text(run.user_message, run.user_message_parts,
+                                     white_space="pre-wrap"),
+                rx.cond((run.message != "") & (run.message != run.user_message),
+                        rx.fragment(
+                        rx.text("Original message", font_weight="600",
+                                margin_top="0.75rem"),
+                        highlighted_run_text(run.message, run.message_parts,
+                                             white_space="pre-wrap"))),
                 rx.cond(run.response != "", rx.fragment(
                     rx.text("LLM response", font_weight="600",
                             margin_top="0.75rem"),
-                    rx.text(run.response, white_space="pre-wrap"))),
+                    highlighted_run_text(run.response, run.response_parts,
+                                         white_space="pre-wrap"))),
                 rx.cond(run.debug_logs != "", rx.fragment(
                         rx.text("Debug logs", font_weight="600",
                                 margin_top="0.75rem"),
@@ -2642,10 +2744,20 @@ def runs_page() -> rx.Component:
                           on_click=AdminState.load_more_runs)),
         spacing="3", width="100%")
     return shell(rx.vstack(page_header("Runs", "Recent trigger executions and outcomes."),
-                           rx.input(placeholder="Search prompts and LLM responses",
-                                    type="search", value=AdminState.runs_query,
-                                    on_change=AdminState.search_runs,
-                                    debounce_timeout=300, width="100%"),
+                           rx.box(
+                               rx.input(placeholder="Search prompts and LLM responses",
+                                        value=AdminState.runs_query,
+                                        on_change=AdminState.search_runs,
+                                        debounce_timeout=300, padding_right="2.5rem",
+                                        width="100%"),
+                               rx.cond(AdminState.runs_query != "",
+                                       rx.icon_button(rx.icon("x", size=16), variant="ghost",
+                                                      size="1", aria_label="Clear runs search",
+                                                      on_click=AdminState.search_runs(
+                                                          ""),
+                                                      position="absolute", right="0.5rem",
+                                                      top="50%", transform="translateY(-50%)")),
+                               position="relative", width="100%"),
                            rx.cond(AdminState.runs.length() > 0, listing,
                                    rx.cond(AdminState.runs_query != "",
                                            empty_state(
