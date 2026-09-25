@@ -19,8 +19,9 @@ from codee.admin_service import (
     MCP_CHECK, TASKS_CHECK, USAGE_CACHE_SECONDS,
     USAGE_RATE_LIMIT_BACKOFF_SECONDS, WORKFLOW_CACHE_VERSION,
     WORKFLOW_HUMAN_EDGE_COLOR, AdminService, WorkflowGeneration,
-    _remove_redundant_skill_transitions, azure_oauth, issue_prompt_task,
-    normalize_work_items, parse_skill, relative_age_label, repository_name)
+    _WorkItemScope, _remove_redundant_skill_transitions, azure_oauth,
+    issue_prompt_task, normalize_work_items, parse_skill, relative_age_label,
+    repository_name)
 from codee.lib import runs_db
 from codee_agent_claude_code import oauth as claude_oauth
 from codee_agent_claude_code.account import AccountUnavailable
@@ -1289,6 +1290,65 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertIn(
                 "do not emit a direct transition that bypasses it",
                 agent.run.call_args.args[0],
+            )
+
+    def test_coordinated_move_includes_both_work_items(self) -> None:
+        story = _WorkItemScope("story", ("story", "task"))
+        task = _WorkItemScope("task", ("story", "task"))
+        for evidence in (
+            "Move the subtask and the story to AI Human Response Requested",
+            "Move the subtask **and** the story to **AI Human Response Requested**",
+            "Move the subtask, as well as the story, to AI Human Response Requested",
+            "Move the story and the subtask to AI Human Response Requested",
+        ):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(story.other_work_item(evidence), "")
+        self.assertEqual(task.other_work_item(
+            "Move the story and the task to AI Human Response Requested"), "")
+        self.assertEqual(story.other_work_item(
+            "Move the subtask to AI Human Response Requested"), "subtask")
+        self.assertEqual(task.other_work_item(
+            "Move the story to AI Human Response Requested"), "story")
+
+    def test_generate_workflow_accepts_coordinated_story_transition(self) -> None:
+        evidence = (
+            "Move the subtask and the story to AI Human Response Requested"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            skills_dir = root / ".claude" / "skills"
+            skill_dir = skills_dir / "story-developer"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: story-developer\ndisable-model-invocation: true\n"
+                "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+                "x-codee-issue-type: story\n---\n" + evidence + "\n"
+            )
+            agent = Mock()
+            agent.run.return_value = json.dumps({
+                "statuses": ["Ready", "AI Human Response Requested"],
+                "transitions": [{
+                    "source": "Ready", "target": "AI Human Response Requested",
+                    "label": "story-developer", "evidence": evidence,
+                }],
+                "final_statuses": ["AI Human Response Requested"],
+            })
+            service = AdminService.__new__(AdminService)
+            service.root = root
+            service.skills_dir = skills_dir
+            service.data_dir = root / ".codee"
+            service.context = Mock(
+                settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+
+            with patch.dict("codee.admin_service.CODING_AGENTS", {
+                CodingAgent.CLAUDE_CODE: Mock(return_value=agent),
+            }):
+                workflow = service.generate_workflow()["story"]
+
+            self.assertEqual(agent.continue_conversation.call_count, 0)
+            self.assertEqual(
+                [node["data"]["label"] for node in workflow["nodes"]],
+                ["Ready", "AI Human Response Requested"],
             )
 
     def test_generate_workflow_rejects_a_transition_that_moves_a_subtask(self) -> None:

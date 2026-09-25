@@ -282,7 +282,7 @@
     return (
       '<article class="skill-card">' +
       '<div class="head"><h3>' + esc(skill.name) + "</h3>" + badge(skill.type, "blue") + "</div>" +
-      '<p class="desc">' + esc(skill.description) + "</p>" +
+      '<p class="desc" title="' + esc(skill.description) + '">' + esc(skill.description) + "</p>" +
       '<div class="agent-line">' + icon("bot", 14) + "<span>" + esc(skill.agent) + "</span>" +
       (skill.model ? "<code>" + esc(skill.model) + "</code>" : "") + "</div>" +
       (skill.issueStatus
@@ -295,7 +295,7 @@
         : skill.sqs
         ? '<div class="trigger-line">' + icon("bot", 14) + "<span>" + esc(skill.sqs) + "</span></div>"
         : '<div class="spacer-fill"></div>') +
-      '<a class="btn btn-soft btn-block" href="#/skills/' + esc(skill.slug) + '">' +
+      '<a class="btn btn-soft btn-block skill-card-action" href="#/skills/' + esc(skill.slug) + '">' +
       icon("eye", 15) + "Open</a></article>"
     );
   }
@@ -306,7 +306,7 @@
       '<div class="head"><h3>AGENTS.md</h3>' + badge("always on") + "</div>" +
       '<p class="desc">Plain-text instructions every coding-agent run loads. Cannot be deleted.</p>' +
       '<div class="spacer-fill"></div>' +
-      '<a class="btn btn-soft btn-block" href="#/skills/AGENTS.md">' + icon("eye", 15) + "Open</a></article>"
+      '<a class="btn btn-soft btn-block skill-card-action" href="#/skills/AGENTS.md">' + icon("eye", 15) + "Open</a></article>"
     );
   }
 

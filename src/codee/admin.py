@@ -785,8 +785,13 @@ class AdminState(rx.State):
         self.last_24h_runs = dashboard["counts"]["last_24h"]
         self.hourly_runs = dashboard["hourly"]
 
-    def toggle_pause(self) -> None:
+    def toggle_pause(self) -> Any:
         self.paused = SERVICE.set_paused(not self.paused)
+        if self.paused:
+            message = "New agents won't be spawned."
+            if self.active_jobs:
+                message += " Currently running agents will continue until completion."
+            return rx.toast.info(message)
 
     @rx.event(background=True)
     async def poll_dashboard(self) -> None:
@@ -2151,52 +2156,50 @@ def dashboard_page() -> rx.Component:
 
 
 def skill_card(skill: SkillSummary) -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.hstack(rx.heading(skill.name, size="4"), rx.spacer(),
-                      rx.badge(skill.type, color_scheme="blue", variant="soft"), width="100%"),
-            rx.text(skill.description, color=MUTED, font_size="0.9rem", min_height="2.7rem",
-                    overflow="hidden"),
+    return rx.vstack(
+        rx.hstack(rx.heading(skill.name, size="4", class_name="skill-card-title"),
+                  rx.badge(skill.type, color_scheme="blue", variant="soft"),
+                  class_name="skill-card-head", width="100%"),
+        rx.text(skill.description, color=MUTED, font_size="0.9rem",
+                title=skill.description, class_name="skill-card-description"),
+        rx.hstack(
+            rx.icon("bot", size=14, color=SUBTLE_ICON),
+            rx.text(skill.agent, color=MUTED, font_size="0.82rem"),
+            rx.cond(skill.model != "",
+                    rx.code(skill.model, font_size="0.72rem",
+                            color_scheme="gray")),
+            spacing="2", align="center", width="100%",
+            class_name="skill-card-meta"),
+        rx.cond(
+            skill.issue_status != "",
             rx.hstack(
-                rx.icon("bot", size=14, color=SUBTLE_ICON),
-                rx.text(skill.agent, color=MUTED, font_size="0.82rem"),
-                rx.cond(skill.model != "",
-                        rx.code(skill.model, font_size="0.72rem",
-                                color_scheme="gray")),
-                spacing="2", align="center", width="100%"),
-            rx.cond(
-                skill.issue_status != "",
-                rx.hstack(
-                    rx.badge(skill.issue_type, color_scheme="blue",
-                             variant="outline"),
-                    rx.icon("circle-dot", size=14, color=SUBTLE_ICON),
-                    rx.text(skill.issue_status, color=MUTED,
-                            font_size="0.82rem"),
-                    spacing="2",
-                    align="center",
-                    width="100%",
-                    background=HOVER,
-                    padding="0.55rem 0.65rem",
-                    border_radius="4px",
-                ),
+                rx.badge(skill.issue_type, color_scheme="blue",
+                         variant="outline"),
+                rx.icon("circle-dot", size=14, color=SUBTLE_ICON),
+                rx.text(skill.issue_status, color=MUTED,
+                        font_size="0.82rem", title=skill.issue_status),
+                spacing="2", align="center", width="100%",
+                background=HOVER, padding="0.55rem 0.65rem",
+                border_radius="4px", class_name="skill-card-trigger",
             ),
-            rx.button(rx.icon("pencil", size=15), "Edit", variant="soft",
-                      on_click=AdminState.edit_skill(skill.slug), width="100%"),
-            spacing="4", align="start", height="100%", width="100%"),
-        padding="1rem", background=SURFACE, border=BORDER, min_height="185px"),
+        ),
+        rx.button(rx.icon("pencil", size=15), "Edit", variant="soft",
+                  on_click=AdminState.edit_skill(skill.slug), width="100%",
+                  class_name="skill-card-action"),
+        class_name="skill-card", spacing="3", align="start", width="100%")
 
 
 def agents_card() -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.hstack(rx.heading(AGENTS_FILE, size="4"), rx.spacer(),
-                      rx.badge("always on", color_scheme="gray", variant="soft"), width="100%"),
-            rx.text("Plain-text instructions every coding-agent run loads. Cannot be deleted.",
-                    color=MUTED, font_size="0.9rem", min_height="2.7rem", overflow="hidden"),
-            rx.button(rx.icon("pencil", size=15), "Edit", variant="soft",
-                      on_click=AdminState.edit_agents, width="100%"),
-            spacing="4", align="start", height="100%", width="100%"),
-        padding="1rem", background=SURFACE, border=BORDER, min_height="185px")
+    return rx.vstack(
+        rx.hstack(rx.heading(AGENTS_FILE, size="4", class_name="skill-card-title"),
+                  rx.badge("always on", color_scheme="gray", variant="soft"),
+                  class_name="skill-card-head", width="100%"),
+        rx.text("Plain-text instructions every coding-agent run loads. Cannot be deleted.",
+                color=MUTED, font_size="0.9rem", class_name="skill-card-description"),
+        rx.button(rx.icon("pencil", size=15), "Edit", variant="soft",
+                  on_click=AdminState.edit_agents, width="100%",
+                  class_name="skill-card-action"),
+        class_name="skill-card", spacing="3", align="start", width="100%")
 
 
 def agents_editor() -> rx.Component:
@@ -3708,6 +3711,43 @@ app = rx.App(
         "button:not(:disabled), [role='button']:not([aria-disabled='true'])": {
             "cursor": "pointer",
         },
+        ".skill-card": {
+            "min_height": "17rem",
+            "height": "100%",
+            "min_width": "0",
+            "padding": "1rem",
+            "background": SURFACE,
+            "border": BORDER,
+            "transition": "border-color 0.15s ease, box-shadow 0.15s ease",
+        },
+        ".skill-card:hover": {
+            "border_color": ACCENT,
+            "box_shadow": "0 4px 16px rgba(24, 39, 75, 0.08)",
+        },
+        ".skill-card-head": {"align_items": "flex-start", "min_width": "0"},
+        ".skill-card-head > :last-child": {"flex_shrink": "0"},
+        ".skill-card-title": {
+            "min_width": "0",
+            "flex": "1",
+            "overflow_wrap": "anywhere",
+            "display": "-webkit-box",
+            "-webkit-box-orient": "vertical",
+            "-webkit-line-clamp": "2",
+            "overflow": "hidden",
+        },
+        ".skill-card-description": {
+            "line_height": "1.45",
+            "display": "-webkit-box",
+            "-webkit-box-orient": "vertical",
+            "-webkit-line-clamp": "3",
+            "overflow": "hidden",
+        },
+        ".skill-card-meta, .skill-card-trigger": {"min_width": "0"},
+        ".skill-card-trigger > :last-child": {
+            "overflow": "hidden", "text_overflow": "ellipsis",
+            "white_space": "nowrap", "min_width": "0",
+        },
+        ".skill-card-action": {"margin_top": "auto"},
         # Expanding halo behind the live dot on in-flight runs.
         "@keyframes codee-ping": {
             "0%": {"transform": "scale(1)", "opacity": "0.55"},

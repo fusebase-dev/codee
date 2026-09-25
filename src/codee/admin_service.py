@@ -514,8 +514,9 @@ MOVE_VERB_RE = re.compile(
 # status, whose own name may contain a work item word ("Task Ready").
 MOVE_TARGET_WORDS = {"to", "into", "in", "onto", "back", "at"}
 WORD_RE = re.compile(r"[\w-]+")
-# How many words after the verb are still part of the phrase naming what moves.
-MOVE_WINDOW = 4
+# Bound the phrase naming what moves, while allowing coordinated objects such
+# as "the subtask, as well as the story" before the status preposition.
+MOVE_WINDOW = 12
 
 
 def _work_item_terms(name: str) -> tuple[str, ...]:
@@ -592,7 +593,6 @@ class _WorkItemScope:
                     break
                 if lowered in self._own or lowered in self._others:
                     yield lowered
-                    break
 
 
 def _css_string(text: str) -> str:
