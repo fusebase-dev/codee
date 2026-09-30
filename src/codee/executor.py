@@ -63,6 +63,33 @@ REPO_ROOT = project_root()
 _inflight: set[str] = set()
 _inflight_lock = threading.Lock()
 
+# The live job the calling thread is running an agent for. Each agent runs in
+# the thread that asked for it, so this is how a spawned process is told apart
+# from another job's running alongside it.
+_job_scope = threading.local()
+
+
+class _JobPopen(subprocess.Popen):
+    """``Popen`` that records a job's agent process so the dashboard can kill it.
+
+    Installed over ``subprocess.Popen`` by ``main()``, so every agent is covered
+    without each one having to report what it spawned — ``subprocess.run`` goes
+    through here too. Inside a job the process leads a new process group, and
+    killing that group reaches the tools and servers the agent started as well
+    as the agent. Outside a job it is a plain ``Popen``.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        job_id = getattr(_job_scope, "job_id", None)
+        if job_id is not None and os.name == "posix":
+            kwargs.setdefault("start_new_session", True)
+        super().__init__(*args, **kwargs)
+        if job_id is not None:
+            runs_db.set_job_pid(job_id, self.pid, main_context=context)
+            # A kill that landed before there was a pid to signal.
+            if runs_db.job_killed(job_id, main_context=context):
+                runs_db.kill_job(job_id, main_context=context)
+
 
 def _max_parallel_agents() -> int:
     """How many task agents may run at once, per the settings this poll read.
@@ -265,11 +292,12 @@ def _pull_latest_code() -> bool:
 
 
 def _run_agent(user_message: str, session_id: str, model: str = "",
-               agent_code: str = "", label: str = "") -> str:
+               agent_code: str = "", label: str = "", effort: str = "") -> str:
     """Run the skill's coding agent and return its response text.
 
     ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
-    that can't be told which model to use ignore it. ``agent_code`` comes from
+    that can't be told which model to use ignore it. ``effort`` comes from its
+    ``effort:`` frontmatter the same way. ``agent_code`` comes from
     its ``x-codee-agent:`` frontmatter and picks which agent runs at all, empty
     for the default one. Wraps the agent run in job tracking; the agent itself
     raises on any failure so callers can retry.
@@ -282,8 +310,9 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
     job_id = runs_db.start_job(session_id, label or user_message,
                                agent=agent.DISPLAY_NAME,
                                model=model, main_context=context)
-    log.debug("job %s started: session=%s message=%r model=%r agent=%s",
-              job_id, session_id, user_message, model, agent.describe())
+    log.debug("job %s started: session=%s message=%r model=%r effort=%r "
+              "agent=%s", job_id, session_id, user_message, model, effort,
+              agent.describe())
 
     def opened(agent_session_id: str) -> None:
         """Record the session the agent actually opened, if it isn't ours.
@@ -299,9 +328,18 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
         runs_db.note_agent_session(session_id, agent_session_id)
         runs_db.set_job_session(job_id, agent_session_id, main_context=context)
 
+    _job_scope.job_id = job_id
     try:
-        return agent.run(user_message, session_id, model, opened)
+        return agent.run(user_message, session_id, model, opened, effort)
+    except Exception:
+        # The agent exits however SIGTERM makes it exit, usually as a failure.
+        # Asked for from the dashboard, that is a kill and not worth a retry.
+        if runs_db.job_killed(job_id, main_context=context):
+            log.info("job %s was killed from the dashboard", job_id)
+            raise runs_db.JobKilled() from None
+        raise
     finally:
+        _job_scope.job_id = None
         log.debug("job %s finished", job_id)
         try:
             runs_db.finish_job(job_id, main_context=context)
@@ -313,7 +351,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
 
 
 def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
-              model: str = "", agent_code: str = "", label: str = "") -> None:
+              model: str = "", agent_code: str = "", label: str = "",
+              effort: str = "") -> None:
     """Pool worker: run one task's coding agent, then release its in-flight slot.
 
     Logs the outcome to the runs table like the cron/email/sqs triggers do, so
@@ -328,12 +367,21 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
     started_at = datetime.now(timezone.utc).isoformat()
     shown = label or message
     try:
-        response = _run_agent(message, session_id, model, agent_code, label)
+        response = _run_agent(message, session_id, model, agent_code, label,
+                              effort)
         log.info("Agent response for %s (%d chars): %s",
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
                            started_at=started_at, message=shown,
                            user_message=message, response=response,
+                           main_context=context)
+    except runs_db.JobKilled as exc:
+        # The task keeps its status, so a poll that still finds it there starts
+        # it again; pausing is how to keep it from being picked back up.
+        log.info("Agent for %s was killed from the dashboard.", task_id)
+        runs_db.record_run(skill_name, "issue", session_id, "killed",
+                           error=str(exc), started_at=started_at,
+                           message=shown, user_message=message,
                            main_context=context)
     except Exception as exc:
         # Over-limit / transient failure: leave the task in its current
@@ -350,7 +398,8 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
 
 
 def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
-                 model: str = "", agent_code: str = "", label: str = "") -> bool:
+                 model: str = "", agent_code: str = "", label: str = "",
+                 effort: str = "") -> bool:
     """Start a task's agent unless one is already in flight or we're at the cap.
 
     Returns True if launched, False if skipped — as a duplicate, or because
@@ -377,7 +426,7 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
     # killing it mid-run, which is what the thread pool used to give us.
     threading.Thread(target=_run_task, name=f"task-agent-{task_id}",
                      args=(task_id, message, session_id, skill_name, model,
-                           agent_code, label)).start()
+                           agent_code, label, effort)).start()
     log.info("Started an agent for %s (%d running, max %d).",
              task_id, depth, limit)
     return True
@@ -479,7 +528,7 @@ def run_once() -> None:
                  task_id, status, issue_type, summary, session_id)
 
         _submit_task(task_id, message, session_id, skill.name,
-                     skill.model, skill.agent, label)
+                     skill.model, skill.agent, label, skill.effort)
 
 
 def main() -> None:
@@ -493,6 +542,7 @@ def main() -> None:
                     "idle until it is set up in Settings (no restart needed)")
 
     runs_db.clear_active_jobs(context)  # purge rows left by a previous process
+    subprocess.Popen = _JobPopen  # so the dashboard can kill a running agent
     # Before the first tick: the thread's own first check puts the configured
     # key into Claude Code's credentials file, so an agent launched by that
     # tick already runs on the key Codee thinks it is running on.

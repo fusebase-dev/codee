@@ -31,8 +31,8 @@ ERROR = "error"
 AGENT_MESSAGE = "agent_message"
 
 # `codex` has no "list models" command, but its app server answers `model/list`
-# with the account's live catalog — ids and display names both. That's the only
-# way to ask the CLI what it can run.
+# with the account's live catalog — ids, display names and the reasoning effort
+# levels each model takes. That's the only way to ask the CLI what it can run.
 APP_SERVER_TIMEOUT_SECONDS = 60
 _INITIALIZE_ID = 1
 _MODEL_LIST_ID = 2
@@ -66,14 +66,15 @@ class CodexAgent(AbstractCodingAgent):
             return []
 
     def run(self, user_message: str, session_id: str, model: str = "",
-            on_session_id: Callable[[str], None] | None = None) -> str:
+            on_session_id: Callable[[str], None] | None = None,
+            effort: str = "") -> str:
         # ``session_id`` is not passed on: Codex mints its own thread id and has
         # no flag to be handed one. It announces that id on its first line of
         # output, which is what ``on_session_id`` carries back — reported while
         # the run is still going, because the dashboard links a session only for
         # as long as it is running.
         log.info("Running codex with message: %s", user_message)
-        result = self._exec(user_message, model, on_session_id)
+        result = self._exec(user_message, model, effort, on_session_id)
 
         reply, completed, errors = _parse_events(result.stdout)
 
@@ -107,8 +108,10 @@ class CodexAgent(AbstractCodingAgent):
         session_id: str,
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
+        effort: str = "",
     ) -> str:
-        result = self._exec(user_message, model, on_session_id, session_id)
+        result = self._exec(user_message, model, effort, on_session_id,
+                            session_id)
         reply, completed, errors = _parse_events(result.stdout)
         if result.returncode != 0:
             raise RuntimeError(
@@ -123,7 +126,7 @@ class CodexAgent(AbstractCodingAgent):
                 f"Codex run produced no response: {_detail(errors, result.stderr)}")
         return reply
 
-    def _exec(self, user_message: str, model: str,
+    def _exec(self, user_message: str, model: str, effort: str = "",
               on_session_id: Callable[[str], None] | None = None,
               resume_session_id: str = "",
               ) -> subprocess.CompletedProcess:
@@ -145,6 +148,9 @@ class CodexAgent(AbstractCodingAgent):
         # body alone — so a skill's model only takes effect via this flag.
         if model:
             cmd += ["--model", model]
+        # `codex exec` has no effort flag; the config key is the only way in.
+        if effort:
+            cmd += ["-c", f"model_reasoning_effort={_toml(effort)}"]
         cmd += _mcp_overrides(self._cwd)
         # The prompt goes last, behind `--`, so a skill whose slug collides with
         # a subcommand (`codex exec review`) still reaches the model.
@@ -307,9 +313,28 @@ def _fetch_app_server_models() -> list[AgentModel]:
         if not model_id:
             continue
         name = str(entry.get("displayName", "")).strip() or model_id
-        models.append(AgentModel(model_id, name))
+        efforts = _efforts(entry.get("supportedReasoningEfforts"))
+        default = str(entry.get("defaultReasoningEffort") or "").strip()
+        models.append(AgentModel(model_id, name, efforts,
+                                 default if default in efforts else ""))
     log.debug("codex reported %d model(s)", len(models))
     return models
+
+
+def _efforts(entries) -> tuple[str, ...]:
+    """The effort levels in a ``supportedReasoningEfforts`` list.
+
+    Each entry is ``{"reasoningEffort": "high", "description": ...}``; a bare
+    string is taken as the level too, in case the shape is ever simplified.
+    """
+    efforts = []
+    for entry in entries or []:
+        value = (entry.get("reasoningEffort") if isinstance(entry, dict)
+                 else entry)
+        value = str(value or "").strip()
+        if value and value not in efforts:
+            efforts.append(value)
+    return tuple(efforts)
 
 
 def _send(process: subprocess.Popen, request_id: int, method: str, params: dict) -> None:

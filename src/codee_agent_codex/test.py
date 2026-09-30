@@ -70,11 +70,34 @@ class CodexRunTest(unittest.TestCase):
         self.root = Path("/repo")
         self.agent = CodexAgent(Settings(), self.root)
 
-    def _run(self, completed, model: str = "", message: str = "/do-it CORE-1") -> str:
+    def _run(self, completed, model: str = "", message: str = "/do-it CORE-1",
+             effort: str = "") -> str:
         self.reported = []
         with patch("subprocess.Popen", return_value=completed) as popen:
             self.captured = popen
-            return self.agent.run(message, SESSION, model, self.reported.append)
+            return self.agent.run(message, SESSION, model, self.reported.append,
+                                  effort)
+
+    def test_the_skill_effort_is_a_config_override(self) -> None:
+        # `codex exec` has no effort flag, only the config key.
+        self._run(_completed(_turn()), "gpt-6-astra", effort="xhigh")
+
+        cmd = self._cmd()
+        self.assertEqual(cmd[cmd.index("-c") + 1],
+                         'model_reasoning_effort="xhigh"')
+        self.assertLess(cmd.index("-c"), cmd.index("--"))
+
+    def test_no_effort_adds_no_override(self) -> None:
+        self._run(_completed(_turn()), "gpt-6-astra")
+
+        self.assertFalse(any(arg.startswith("model_reasoning_effort")
+                             for arg in self._cmd()))
+
+    def test_continuing_keeps_the_effort(self) -> None:
+        with patch("subprocess.Popen", return_value=_completed(_turn())) as popen:
+            self.agent.continue_conversation("And now?", THREAD, effort="low")
+
+        self.assertIn('model_reasoning_effort="low"', popen.call_args.args[0])
 
     def _cmd(self) -> list[str]:
         return self.captured.call_args.args[0]
@@ -252,6 +275,28 @@ class CodexModelsTest(unittest.TestCase):
 
         self.assertEqual([(model.id, model.name) for model in models],
                          [("gpt-6-astra", "GPT-6-Astra"), ("gpt-5.5", "GPT-5.5")])
+
+    def test_each_model_carries_its_effort_levels_and_default(self) -> None:
+        result = {"data": [
+            {"id": "gpt-6-astra", "displayName": "GPT-6-Astra",
+             "supportedReasoningEfforts": [
+                 {"reasoningEffort": "low", "description": "Fast"},
+                 {"reasoningEffort": "ultra", "description": "Delegates"}],
+             "defaultReasoningEffort": "low"},
+            # A default the model doesn't list is not offered as one.
+            {"id": "gpt-5.5", "supportedReasoningEfforts": ["high"],
+             "defaultReasoningEffort": "medium"},
+            {"id": "gpt-legacy"},
+        ]}
+
+        with patch("codee_agent_codex.provider.subprocess.Popen"), \
+                patch("codee_agent_codex.provider._send"), \
+                patch("codee_agent_codex.provider._await_result",
+                      return_value=result):
+            models = CodexAgent.list_models()
+
+        self.assertEqual([(m.efforts, m.default_effort) for m in models],
+                         [(("low", "ultra"), "low"), (("high",), ""), ((), "")])
 
     def test_a_cli_that_cannot_be_asked_yields_an_empty_list(self) -> None:
         # The skill editor falls back to a hand-typed id, so a missing or

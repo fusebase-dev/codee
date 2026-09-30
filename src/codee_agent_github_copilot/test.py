@@ -1,14 +1,13 @@
 import json
 import os
-import queue
 import subprocess
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
+from codee_agent_abstract.provider import AgentModel
 from codee_agent_github_copilot.provider import (
-    COPILOT_DEBUG_ENV_VAR, MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent,
-    _await_result)
+    COPILOT_DEBUG_ENV_VAR, MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent)
 from codee_main_context.context import Settings
 
 SESSION = "82232f47-df60-4cb3-8c3a-de12074c9205"
@@ -80,10 +79,11 @@ class CopilotRunTest(unittest.TestCase):
     def setUp(self) -> None:
         self.agent = GitHubCopilotAgent(Settings(), Path("/repo"))
 
-    def _run(self, completed, model: str = "") -> str:
+    def _run(self, completed, model: str = "", effort: str = "") -> str:
         with patch("subprocess.run", return_value=completed) as run:
             self.captured = run
-            return self.agent.run("/do-it CORE-1", SESSION, model)
+            return self.agent.run("/do-it CORE-1", SESSION, model,
+                                  effort=effort)
 
     def test_returns_the_last_assistant_message(self) -> None:
         stdout = _stream(
@@ -161,6 +161,23 @@ class CopilotRunTest(unittest.TestCase):
 
         cmd = self.captured.call_args.args[0]
         self.assertEqual(cmd[cmd.index("--model") + 1], "claude-opus-5")
+
+    def test_the_skill_effort_is_passed_on_the_command_line(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "gpt-6-sol", "none")
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--reasoning-effort") + 1], "none")
+
+    def test_no_effort_leaves_the_model_on_its_default(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "gpt-6-sol")
+
+        self.assertNotIn("--reasoning-effort", self.captured.call_args.args[0])
 
     def test_no_model_leaves_the_agent_on_its_default(self) -> None:
         stdout = _stream(_event("assistant.message", {"content": "ok"}),
@@ -271,59 +288,20 @@ class CopilotCreditCapTest(unittest.TestCase):
 
 
 class CopilotModelCatalogTest(unittest.TestCase):
-    def _queue(self, *lines: str) -> "queue.Queue[str]":
-        lines_queue: queue.Queue[str] = queue.Queue()
-        for line in lines:
-            lines_queue.put(line)
-        return lines_queue
+    def test_the_catalog_is_read_from_copilots_acp_mode(self) -> None:
+        catalog = [AgentModel("claude-opus-5", "Claude Opus 5",
+                              ("low", "high"), "high")]
 
-    def test_reads_the_session_new_result_past_other_traffic(self) -> None:
-        lines = self._queue(
-            json.dumps({"jsonrpc": "2.0", "id": 1,
-                       "result": {"protocolVersion": 1}}),
-            json.dumps(
-                {"jsonrpc": "2.0", "method": "session/update", "params": {}}),
-            json.dumps({"jsonrpc": "2.0", "id": 2,
-                       "result": {"sessionId": "s1"}}),
-        )
+        with patch("codee_agent_github_copilot.provider.acp.fetch_models",
+                   return_value=catalog) as fetch:
+            self.assertEqual(GitHubCopilotAgent.list_models(), catalog)
 
-        result = _await_result(Mock(poll=Mock(return_value=None)), lines, 2)
-
-        self.assertEqual(result["sessionId"], "s1")
-
-    def test_an_early_exit_raises_instead_of_waiting_out_the_deadline(self) -> None:
-        process = Mock(poll=Mock(return_value=1), returncode=1,
-                       stderr=Mock(read=Mock(return_value="not logged in")))
-
-        with self.assertRaises(RuntimeError) as caught:
-            _await_result(process, self._queue(), 2)
-
-        self.assertIn("not logged in", str(caught.exception))
-
-    def test_a_catalog_becomes_id_and_name_pairs(self) -> None:
-        result = {"models": {"availableModels": [
-            {"modelId": "claude-opus-5", "name": "Claude Opus 5"},
-            # no display name: falls back to the id
-            {"modelId": "gpt-5.4"},
-            {"name": "nameless"},            # no id at all: unusable, skipped
-        ]}}
-
-        with patch("codee_agent_github_copilot.provider.subprocess.Popen") as popen, \
-                patch("codee_agent_github_copilot.provider._send"), \
-                patch("codee_agent_github_copilot.provider._await_result",
-                      return_value=result):
-            models = GitHubCopilotAgent.list_models()
-
-        self.assertEqual([(m.id, m.name) for m in models],
-                         [("claude-opus-5", "Claude Opus 5"), ("gpt-5.4", "gpt-5.4")])
-        self.assertEqual(popen.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(popen.call_args.kwargs["errors"], "replace")
+        fetch.assert_called_once_with(["copilot", "--acp"])
 
     def test_an_unavailable_cli_yields_no_models_rather_than_raising(self) -> None:
-        with patch("codee_agent_github_copilot.provider.subprocess.Popen",
+        with patch("codee_agent_abstract.acp.subprocess.Popen",
                    side_effect=FileNotFoundError("copilot")):
             self.assertEqual(GitHubCopilotAgent.list_models(), [])
-
 
 if __name__ == "__main__":
     unittest.main()

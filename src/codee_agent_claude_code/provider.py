@@ -13,19 +13,28 @@ log = get_logger(__name__)
 # The `claude` CLI has no command that enumerates its models, so this catalog is
 # maintained by hand. It only feeds the admin UI's picker — the editor also takes
 # a model id typed by hand, so a model missing here is still usable.
+#
+# The effort levels are the ones Claude Code's own model table grants each model
+# (`--effort` and the skill `effort:` frontmatter take the same values): models
+# before the 4.6 generation, and Haiku, have no effort control at all, the 4.6
+# generation has no `xhigh`, and the defaults are what Claude Code falls back to.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS_WITHOUT_XHIGH = ("low", "medium", "high", "max")
 MODELS = [
-    AgentModel("claude-opus-5-5", "Claude Opus 5.5"),
-    AgentModel("claude-opus-5", "Claude Opus 5"),
-    AgentModel("claude-sonnet-5", "Claude Sonnet 5"),
-    AgentModel("claude-fable-5-1", "Claude Fable 5.1"),
-    AgentModel("claude-fable-5", "Claude Fable 5"),
-    AgentModel("claude-opus-4-8", "Claude Opus 4.8"),
-    AgentModel("claude-opus-4-7", "Claude Opus 4.7"),
-    AgentModel("claude-opus-4-6", "Claude Opus 4.6"),
-    AgentModel("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    AgentModel("claude-opus-5-5", "Claude Opus 5.5", EFFORTS, "medium"),
+    AgentModel("claude-opus-5", "Claude Opus 5", EFFORTS, "high"),
+    AgentModel("claude-sonnet-5", "Claude Sonnet 5", EFFORTS, "high"),
+    AgentModel("claude-fable-5-1", "Claude Fable 5.1", EFFORTS, "high"),
+    AgentModel("claude-fable-5", "Claude Fable 5", EFFORTS, "high"),
+    AgentModel("claude-opus-4-8", "Claude Opus 4.8", EFFORTS, "high"),
+    AgentModel("claude-opus-4-7", "Claude Opus 4.7", EFFORTS, "xhigh"),
+    AgentModel("claude-opus-4-6", "Claude Opus 4.6", EFFORTS_WITHOUT_XHIGH),
+    AgentModel("claude-sonnet-4-6", "Claude Sonnet 4.6", EFFORTS_WITHOUT_XHIGH),
     AgentModel("claude-haiku-4-5", "Claude Haiku 4.5"),
-    AgentModel("opus", "Latest Opus (alias)"),
-    AgentModel("sonnet", "Latest Sonnet (alias)"),
+    # The aliases follow the newest model of their tier, so they get that
+    # model's levels but no default: it moves with the next release.
+    AgentModel("opus", "Latest Opus (alias)", EFFORTS),
+    AgentModel("sonnet", "Latest Sonnet (alias)", EFFORTS),
     AgentModel("haiku", "Latest Haiku (alias)"),
 ]
 
@@ -53,12 +62,13 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         return list(MODELS)
 
     def run(self, user_message: str, session_id: str, model: str = "",
-            on_session_id: Callable[[str], None] | None = None) -> str:
+            on_session_id: Callable[[str], None] | None = None,
+            effort: str = "") -> str:
         # The session is ours to name and the CLI is told to use it, so the
         # answer is known before the run starts.
         if on_session_id:
             on_session_id(session_id)
-        return self._run(user_message, session_id, model, False)
+        return self._run(user_message, session_id, model, effort, False)
 
     def continue_conversation(
         self,
@@ -66,13 +76,14 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         session_id: str,
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
+        effort: str = "",
     ) -> str:
         if on_session_id:
             on_session_id(session_id)
-        return self._run(user_message, session_id, model, True)
+        return self._run(user_message, session_id, model, effort, True)
 
     def _run(self, user_message: str, session_id: str, model: str,
-             resume: bool) -> str:
+             effort: str, resume: bool) -> str:
         cmd = [
             self.CLI_COMMAND,
             "-p", user_message,
@@ -86,6 +97,9 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         # with no frontmatter to read (workflow inference) names one explicitly.
         if model:
             cmd += ["--model", model]
+        # The same holds for the skill's `effort:` frontmatter.
+        if effort:
+            cmd += ["--effort", effort]
 
         log.info("Running claude with message: %s", user_message)
         log.debug("cwd=%s cmd=%s", self._cwd, " ".join(cmd))

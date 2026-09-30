@@ -1,12 +1,10 @@
 import json
 import os
-import queue
 import subprocess
-import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 
+from codee_agent_abstract import acp
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel, AgentResponse
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
@@ -22,10 +20,9 @@ RESULT = "result"
 
 # `copilot` has no "list models" command, but its Agent Client Protocol mode
 # answers session/new with the account's live catalog — ids and display names
-# both. That's the only way to ask the CLI what it can run.
-ACP_TIMEOUT_SECONDS = 60
-_INITIALIZE_ID = 1
-_SESSION_NEW_ID = 2
+# both, and each model's reasoning effort levels once it is selected. That's
+# the only way to ask the CLI what it can run.
+ACP_COMMAND = ["copilot", "--acp"]
 
 # Ceiling on what one run may spend. AI credits bill at $0.04 each, so the
 # default is the same $20 cap the Claude Code agent puts on a run.
@@ -92,7 +89,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
     @classmethod
     def list_models(cls) -> list[AgentModel]:
         try:
-            return _fetch_acp_models()
+            return acp.fetch_models(ACP_COMMAND)
         except Exception as exc:
             # The picker falls back to free text, so a CLI that isn't installed
             # or isn't logged in must not break the admin UI.
@@ -100,7 +97,8 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             return []
 
     def run(self, user_message: str, session_id: str, model: str = "",
-            on_session_id: Callable[[str], None] | None = None) -> str:
+            on_session_id: Callable[[str], None] | None = None,
+            effort: str = "") -> str:
         # The session is ours to name and the CLI is told to use it, so the
         # answer is known before the run starts.
         if on_session_id:
@@ -124,6 +122,8 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         # body alone — so a skill's model only takes effect via this flag.
         if model:
             cmd += ["--model", model]
+        if effort:
+            cmd += ["--reasoning-effort", effort]
         debug_enabled = os.environ.get(
             COPILOT_DEBUG_ENV_VAR, "").strip().lower() == "true"
         if debug_enabled:
@@ -184,109 +184,6 @@ def _relative(path: Path, cwd: Path) -> str:
         return str(path.relative_to(cwd))
     except ValueError:
         return str(path)
-
-
-def _fetch_acp_models() -> list[AgentModel]:
-    """Ask ``copilot --acp`` for the account's model catalog.
-
-    Speaks just enough of the Agent Client Protocol to get a session: initialize,
-    then session/new, whose result carries ``models.availableModels``. The session
-    it opens is a throwaway that no prompt is ever sent to.
-    """
-    process = subprocess.Popen(
-        ["copilot", "--acp"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        cwd=Path.cwd(),
-    )
-    try:
-        lines: queue.Queue[str] = queue.Queue()
-        reader = threading.Thread(
-            target=_drain, args=(process.stdout, lines), daemon=True)
-        reader.start()
-
-        _send(process, _INITIALIZE_ID, "initialize", {
-            "protocolVersion": 1,
-            "clientCapabilities": {
-                "fs": {"readTextFile": False, "writeTextFile": False},
-            },
-        })
-        _send(process, _SESSION_NEW_ID, "session/new", {
-            "cwd": str(Path.cwd()),
-            "mcpServers": [],
-        })
-
-        result = _await_result(process, lines, _SESSION_NEW_ID)
-    finally:
-        process.kill()
-
-    available = (result.get("models") or {}).get("availableModels") or []
-    models = []
-    for entry in available:
-        if not isinstance(entry, dict):
-            continue
-        model_id = str(entry.get("modelId", "")).strip()
-        if not model_id:
-            continue
-        name = str(entry.get("name", "")).strip() or model_id
-        models.append(AgentModel(model_id, name))
-    log.debug("copilot reported %d model(s)", len(models))
-    return models
-
-
-def _send(process: subprocess.Popen, request_id: int, method: str, params: dict) -> None:
-    request = {"jsonrpc": "2.0", "id": request_id,
-               "method": method, "params": params}
-    process.stdin.write(json.dumps(request) + "\n")
-    process.stdin.flush()
-
-
-def _drain(stream, lines: "queue.Queue[str]") -> None:
-    """Pump the CLI's stdout into a queue so the read can be given a deadline."""
-    for line in stream:
-        lines.put(line)
-
-
-def _await_result(
-    process: subprocess.Popen, lines: "queue.Queue[str]", request_id: int
-) -> dict:
-    """Read until the response to ``request_id`` arrives, or the deadline passes.
-
-    Everything else on the wire — the initialize reply, the session/update
-    notifications the CLI starts emitting straight away — is skipped.
-    """
-    deadline = time.monotonic() + ACP_TIMEOUT_SECONDS
-    while True:
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"copilot --acp did not answer within {ACP_TIMEOUT_SECONDS}s")
-        try:
-            line = lines.get(timeout=0.5)
-        except queue.Empty:
-            # An immediate exit means the CLI is missing, unauthenticated, or
-            # too old for --acp; no point waiting out the whole deadline.
-            if process.poll() is not None:
-                raise RuntimeError(
-                    f"copilot --acp exited {process.returncode}: "
-                    f"{(process.stderr.read() or '').strip()[:300] or 'no output'}"
-                )
-            continue
-
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(message, dict) or message.get("id") != request_id:
-            continue
-        if "error" in message:
-            raise RuntimeError(f"copilot --acp errored: {message['error']}")
-        result = message.get("result")
-        return result if isinstance(result, dict) else {}
 
 
 def _parse_events(stdout: str) -> tuple[str, dict | None, list[str]]:

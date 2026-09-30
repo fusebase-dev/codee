@@ -2206,6 +2206,20 @@ class AdminServiceWorkflowAgentTest(unittest.TestCase):
                 "'AI agent: Codex\\A Model: claude-opus-5\\A Skill: develop'",
             )
 
+    def test_a_skills_effort_is_named_in_the_tooltip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(
+                Path(temporary_directory),
+                "model: claude-opus-5\neffort: high\nx-codee-agent: codex\n")
+
+            nodes = self._story_nodes(service)
+
+            self.assertEqual(
+                nodes["Ready"]["style"]["--codee-agent-run"],
+                "'AI agent: Codex\\A Model: claude-opus-5\\A Effort: high"
+                "\\A Skill: develop'",
+            )
+
     def test_the_model_is_written_on_the_node_under_the_status_name(
             self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -2492,6 +2506,54 @@ class AdminServiceSkillModelTest(unittest.TestCase):
 
             self.assertEqual(service.load_skill("nightly")["model"], "")
 
+    def test_save_writes_the_effort_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir, "name: nightly\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "claude-opus-5-5",
+                    "effort": "xhigh", "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            self.assertEqual(frontmatter["effort"], "xhigh")
+
+    def test_an_empty_effort_is_left_out_of_the_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(skills_dir,
+                                    "name: nightly\neffort: high\n")
+
+            with patch.object(service, "_write_and_push",
+                              return_value=(True, True, "saved")) as write:
+                service.save_skill({
+                    "slug": "nightly", "name": "nightly", "description": "",
+                    "type": "knowledge", "model": "claude-haiku-4-5",
+                    "effort": "", "body": "Body",
+                })
+
+            frontmatter, _ = parse_skill(write.call_args.args[1])
+            # Managed, so clearing it in the editor removes it rather than
+            # leaving the old value behind as a preserved extra.
+            self.assertNotIn("effort", frontmatter)
+
+    def test_load_returns_the_effort_and_keeps_it_out_of_preserved_extras(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(
+                skills_dir, "name: nightly\neffort: max\nlicense: MIT\n")
+
+            skill = service.load_skill("nightly")
+
+            self.assertEqual(skill["effort"], "max")
+            self.assertEqual(skill["extra"], "license: MIT\n")
+            self.assertEqual(service.list_skills()[0]["effort"], "max")
+
     def test_save_writes_the_agent_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             skills_dir = Path(temporary_directory)
@@ -2672,13 +2734,15 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
 
         with patch.object(ClaudeCodeAgent, "list_models",
                           return_value=[AgentModel(
-                              "claude-opus-5", "Claude Opus 5")]
+                              "claude-opus-5", "Claude Opus 5",
+                              ("low", "high"), "high")]
                           ) as list_models:
             first = service.list_agent_models()
             second = service.list_agent_models()
 
         self.assertEqual(
-            first, [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
+            first, [{"id": "claude-opus-5", "name": "Claude Opus 5",
+                     "efforts": ["low", "high"], "default_effort": "high"}])
         self.assertEqual(second, first)
         list_models.assert_called_once()
 
@@ -2691,7 +2755,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
             models = service.list_agent_models("codex")
 
         self.assertEqual(
-            models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra"}])
+            models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra",
+                      "efforts": [], "default_effort": ""}])
         claude_models.assert_not_called()
 
     def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
@@ -2700,7 +2765,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
         with patch.object(ClaudeCodeAgent, "list_models",
                           return_value=[AgentModel("claude-opus-5", "Claude Opus 5")]):
             self.assertEqual(service.list_agent_models("cursor"),
-                             [{"id": "claude-opus-5", "name": "Claude Opus 5"}])
+                             [{"id": "claude-opus-5", "name": "Claude Opus 5",
+                               "efforts": [], "default_effort": ""}])
 
     def test_every_agent_codee_can_run_is_offered(self) -> None:
         service = self._service(CodingAgent.CLAUDE_CODE)

@@ -3,7 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from codee.admin import AdminState, _highlight_parts, _run_preview, running_panel
+from codee.admin import (EFFORT_DEFAULT, AdminState, ModelOption,
+                         _highlight_parts, _run_preview, running_panel)
 
 
 def test_pause_with_running_agents_explains_they_will_finish() -> None:
@@ -56,6 +57,46 @@ def test_running_panel_shows_unpause_in_paused_empty_state() -> None:
     assert any("toggle_pause" in prop for prop in unpause_button["props"])
     idle_row = empty_state["false_value"]["children"][0]["children"]
     assert idle_row[1]["children"][0]["contents"] == '"No sessions running right now."'
+
+
+def test_kill_asks_about_the_session_it_was_opened_for() -> None:
+    state = SimpleNamespace(kill_job_id=0, kill_job_label="")
+
+    AdminState.confirm_kill_job.fn(state, 7, "/nightly")
+
+    assert (state.kill_job_id, state.kill_job_label) == (7, "/nightly")
+
+
+def test_closing_the_kill_dialog_forgets_the_session() -> None:
+    state = SimpleNamespace(kill_job_id=7, kill_job_label="/nightly")
+
+    AdminState.set_kill_dialog_open.fn(state, False)
+
+    assert (state.kill_job_id, state.kill_job_label) == (0, "")
+
+
+def test_confirming_the_kill_stops_that_session() -> None:
+    state = SimpleNamespace(kill_job_id=7, kill_job_label="/nightly",
+                            _refresh_dashboard=Mock())
+    with patch("codee.admin.SERVICE.kill_job", return_value=True) as kill, \
+            patch("codee.admin.rx.toast.success") as toast:
+        result = AdminState.kill_job.fn(state)
+
+    kill.assert_called_once_with(7)
+    state._refresh_dashboard.assert_called_once_with()
+    toast.assert_called_once_with("Killed /nightly")
+    assert result is toast.return_value
+    assert state.kill_job_id == 0
+
+
+def test_killing_a_session_that_already_finished_says_so() -> None:
+    state = SimpleNamespace(kill_job_id=7, kill_job_label="/nightly",
+                            _refresh_dashboard=Mock())
+    with patch("codee.admin.SERVICE.kill_job", return_value=False), \
+            patch("codee.admin.rx.toast.info") as toast:
+        AdminState.kill_job.fn(state)
+
+    toast.assert_called_once_with("That session had already finished.")
 
 
 def test_clearing_skill_search_resets_query() -> None:
@@ -117,3 +158,91 @@ def test_fetch_runs_page_builds_matching_segments_for_all_search_fields() -> Non
     assert records[0].message_parts[0].matched is True
     assert records[0].user_message_parts[1].matched is True
     assert records[0].response_parts[0].matched is True
+
+
+CATALOG = [
+    ModelOption(id="claude-opus-5-5", name="Claude Opus 5.5",
+                efforts=["low", "medium", "high", "xhigh", "max"],
+                default_effort="medium"),
+    ModelOption(id="claude-opus-4-6", name="Claude Opus 4.6",
+                efforts=["low", "medium", "high", "max"]),
+    ModelOption(id="claude-haiku-4-5", name="Claude Haiku 4.5"),
+]
+
+
+def _editor(model: str = "", effort: str = "") -> SimpleNamespace:
+    return SimpleNamespace(agent_models=CATALOG, skill_model=model,
+                           skill_effort=effort, model_query="")
+
+
+def _var(name: str, state: SimpleNamespace):
+    return AdminState.computed_vars[name].fget(state)
+
+
+def test_the_effort_picker_offers_the_picked_models_levels() -> None:
+    state = _editor("claude-opus-5-5")
+
+    assert _var("skill_effort_options", state) == [
+        "low", "medium", "high", "xhigh", "max"]
+    assert _var("skill_effort_default_label", state) == "Model default (medium)"
+    assert _var("skill_effort_value", state) == EFFORT_DEFAULT
+
+
+def test_a_model_without_effort_control_hides_the_picker() -> None:
+    assert _var("skill_effort_options", _editor("claude-haiku-4-5")) == []
+    # Nothing says what the agent's default or a typed id takes, either.
+    assert _var("skill_effort_options", _editor("")) == []
+    assert _var("skill_effort_options", _editor("my-custom-model")) == []
+
+
+def test_an_effort_written_by_hand_stays_visible_and_is_flagged() -> None:
+    state = _editor("my-custom-model", "ultra")
+
+    assert _var("skill_effort_options", state) == ["ultra"]
+    assert _var("skill_effort_unlisted", state) is True
+    assert _var("skill_effort_unlisted",
+                _editor("claude-opus-5-5", "max")) is False
+
+
+def test_picking_a_model_that_lacks_the_effort_clears_it() -> None:
+    state = _editor("claude-opus-5-5", "xhigh")
+
+    AdminState.choose_model.fn(state, "claude-opus-4-6")
+
+    assert state.skill_model == "claude-opus-4-6"
+    assert state.skill_effort == ""
+
+
+def test_picking_a_model_that_takes_the_effort_keeps_it() -> None:
+    state = _editor("claude-opus-5-5", "max")
+
+    AdminState.choose_model.fn(state, "claude-opus-4-6")
+
+    assert state.skill_effort == "max"
+
+
+def test_picking_a_model_the_catalog_lacks_keeps_the_effort() -> None:
+    state = _editor("claude-opus-5-5", "high")
+
+    AdminState.choose_model.fn(state, "claude-next")
+
+    assert state.skill_effort == "high"
+
+
+def test_choosing_model_default_effort_clears_it() -> None:
+    state = _editor("claude-opus-5-5", "high")
+
+    AdminState.set_skill_effort.fn(state, EFFORT_DEFAULT)
+    assert state.skill_effort == ""
+    AdminState.set_skill_effort.fn(state, "low")
+    assert state.skill_effort == "low"
+
+
+def test_switching_agent_resets_model_and_effort() -> None:
+    state = SimpleNamespace(skill_agent="", skill_model="claude-opus-5-5",
+                            skill_effort="high", model_query="")
+
+    AdminState.set_skill_agent.fn(state, "Codex")
+
+    assert (state.skill_agent, state.skill_model, state.skill_effort) == (
+        "codex", "", "")

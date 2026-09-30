@@ -77,11 +77,12 @@ See [Skill triggers](./triggers) for what they share and how to set each one up.
 
 ### Choosing an agent per skill
 
-A skill can also say which agent runs it, and on which model:
+A skill can also say which agent runs it, on which model, and at what reasoning effort:
 
 ```yaml
 x-codee-agent: codex
 model: gpt-6-astra
+effort: high
 ```
 
 `x-codee-agent` takes an agent code — `claude_code`, `github_copilot` or `codex` — and
@@ -89,5 +90,10 @@ model: gpt-6-astra
 [default agent](./configuration#default-agent) from Settings; leave `model` out and it runs
 on whatever that agent defaults to. Both are editable in the Codee UI, where the model
 picker lists the models of the agent the skill is set to.
+
+`effort` sets how much the model reasons before it answers. The levels depend on the model
+(for example `low`, `medium`, `high`, `xhigh`, `max`), and some models have none. Leave it
+out and the model uses its own default. In the Codee UI the **Reasoning effort** picker
+appears once you pick a model that supports it, and lists only the levels that model takes.
 
 Skills live in the `.claude/skills` folder and can be checked into your repo. They can be created/modified either as files in your favorite editor or in the Codee UI.

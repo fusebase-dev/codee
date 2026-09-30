@@ -42,16 +42,17 @@ x-codee-cron: 0 0 * * 2-6
 
 ## Choosing the agent and model
 
-Any triggered skill can name the agent and model that run it:
+Any triggered skill can name the agent and model that run it, and the reasoning effort:
 
 ```yaml
 x-codee-agent: codex
 model: gpt-6-astra
+effort: high
 ```
 
 Leave `x-codee-agent` out and the skill runs on the
 [default agent](../configuration#default-agent). Leave `model` out and it runs on whatever
-that agent defaults to. See [Overview](../overview.mdx#choosing-an-agent-per-skill).
+that agent defaults to. Leave `effort` out and the model uses its own default. See [Overview](../overview.mdx#choosing-an-agent-per-skill).
 
 ## Setting one up in the UI
 

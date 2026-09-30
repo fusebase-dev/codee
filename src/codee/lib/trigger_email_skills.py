@@ -27,7 +27,7 @@ ALLOWED_SENDER_DOMAINS = tuple(
     if domain.strip()
 )
 
-RunClaude = Callable[[str, str, str, str], str]
+RunClaude = Callable[..., str]
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,7 @@ class EmailTriggeredSkill:
     body: str
     model: str
     agent: str = ""
+    effort: str = ""
 
 
 def trigger_email_skills(
@@ -83,13 +84,24 @@ def trigger_email_skills(
         session_id = str(uuid.uuid4())
         prompt = render_email_prompt(skill.body, message)
         try:
-            response = run_claude(prompt, session_id, skill.model, skill.agent)
+            response = run_claude(prompt, session_id, skill.model, skill.agent,
+                                  effort=skill.effort)
             print(
                 f"[email_skills] Claude response for {skill.name} ({len(response)} chars)")
             path.unlink(missing_ok=True)
             runs_db.record_run(skill.name, "email", session_id,
                                "succeeded", message=prompt,
                                user_message=prompt, response=response,
+                               main_context=main_context)
+        except runs_db.JobKilled as exc:
+            # Stopped on purpose: consume the email so the next tick doesn't
+            # start the same run again.
+            print(f"[email_skills] {skill.name} for {path.name} was killed "
+                  "from the dashboard.")
+            path.unlink(missing_ok=True)
+            runs_db.record_run(skill.name, "email", session_id, "killed",
+                               error=str(exc), message=prompt,
+                               user_message=prompt,
                                main_context=main_context)
         except Exception as exc:
             print(
@@ -145,6 +157,7 @@ def find_email_triggered_skills(skills_dir: Path = SKILLS_DIR) -> dict[str, Emai
             body=body.strip(),
             model=metadata.get("model", "").strip(),
             agent=metadata.get("x-codee-agent", "").strip(),
+            effort=metadata.get("effort", "").strip(),
         )
     return skills_by_address
 

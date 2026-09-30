@@ -293,12 +293,25 @@ class RunAgentSelectionTest(unittest.TestCase):
         with patch.object(executor, "_agent_for_skill",
                           return_value=agent) as chosen:
             reply = executor._run_agent("/nightly", "sid-1", "gpt-6-astra",
-                                        "codex")
+                                        "codex", effort="xhigh")
 
         self.assertEqual(reply, "done")
         chosen.assert_called_once_with("codex")
         self.assertEqual(agent.run.call_args.args[:3],
                          ("/nightly", "sid-1", "gpt-6-astra"))
+        self.assertEqual(agent.run.call_args.args[4], "xhigh")
+
+    def test_an_issue_skills_effort_reaches_its_worker(self) -> None:
+        with patch.object(executor, "_max_parallel_agents", return_value=1), \
+                patch.object(executor, "is_paused", return_value=False), \
+                patch.object(executor.threading, "Thread") as thread:
+            launched = executor._submit_task(
+                "NIM-9", "/skill NIM-9", "sid-9", "skill", "claude-opus-5",
+                "", "/skill NIM-9", "max")
+        executor._inflight.discard("NIM-9")
+
+        self.assertTrue(launched)
+        self.assertEqual(thread.call_args.kwargs["args"][-1], "max")
 
 
 class RunTaskLoggingTest(unittest.TestCase):
@@ -337,6 +350,61 @@ class RunTaskLoggingTest(unittest.TestCase):
         run, = self._runs()
         self.assertEqual(run["status"], "failed")
         self.assertIn("over limit", run["error"])
+
+    def test_a_killed_run_is_logged_as_killed(self) -> None:
+        with patch.object(executor, "_run_agent",
+                          side_effect=runs_db.JobKilled()):
+            executor._run_task("NIM-2", "/story-developer NIM-2",
+                               "sid-2", "story-developer")
+
+        run, = self._runs()
+        self.assertEqual(run["status"], "killed")
+        self.assertEqual(run["error"], runs_db.KILLED_MESSAGE)
+
+    def test_an_agent_exit_after_a_kill_reads_as_killed(self) -> None:
+        def run(*args, **kwargs):
+            job, = runs_db.active_jobs(executor.context)
+            runs_db.kill_job(job["id"], main_context=executor.context)
+            raise RuntimeError("Claude CLI exited -15")
+
+        with patch.object(executor.coding_agent, "run", side_effect=run):
+            with self.assertRaises(runs_db.JobKilled):
+                executor._run_agent("/nightly", "sid-3")
+
+        self.assertEqual(runs_db.active_jobs(executor.context), [])
+
+    def test_an_agent_failure_without_a_kill_still_fails(self) -> None:
+        with patch.object(executor.coding_agent, "run",
+                          side_effect=RuntimeError("over limit")):
+            with self.assertRaisesRegex(RuntimeError, "over limit") as caught:
+                executor._run_agent("/nightly", "sid-4")
+
+        self.assertNotIsInstance(caught.exception, runs_db.JobKilled)
+
+    def test_a_jobs_agent_process_is_recorded_in_its_own_group(self) -> None:
+        def run(*args, **kwargs):
+            process = executor._JobPopen(["sleep", "30"])
+            try:
+                job, = runs_db.active_jobs(executor.context)
+                self.assertTrue(runs_db.kill_job(
+                    job["id"], main_context=executor.context))
+                self.assertEqual(os.getpgid(process.pid), process.pid)
+                process.wait(timeout=5)
+            finally:
+                process.kill()
+            raise RuntimeError(f"exited {process.returncode}")
+
+        with patch.object(executor.coding_agent, "run", side_effect=run):
+            with self.assertRaises(runs_db.JobKilled):
+                executor._run_agent("/nightly", "sid-5")
+
+    def test_a_process_spawned_outside_a_job_is_left_alone(self) -> None:
+        with patch.object(runs_db, "set_job_pid") as set_pid:
+            process = executor._JobPopen(["true"])
+            process.wait(timeout=5)
+
+        set_pid.assert_not_called()
+        self.assertNotEqual(os.getpgid(0), process.pid)
 
     def test_bookkeeping_failure_does_not_sink_a_finished_run(self) -> None:
         # finish_job runs in _run_agent's finally; if it raises (a stale call

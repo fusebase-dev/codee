@@ -43,10 +43,25 @@ class ClaudeCodeRunTest(unittest.TestCase):
     def setUp(self) -> None:
         self.agent = ClaudeCodeAgent(Settings(), Path("/repo"))
 
-    def _run(self, model: str = "") -> list[str]:
+    def _run(self, model: str = "", effort: str = "") -> list[str]:
         with patch("subprocess.run", return_value=_completed()) as run:
-            self.agent.run("/do-it CORE-1", SESSION, model)
+            self.agent.run("/do-it CORE-1", SESSION, model, effort=effort)
         return run.call_args.args[0]
+
+    def test_the_skill_effort_is_passed_on_the_command_line(self) -> None:
+        cmd = self._run("claude-opus-5-5", "xhigh")
+
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "xhigh")
+
+    def test_no_effort_leaves_the_model_on_its_default(self) -> None:
+        self.assertNotIn("--effort", self._run("claude-opus-5-5"))
+
+    def test_continuing_keeps_the_effort(self) -> None:
+        with patch("subprocess.run", return_value=_completed()) as run:
+            self.agent.continue_conversation("And now?", SESSION, effort="low")
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--effort") + 1], "low")
 
     def test_a_skill_run_leaves_the_model_to_the_frontmatter(self) -> None:
         # Claude Code reads the skill's `model:` itself; a flag would override it.
@@ -87,6 +102,17 @@ class ClaudeCodeRunTest(unittest.TestCase):
         models = [(model.id, model.name) for model in self.agent.list_models()]
 
         self.assertIn(("claude-opus-5-5", "Claude Opus 5.5"), models)
+
+    def test_the_catalog_carries_each_models_effort_levels(self) -> None:
+        models = {model.id: model for model in self.agent.list_models()}
+
+        self.assertEqual(models["claude-opus-5-5"].efforts,
+                         ("low", "medium", "high", "xhigh", "max"))
+        self.assertEqual(models["claude-opus-5-5"].default_effort, "medium")
+        # The 4.6 generation predates xhigh, and Haiku has no effort at all.
+        self.assertNotIn("xhigh", models["claude-opus-4-6"].efforts)
+        self.assertEqual(models["claude-haiku-4-5"].efforts, ())
+        self.assertEqual(models["haiku"].efforts, ())
 
 
 class ClaudeCodeUsageTest(unittest.TestCase):

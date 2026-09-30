@@ -22,6 +22,8 @@ RUNS_PAGE_SIZE = 20
 # The agents a skill can be run by, as the editor's picker lists them. Built
 # once: which agents exist is decided by this build, not by the settings.
 DEFAULT_AGENT_OPTION = "Default agent"
+# The effort picker's value for "no effort set": a select item can't be empty.
+EFFORT_DEFAULT = "__default__"
 AGENT_NAMES = {agent["code"]: agent["name"] for agent in SERVICE.list_agents()}
 AGENT_CODES = {name: code for code, name in AGENT_NAMES.items()}
 AGENT_OPTIONS = [DEFAULT_AGENT_OPTION, *AGENT_NAMES.values()]
@@ -47,6 +49,15 @@ def _skill_summary(skill: dict[str, str]) -> SkillSummary:
     return SkillSummary(**{
         **skill,
         "agent": AGENT_NAMES.get(skill["agent"], DEFAULT_AGENT_OPTION)})
+
+
+def _model_option(models: list["ModelOption"],
+                  model_id: str) -> "ModelOption | None":
+    """The catalog entry for ``model_id``, or None when the catalog lacks it."""
+    for model in models:
+        if model.id == model_id:
+            return model
+    return None
 
 
 def _usage_row(account: Any) -> "ClaudeAccount":
@@ -92,15 +103,23 @@ class SkillSummary(BaseModel):
     # none is run by the default one, which is worth saying on the card.
     agent: str = ""
     model: str = ""
+    effort: str = ""
     issue_status: str = ""
     issue_type: str = ""
 
 
 class ModelOption(BaseModel):
-    """One entry in the skill editor's model picker: code plus friendly name."""
+    """One entry in the skill editor's model picker: code plus friendly name.
+
+    ``efforts`` are the reasoning effort levels the model takes, empty when it
+    has none, and ``default_effort`` the one it runs at when the skill sets
+    none, empty when the agent doesn't say.
+    """
 
     id: str
     name: str
+    efforts: list[str] = []
+    default_effort: str = ""
 
 
 class ConversationMessage(BaseModel):
@@ -155,6 +174,7 @@ class RepositorySummary(BaseModel):
 
 
 class ActiveJob(BaseModel):
+    id: int = 0
     message: str
     elapsed_label: str
     viewer_url: str
@@ -187,6 +207,7 @@ def _active_job(job: dict[str, Any]) -> ActiveJob:
     url = job.get("task_url") or ""
     linked = bool(url) and message.rstrip().endswith(key)
     return ActiveJob(
+        id=job["id"],
         message=message,
         prompt_prefix=message.rstrip()[:-len(key)] if linked else message,
         task_key=key if linked else "",
@@ -338,6 +359,8 @@ class AdminState(rx.State):
     skill_name: str = ""
     skill_description: str = ""
     skill_model: str = ""
+    # The skill's `effort:`, empty for the model's own default.
+    skill_effort: str = ""
     # The agent code the skill declares, empty for the default agent.
     skill_agent: str = ""
     skill_type: str = "knowledge"
@@ -366,6 +389,11 @@ class AdminState(rx.State):
     adding_repository: bool = False
 
     active_jobs: list[ActiveJob] = []
+    # The session the kill confirmation is asking about. Held here rather than
+    # read off the row that opened it: the list redraws every second, and a
+    # row index can belong to another session by the time "Kill" is pressed.
+    kill_job_id: int = 0
+    kill_job_label: str = ""
     paused: bool = False
     total_runs: int = 0
     last_24h_runs: int = 0
@@ -528,6 +556,42 @@ class AdminState(rx.State):
         return self.skill_model
 
     @rx.var
+    def skill_effort_options(self) -> list[str]:
+        """The effort levels the picked model takes, for the effort picker.
+
+        Empty — and the picker hidden — for a model with no effort control, and
+        for one the catalog doesn't know (the agent's default, a hand-typed id,
+        or a catalog that hasn't arrived), since nothing says what it takes. An
+        effort the skill already carries is always listed, so a value written by
+        hand stays visible and can be cleared rather than being dropped unseen.
+        """
+        model = _model_option(self.agent_models, self.skill_model)
+        options = list(model.efforts) if model else []
+        if self.skill_effort and self.skill_effort not in options:
+            options.append(self.skill_effort)
+        return options
+
+    @rx.var
+    def skill_effort_value(self) -> str:
+        """The effort picker's value; the select can't hold an empty one."""
+        return self.skill_effort or EFFORT_DEFAULT
+
+    @rx.var
+    def skill_effort_default_label(self) -> str:
+        """The "no effort set" choice, naming the model's default when known."""
+        model = _model_option(self.agent_models, self.skill_model)
+        if model and model.default_effort:
+            return f"Model default ({model.default_effort})"
+        return "Model default"
+
+    @rx.var
+    def skill_effort_unlisted(self) -> bool:
+        """Whether the skill's effort is one the picked model doesn't list."""
+        model = _model_option(self.agent_models, self.skill_model)
+        return bool(self.skill_effort) and (
+            model is None or self.skill_effort not in model.efforts)
+
+    @rx.var
     def custom_model_query(self) -> str:
         """The search text when it names no known model, so it can be used as-is."""
         query = self.model_query.strip()
@@ -594,6 +658,7 @@ class AdminState(rx.State):
             return None
         self.skill_agent = agent
         self.skill_model = ""
+        self.skill_effort = ""
         self.model_query = ""
         return AdminState.load_agent_models
 
@@ -601,9 +666,20 @@ class AdminState(rx.State):
         self.model_query = value
 
     def choose_model(self, model_id: str) -> None:
-        """Pick a model from the list, or use whatever the user typed."""
+        """Pick a model from the list, or use whatever the user typed.
+
+        An effort the newly picked model is known not to take is cleared, since
+        it would only make that model's run fail. One the catalog can't vouch
+        either way for stays, and the picker keeps showing it.
+        """
         self.skill_model = model_id.strip()
         self.model_query = ""
+        model = _model_option(self.agent_models, self.skill_model)
+        if model is not None and self.skill_effort not in model.efforts:
+            self.skill_effort = ""
+
+    def set_skill_effort(self, value: str) -> None:
+        self.skill_effort = "" if value == EFFORT_DEFAULT else value
 
     @rx.event(background=True)
     async def load_agent_models(self) -> None:
@@ -680,6 +756,7 @@ class AdminState(rx.State):
         self.skill_name = skill["name"]
         self.skill_description = skill["description"]
         self.skill_model = skill["model"]
+        self.skill_effort = skill["effort"]
         self.skill_agent = skill["agent"]
         self.model_query = ""
         self.skill_type = skill["type"]
@@ -704,6 +781,7 @@ class AdminState(rx.State):
             "name": self.skill_name,
             "description": self.skill_description,
             "model": self.skill_model,
+            "effort": self.skill_effort,
             "agent": self.skill_agent,
             "type": self.skill_type,
             "cron": self.skill_cron,
@@ -839,6 +917,30 @@ class AdminState(rx.State):
             if self.active_jobs:
                 message += " Currently running agents will continue until completion."
             return rx.toast.info(message)
+
+    def confirm_kill_job(self, job_id: int, label: str) -> None:
+        self.kill_job_id = job_id
+        self.kill_job_label = label
+
+    def set_kill_dialog_open(self, is_open: bool) -> None:
+        if not is_open:
+            self.kill_job_id = 0
+            self.kill_job_label = ""
+
+    def kill_job(self) -> Any:
+        job_id, label = self.kill_job_id, self.kill_job_label
+        self.kill_job_id = 0
+        self.kill_job_label = ""
+        if not job_id:
+            return None
+        try:
+            killed = SERVICE.kill_job(job_id)
+        except Exception as error:
+            return rx.toast.error(f"Could not kill the session: {error}")
+        if not killed:
+            return rx.toast.info("That session had already finished.")
+        self._refresh_dashboard()
+        return rx.toast.success(f"Killed {label}")
 
     @rx.event(background=True)
     async def poll_dashboard(self) -> None:
@@ -2001,6 +2103,12 @@ def active_job_row(job: ActiveJob) -> rx.Component:
                     aria_label="View session", color=ACCENT, display="flex",
                     align_items="center"),
         ),
+        rx.icon_button(
+            rx.icon("square", size=14),
+            size="1", variant="ghost", color_scheme="red",
+            aria_label="Kill session", title="Kill session",
+            on_click=AdminState.confirm_kill_job(job.id, job.message),
+        ),
         gap="0.85rem",
         align="center",
         padding="0.85rem 1rem",
@@ -2009,6 +2117,32 @@ def active_job_row(job: ActiveJob) -> rx.Component:
         border_left=f"3px solid {ACCENT}",
         border_radius="4px",
         width="100%",
+    )
+
+
+def kill_job_dialog() -> rx.Component:
+    """One confirmation for every row, bound to the session it was opened for."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Kill session"),
+            rx.alert_dialog.description(
+                "This stops ", rx.text.strong(AdminState.kill_job_label),
+                " right away. Whatever the agent was in the middle of is left "
+                "as it is, and the run is logged as killed."),
+            rx.text(
+                "Cron, email and SQS runs are not retried. An issue that is "
+                "still in its trigger status is picked up again on the next "
+                "poll, so pause first if you don't want that.",
+                color=MUTED, font_size="0.85rem", margin_top="0.75rem"),
+            rx.hstack(
+                rx.alert_dialog.cancel(rx.button("Cancel", variant="soft",
+                                                 color_scheme="gray")),
+                rx.alert_dialog.action(rx.button("Kill session", color_scheme="red",
+                                                 on_click=AdminState.kill_job)),
+                spacing="3", justify="end", margin_top="1.25rem", width="100%"),
+            max_width="27rem"),
+        open=AdminState.kill_job_id != 0,
+        on_open_change=AdminState.set_kill_dialog_open,
     )
 
 
@@ -2080,6 +2214,7 @@ def running_panel() -> rx.Component:
                           spacing="2", align="center"),
             ),
         ),
+        kill_job_dialog(),
         padding="1.25rem",
         background=SURFACE,
         border=rx.cond(is_running, f"1px solid {ACCENT}", BORDER),
@@ -2236,6 +2371,9 @@ def skill_card(skill: SkillSummary) -> rx.Component:
             rx.text(skill.agent, color=MUTED, font_size="0.82rem"),
             rx.cond(skill.model != "",
                     rx.code(skill.model, font_size="0.72rem",
+                            color_scheme="gray")),
+            rx.cond(skill.effort != "",
+                    rx.code(skill.effort, font_size="0.72rem",
                             color_scheme="gray")),
             spacing="2", align="center", width="100%",
             class_name="skill-card-meta"),
@@ -2419,6 +2557,39 @@ def model_picker() -> rx.Component:
             color=MUTED, font_size="0.82rem"))
 
 
+def effort_picker() -> rx.Component:
+    """Reasoning effort for the picked model, shown only when it takes one."""
+    return rx.cond(
+        AdminState.skill_effort_options.length() > 0,
+        field(
+            "Reasoning effort",
+            rx.select.root(
+                rx.select.trigger(width="100%"),
+                rx.select.content(
+                    rx.select.item(AdminState.skill_effort_default_label,
+                                   value=EFFORT_DEFAULT),
+                    rx.foreach(AdminState.skill_effort_options,
+                               lambda effort: rx.select.item(effort,
+                                                             value=effort))),
+                value=AdminState.skill_effort_value,
+                on_change=AdminState.set_skill_effort),
+            rx.text(
+                rx.cond(
+                    AdminState.skill_effort == "",
+                    "Runs at the model's own effort.",
+                    rx.cond(
+                        AdminState.skill_effort_unlisted,
+                        rx.fragment(
+                            rx.code(AdminState.skill_effort),
+                            " isn't listed for this model, so the agent may "
+                            "reject it."),
+                        rx.fragment("Saved as ",
+                                    rx.code("effort: ",
+                                            AdminState.skill_effort),
+                                    " in the skill frontmatter."))),
+                color=MUTED, font_size="0.82rem")))
+
+
 def delete_skill_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.trigger(
@@ -2458,7 +2629,7 @@ def skill_editor() -> rx.Component:
         field("Description", rx.text_area(value=AdminState.skill_description,
                                           on_change=AdminState.set_skill_description,
                                           width="100%", min_height="5rem")),
-        rx.grid(agent_picker(), model_picker(),
+        rx.grid(agent_picker(), model_picker(), effort_picker(),
                 columns=rx.breakpoints(initial="1", md="2"), gap="1rem",
                 align="start", width="100%"),
         rx.cond(AdminState.skill_type == "cron trigger",
@@ -2680,11 +2851,29 @@ def highlighted_run_text(text: rx.Var, parts: rx.Var, **props: Any) -> rx.Compon
     )
 
 
+def run_markdown(text: rx.Var, parts: rx.Var) -> rx.Component:
+    """A prompt or response rendered as markdown, or as highlighted text while searching.
+
+    Prompts carry issue and email bodies, so raw HTML stays off: a tag in them
+    shows as text instead of reaching the page. Math is off too, so dollar
+    amounts read as written. A search hit falls back to plain text, because
+    the marks can only be drawn over text the page has not parsed.
+    """
+    return rx.cond(
+        parts.length() > 0,
+        highlighted_run_text(text, parts, white_space="pre-wrap"),
+        rx.box(rx.markdown(text, use_raw=False, use_math=False, use_katex=False),
+               width="100%", overflow_x="auto"),
+    )
+
+
 def run_row(run: RunRecord) -> rx.Component:
     return rx.box(
         rx.flex(
             rx.vstack(rx.hstack(rx.text(run.skill_name, font_weight="600"),
-                                rx.badge(run.status, color_scheme=rx.cond(run.status == "succeeded", "green", "red"))),
+                                rx.badge(run.status, color_scheme=rx.cond(
+                                    run.status == "succeeded", "green",
+                                    rx.cond(run.status == "killed", "gray", "red")))),
                       rx.hstack(
                       rx.text(local_datetime(run.ended_at)),
                       rx.text("(", run.relative_age_label, ")"),
@@ -2709,19 +2898,16 @@ def run_row(run: RunRecord) -> rx.Component:
         rx.cond((run.user_message != "") | (run.response != "") | (run.debug_logs != ""), rx.accordion.root(rx.accordion.item(
             header="Run info", content=rx.vstack(
                 rx.text("User message", font_weight="600"),
-                highlighted_run_text(run.user_message, run.user_message_parts,
-                                     white_space="pre-wrap"),
+                run_markdown(run.user_message, run.user_message_parts),
                 rx.cond((run.message != "") & (run.message != run.user_message),
                         rx.fragment(
                         rx.text("Original message", font_weight="600",
                                 margin_top="0.75rem"),
-                        highlighted_run_text(run.message, run.message_parts,
-                                             white_space="pre-wrap"))),
+                        run_markdown(run.message, run.message_parts))),
                 rx.cond(run.response != "", rx.fragment(
                     rx.text("LLM response", font_weight="600",
                             margin_top="0.75rem"),
-                    highlighted_run_text(run.response, run.response_parts,
-                                         white_space="pre-wrap"))),
+                    run_markdown(run.response, run.response_parts))),
                 rx.cond(run.debug_logs != "", rx.fragment(
                         rx.text("Debug logs", font_weight="600",
                                 margin_top="0.75rem"),

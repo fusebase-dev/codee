@@ -86,6 +86,7 @@ MANAGED = {
     "name",
     "description",
     "model",
+    "effort",
     "disable-model-invocation",
     "cron",
     "x-codee-agent",
@@ -627,14 +628,18 @@ def _skill_run_summary(
 
     The reading matches the executor's: a skill that names no agent, or one
     Codee cannot run, is driven by the default agent from Settings, and a
-    skill with no ``model`` leaves the choice to that agent's CLI.
+    skill with no ``model`` leaves the choice to that agent's CLI. The effort
+    is only named when the skill sets one.
     """
     agent = resolve_agent_code(skill.agent) or default_agent
-    return [
+    lines = [
         f"AI agent: {agent_label(agent)}",
         f"Model: {skill.model or WORKFLOW_DEFAULT_MODEL_LABEL}",
-        f"Skill: {skill.name}",
     ]
+    if skill.effort:
+        lines.append(f"Effort: {skill.effort}")
+    lines.append(f"Skill: {skill.name}")
+    return lines
 
 
 def _with_agent_tooltips(
@@ -971,6 +976,7 @@ class AdminService:
                 "type": infer_skill_type(frontmatter),
                 "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
                 "model": str(frontmatter.get("model", "") or "").strip(),
+                "effort": str(frontmatter.get("effort", "") or "").strip(),
                 "issue_status": _format_issue_status(
                     frontmatter.get("x-codee-issue-status", [])
                 ),
@@ -990,7 +996,7 @@ class AdminService:
         return [{"code": agent.value, "name": agent_label(agent)}
                 for agent in CODING_AGENTS]
 
-    def list_agent_models(self, agent: str = "") -> list[dict[str, str]]:
+    def list_agent_models(self, agent: str = "") -> list[dict[str, Any]]:
         """Models one coding agent offers, for the skill editor's picker.
 
         ``agent`` is the skill's ``x-codee-agent``; an empty one — or one that
@@ -999,6 +1005,10 @@ class AdminService:
 
         Best-effort: an agent that can't be asked yields an empty list and the
         editor falls back to a hand-typed model id.
+
+        Each model carries the effort levels it takes (``efforts``, empty when
+        it has no effort control) and the one it defaults to, so the editor
+        only offers an effort picker for a model that has one.
         """
         agent_key = (resolve_agent_code(agent)
                      or self.context.settings.coding_agent)
@@ -1013,7 +1023,10 @@ class AdminService:
                           f"{agent_key.value}: {error}")
                     models = []
                 self._models_cache[agent_key] = models
-        return [{"id": model.id, "name": model.name} for model in models]
+        return [{"id": model.id, "name": model.name,
+                 "efforts": list(model.efforts),
+                 "default_effort": model.default_effort}
+                for model in models]
 
     def resolve_skill_slug(self, label: str) -> str:
         """Map a workflow transition label back to the skill directory it names."""
@@ -1763,6 +1776,7 @@ class AdminService:
             "name": str(frontmatter.get("name", slug)),
             "description": str(frontmatter.get("description", "")),
             "model": str(frontmatter.get("model", "") or ""),
+            "effort": str(frontmatter.get("effort", "") or ""),
             "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
             "type": infer_skill_type(frontmatter),
             "cron": str(frontmatter.get("x-codee-cron", frontmatter.get("cron", "0 0 * * *"))),
@@ -1806,9 +1820,9 @@ class AdminService:
             "name": name,
             "description": skill["description"],
         }
-        # Both are left out entirely when unset, so the skill keeps running on
-        # the default agent and whatever model that agent defaults to, rather
-        # than on an empty agent code or model id.
+        # All three are left out entirely when unset, so the skill keeps
+        # running on the default agent, whatever model that agent defaults to
+        # and that model's own effort, rather than on an empty value.
         agent = skill.get("agent", "").strip()
         if agent:
             if resolve_agent_code(agent) is None:
@@ -1817,6 +1831,9 @@ class AdminService:
         model = skill.get("model", "").strip()
         if model:
             frontmatter["model"] = model
+        effort = skill.get("effort", "").strip()
+        if effort:
+            frontmatter["effort"] = effort
         skill_type = skill["type"]
         if skill_type == "slash command":
             frontmatter["disable-model-invocation"] = True
@@ -2052,6 +2069,10 @@ class AdminService:
             "hourly": runs_db.runs_by_hour(main_context=self.context),
             "paused": is_paused(self.context),
         }
+
+    def kill_job(self, job_id: int) -> bool:
+        """Stop a running session. False if it had already finished."""
+        return runs_db.kill_job(job_id, main_context=self.context)
 
     def set_paused(self, paused: bool) -> bool:
         """Allow or prevent future automated agent runs."""

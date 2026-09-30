@@ -21,10 +21,10 @@ SKILLS_DIR = default_skills_dir(REPO_ROOT)
 DEFAULT_CATCHUP = timedelta(hours=24)
 
 
-# (prompt, session_id, model, agent) -> agent reply. `model` is the skill's
-# `model:` frontmatter and `agent` its `x-codee-agent:`, each empty when the
-# skill declares none.
-RunClaude = Callable[[str, str, str, str], str]
+# (prompt, session_id, model, agent, *, effort) -> agent reply. `model` is the
+# skill's `model:` frontmatter, `agent` its `x-codee-agent:` and `effort` its
+# `effort:`, each empty when the skill declares none.
+RunClaude = Callable[..., str]
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,7 @@ class ScheduledSkill:
     body: str
     model: str
     agent: str = ""
+    effort: str = ""
 
 
 def _get_force_file_path(main_context: CodeeMainContext) -> Path:
@@ -121,12 +122,20 @@ def trigger_cron_skills(
         session_id = str(uuid.uuid4())
         try:
             response = run_claude(skill.body, session_id, skill.model,
-                                  skill.agent)
+                                  skill.agent, effort=skill.effort)
             print(
                 f"[cron_skills] Claude response for {skill.name} ({len(response)} chars)")
             runs_db.record_run(skill.name, "cron", session_id,
                                "succeeded", message=skill.body,
                                user_message=skill.body, response=response,
+                               main_context=main_context)
+        except runs_db.JobKilled as exc:
+            # Stopped on purpose: the slot counts as run, so the next tick
+            # doesn't start it straight back up.
+            print(f"[cron_skills] {skill.name} was killed from the dashboard.")
+            runs_db.record_run(skill.name, "cron", session_id, "killed",
+                               error=str(exc), message=skill.body,
+                               user_message=skill.body,
                                main_context=main_context)
         except Exception as exc:
             # Don't advance the state slot: leave the job "due" so a later tick
@@ -202,6 +211,7 @@ def _find_scheduled_skills(skills_dir: Path = SKILLS_DIR) -> list[ScheduledSkill
                 body=body.strip(),
                 model=metadata.get("model", "").strip(),
                 agent=metadata.get("x-codee-agent", "").strip(),
+                effort=metadata.get("effort", "").strip(),
             )
         )
     return skills

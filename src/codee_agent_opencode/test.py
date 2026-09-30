@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from codee_agent_abstract.provider import AgentModel
 from codee_agent_opencode.provider import OpenCodeAgent, _environment
 from codee_main_context.context import Settings
 
@@ -44,12 +45,37 @@ class OpenCodeRunTest(unittest.TestCase):
         self.root = Path("/repo")
         self.agent = OpenCodeAgent(Settings(), self.root)
 
-    def _run(self, result: Mock, model: str = "") -> str:
+    def _run(self, result: Mock, model: str = "", effort: str = "") -> str:
         self.reported = []
         with patch("subprocess.Popen", return_value=result) as run:
             self.captured = run
             return self.agent.run("/do-it CORE-1", "unused", model,
-                                  self.reported.append)
+                                  self.reported.append, effort)
+
+    def _model_flag(self) -> str:
+        cmd = self.captured.call_args.args[0]
+        return cmd[cmd.index("--model") + 1]
+
+    def test_the_skill_effort_is_the_models_variant(self) -> None:
+        self._run(_completed(_event(
+            "text", part={"type": "text", "text": "Done."})),
+            "anthropic/claude-opus-5-5", "max")
+
+        self.assertEqual(self._model_flag(), "anthropic/claude-opus-5-5#max")
+
+    def test_a_model_naming_its_own_variant_keeps_it(self) -> None:
+        self._run(_completed(_event(
+            "text", part={"type": "text", "text": "Done."})),
+            "anthropic/claude-opus-5-5#low", "max")
+
+        self.assertEqual(self._model_flag(), "anthropic/claude-opus-5-5#low")
+
+    def test_an_effort_without_a_model_is_dropped(self) -> None:
+        # A variant only exists as a suffix of a model id.
+        self._run(_completed(_event(
+            "text", part={"type": "text", "text": "Done."})), "", "high")
+
+        self.assertNotIn("--model", self.captured.call_args.args[0])
 
     def test_returns_text_and_reports_the_opened_session(self) -> None:
         stdout = "\n".join([
@@ -139,10 +165,24 @@ class OpenCodeRunTest(unittest.TestCase):
             "instructions exactly. TASK_ID = CORE-1",
         )
 
-    def test_models_come_from_the_cli(self) -> None:
+    def test_the_catalog_is_read_over_acp(self) -> None:
+        catalog = [AgentModel("anthropic/claude-opus-5-5",
+                              "anthropic/Claude Opus 5.5", ("low", "max"))]
+
+        with patch("codee_agent_opencode.provider.acp.fetch_models",
+                   return_value=catalog) as fetch, \
+                patch("subprocess.run") as models_command:
+            self.assertEqual(OpenCodeAgent.list_models(), catalog)
+
+        fetch.assert_called_once_with(["opencode", "acp"])
+        models_command.assert_not_called()
+
+    def test_models_come_from_the_cli_when_acp_cannot_answer(self) -> None:
         result = Mock(returncode=0, stderr="", stdout=(
             "anthropic/claude-opus-4-1\nopenai/gpt-5\n"))
-        with patch("subprocess.run", return_value=result):
+        with patch("codee_agent_opencode.provider.acp.fetch_models",
+                   side_effect=RuntimeError("opencode acp exited 1")), \
+                patch("subprocess.run", return_value=result):
             models = OpenCodeAgent.list_models()
 
         self.assertEqual([model.id for model in models], [

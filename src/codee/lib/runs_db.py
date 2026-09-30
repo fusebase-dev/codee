@@ -3,6 +3,8 @@
 Fail-safe by design: recording a run must never break the trigger that called it
 (FR-009), and reading never raises on an empty/missing DB (FR-006).
 """
+import os
+import signal
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +25,19 @@ _COLUMNS = ("id", "skill_name", "trigger_type", "session_id", "status", "error",
 # and the row that closes it, both of which happen in this process.
 _agent_sessions: dict[str, str] = {}
 _agent_sessions_lock = threading.Lock()
+
+KILLED_MESSAGE = "Killed from the dashboard"
+
+
+class JobKilled(RuntimeError):
+    """A run someone stopped from the dashboard, as opposed to one that failed.
+
+    Triggers treat it as handled rather than retrying it: a session stopped on
+    purpose that the next tick started again would make the button pointless.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(KILLED_MESSAGE)
 
 
 def note_agent_session(session_id: str, agent_session_id: str) -> None:
@@ -84,16 +99,21 @@ def init(main_context: CodeeMainContext) -> None:
                 message TEXT,
                 started_at TEXT NOT NULL,
                 agent TEXT,
-                model TEXT
+                model TEXT,
+                pid INTEGER,
+                killed INTEGER NOT NULL DEFAULT 0
             )"""
         )
-        # Migrate DBs created before the dashboard named the agent behind a run.
+        # Migrate DBs created before the dashboard named the agent behind a
+        # run, or could stop one.
         job_cols = {row[1] for row in conn.execute(
             "PRAGMA table_info(active_jobs)")}
-        for column in ("agent", "model"):
+        for column, kind in (("agent", "TEXT"), ("model", "TEXT"),
+                             ("pid", "INTEGER"),
+                             ("killed", "INTEGER NOT NULL DEFAULT 0")):
             if column not in job_cols:
                 conn.execute(
-                    f"ALTER TABLE active_jobs ADD COLUMN {column} TEXT")
+                    f"ALTER TABLE active_jobs ADD COLUMN {column} {kind}")
 
 
 def record_run(skill_name, trigger_type, session_id, status, error=None, started_at=None,
@@ -217,6 +237,68 @@ def set_job_session(job_id, session_id, *, main_context: CodeeMainContext) -> No
                          (session_id, job_id))
     except Exception as exc:  # ponytail: bookkeeping must never abort the run
         print(f"[runs_db] Failed to set session for job {job_id}: {exc}")
+
+
+def set_job_pid(job_id, pid: int, *, main_context: CodeeMainContext) -> None:
+    """Record the agent process a live job runs in, so it can be killed.
+
+    The executor starts that process as the leader of its own process group,
+    so this one id reaches everything the agent spawned too. No-op on None.
+    """
+    if job_id is None:
+        return
+    try:
+        with get_db_connection(main_context) as conn:
+            conn.execute("UPDATE active_jobs SET pid = ? WHERE id = ?",
+                         (pid, job_id))
+    except Exception as exc:  # ponytail: bookkeeping must never abort the run
+        print(f"[runs_db] Failed to set pid for job {job_id}: {exc}")
+
+
+def kill_job(job_id: int, *, main_context: CodeeMainContext) -> bool:
+    """Stop a live job's agent and everything it started. False if it is gone.
+
+    The row is marked first, so the executor reads the agent's exit as a kill
+    rather than a failure to retry. The admin UI and the executor are separate
+    processes on one host, which is why this signals by pid instead of asking.
+    """
+    init(main_context)
+    with get_db_connection(main_context) as conn:
+        row = conn.execute("SELECT pid FROM active_jobs WHERE id = ?",
+                           (job_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("UPDATE active_jobs SET killed = 1 WHERE id = ?",
+                     (job_id,))
+    pid = row[0]
+    if not pid:
+        # Between the row and the agent's spawn: the executor checks the mark
+        # before it would read an exit, so the run still ends as killed.
+        return True
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (AttributeError, ProcessLookupError):
+        # No process groups (Windows), or the agent wasn't started as a group
+        # leader: stop the agent itself.
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # already exited; its job row is about to go too
+    return True
+
+
+def job_killed(job_id, *, main_context: CodeeMainContext) -> bool:
+    """Whether someone asked for this live job to be stopped. Never raises."""
+    if job_id is None:
+        return False
+    try:
+        with get_db_connection(main_context) as conn:
+            row = conn.execute("SELECT killed FROM active_jobs WHERE id = ?",
+                               (job_id,)).fetchone()
+        return bool(row and row[0])
+    except Exception as exc:
+        print(f"[runs_db] Failed to read kill mark for job {job_id}: {exc}")
+        return False
 
 
 def finish_job(job_id, *, main_context: CodeeMainContext) -> None:

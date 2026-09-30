@@ -13,10 +13,18 @@ class AgentModel:
 
     ``id`` is what goes into the skill's ``model:`` frontmatter and onto the CLI;
     ``name`` is the human-readable label ("Claude Opus 5" for ``claude-opus-5``).
+
+    ``efforts`` are the reasoning effort levels the model accepts, in the order
+    the agent lists them, and empty for a model with no effort control — the
+    skill editor only offers an effort picker when there is something to pick.
+    ``default_effort`` is the level the agent uses when none is given, empty
+    when the agent doesn't say.
     """
 
     id: str
     name: str
+    efforts: tuple[str, ...] = ()
+    default_effort: str = ""
 
 
 class AgentResponse(str):
@@ -62,11 +70,14 @@ class AbstractCodingAgent(ABC):
 
     @abstractmethod
     def run(self, user_message: str, session_id: str, model: str = "",
-            on_session_id: Callable[[str], None] | None = None) -> str:
+            on_session_id: Callable[[str], None] | None = None,
+            effort: str = "") -> str:
         """Run the agent with the message in ``session_id`` and return its text.
 
         ``model`` is the skill's ``model:`` frontmatter, or empty for the agent's
         default. Agents that read the frontmatter themselves may ignore it.
+        ``effort`` is the skill's ``effort:`` frontmatter, a level from the
+        model's ``AgentModel.efforts``, or empty for the model's default.
 
         ``on_session_id`` is called with the session the agent actually ran
         under, as early as that is known. Most agents are handed one and run
@@ -86,6 +97,7 @@ class AbstractCodingAgent(ABC):
         session_id: str,
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
+        effort: str = "",
     ) -> str:
         """Continue an existing agent conversation and return its final reply.
 
@@ -93,7 +105,7 @@ class AbstractCodingAgent(ABC):
         need no special implementation. Agents with a distinct resume command
         override this method.
         """
-        return self.run(user_message, session_id, model, on_session_id)
+        return self.run(user_message, session_id, model, on_session_id, effort)
 
     def skill_prompt(self, slug: str, path: Path, argument: str = "",
                      argument_name: str = "") -> str:

@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from codee_main_context.context import CodeeMainContext
 
+from codee.lib import runs_db
 from codee.lib import trigger_aws_sqs_skills as trigger_aws_sqs_skills_module
 from codee.lib.trigger_aws_sqs_skills import (
     AwsSqsMessage,
@@ -171,7 +172,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append((model, agent))
             return "done"
 
@@ -203,7 +204,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -238,7 +239,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append(session_id)
             if len(calls) == 1:
                 raise RuntimeError("over limit")
@@ -270,6 +271,39 @@ class CronSkillTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertTrue(state_file.exists())
 
+    def test_a_killed_run_is_not_retried(self):
+        calls = []
+
+        def run_claude(message: str, session_id: str, model: str = "",
+                       agent: str = "", effort: str = "") -> str:
+            calls.append(session_id)
+            raise runs_db.JobKilled()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            state_file = root / "state.json"
+            skill_dir = skills_dir / "daily-check"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: Daily Check\n"
+                "disable-model-invocation: true\n"
+                "cron: 15 10 * * *\n"
+                "---\n\n"
+                "Run the daily check.\n"
+            )
+            tick = datetime(2026, 6, 7, 10, 15, 30)
+
+            for _ in range(2):
+                trigger_cron_skills(run_claude, now=tick, skills_dir=skills_dir,
+                                    state_file=state_file,
+                                    main_context=_ctx(root))
+
+            self.assertEqual(len(calls), 1)
+            run, = runs_db.recent_runs(main_context=_ctx(root))
+            self.assertEqual(run["status"], "killed")
+
     def test_latest_due_finds_missed_fire_within_window(self):
         # cron fires at 12:05; a tick lands at 12:10 (exact minute was skipped)
         cron = "5 12 * * *"
@@ -287,7 +321,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -345,7 +379,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -381,7 +415,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append(session_id)
             return "done"
 
@@ -422,7 +456,7 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append(session_id)
             raise RuntimeError("over limit")
 
@@ -454,14 +488,15 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
-            calls.append(model)
+                       agent: str = "", effort: str = "") -> str:
+            calls.append((model, effort))
             return "done"
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             skills_dir = root / "skills"
-            for slug, model_line in (("with-model", "model: claude-opus-5\n"),
+            for slug, model_line in (("with-model", "model: claude-opus-5\n"
+                                                    "effort: high\n"),
                                      ("without-model", "")):
                 skill_dir = skills_dir / slug
                 skill_dir.mkdir(parents=True)
@@ -481,7 +516,7 @@ class CronSkillTests(unittest.TestCase):
                                 main_context=_ctx(root))
 
         # Sorted by directory name, so the skill declaring a model comes first.
-        self.assertEqual(calls, ["claude-opus-5", ""])
+        self.assertEqual(calls, [("claude-opus-5", "high"), ("", "")])
 
     def test_reconcile_runs_one_aws_sqs_message_per_tick(self):
         calls = []
@@ -493,7 +528,7 @@ class CronSkillTests(unittest.TestCase):
         sqs_source = FakeSqsMessageSource([message])
 
         def run_claude(user_message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             calls.append((user_message, session_id))
             return "done"
 
@@ -524,9 +559,47 @@ class CronSkillTests(unittest.TestCase):
         self.assertTrue(calls[0][1])
         self.assertEqual(sqs_source.deleted, [message])
 
+    def test_a_killed_aws_sqs_run_drops_its_message(self):
+        message = AwsSqsMessage(
+            content="payload",
+            queue_url="https://sqs.example/queue",
+            receipt_handle="receipt",
+        )
+        sqs_source = FakeSqsMessageSource([message])
+
+        def run_claude(user_message: str, session_id: str, model: str = "",
+                       agent: str = "", effort: str = "") -> str:
+            raise runs_db.JobKilled()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / "skills"
+            skill_dir = skills_dir / "sqs-check"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: SQS Check\n"
+                "disable-model-invocation: true\n"
+                "x-codee-trigger: aws-sqs\n"
+                "x-codee-aws-sqs-queue: codee-queue\n"
+                "---\n\n"
+                "Process this content: {CONTENT}\n"
+            )
+
+            trigger_aws_sqs_skills(
+                run_claude,
+                skills_dir=skills_dir,
+                sqs_message_source=sqs_source,
+                main_context=_ctx(root),
+            )
+            run, = runs_db.recent_runs(main_context=_ctx(root))
+
+        self.assertEqual(sqs_source.deleted, [message])
+        self.assertEqual(run["status"], "killed")
+
     def test_reconcile_survives_unconfigured_aws_client(self):
         def run_claude(user_message: str, session_id: str, model: str = "",
-                       agent: str = "") -> str:
+                       agent: str = "", effort: str = "") -> str:
             raise AssertionError("should not run without an SQS client")
 
         with tempfile.TemporaryDirectory() as temp_dir:

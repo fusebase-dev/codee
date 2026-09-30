@@ -1,6 +1,8 @@
+import signal
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from codee_main_context.context import CodeeMainContext
 
@@ -236,6 +238,7 @@ def test_active_jobs_migrates_a_db_without_the_agent_columns(tmp_path):
     job = runs_db.active_jobs(ctx)[0]
     assert job["session_id"] == "old"
     assert (job["agent"], job["model"]) == ("", "")
+    assert not runs_db.job_killed(job["id"], main_context=ctx)
 
 
 def test_active_jobs_elapsed_and_order(tmp_path):
@@ -355,3 +358,47 @@ def test_an_agent_that_ran_under_the_given_id_notes_nothing(tmp_path):
     runs_db.note_agent_session("codee-sid", "")
 
     assert runs_db.agent_session("codee-sid") == "codee-sid"
+
+
+# ---------------------------------------------------------------- kill_job
+def test_kill_job_marks_the_row_and_signals_the_agents_group(tmp_path):
+    ctx = _ctx(tmp_path)
+    jid = runs_db.start_job("sid-1", "/nightly", main_context=ctx)
+    runs_db.set_job_pid(jid, 4242, main_context=ctx)
+
+    with patch.object(runs_db.os, "killpg") as killpg:
+        assert runs_db.kill_job(jid, main_context=ctx)
+
+    killpg.assert_called_once_with(4242, signal.SIGTERM)
+    assert runs_db.job_killed(jid, main_context=ctx)
+
+
+def test_kill_job_falls_back_to_the_agent_when_it_leads_no_group(tmp_path):
+    ctx = _ctx(tmp_path)
+    jid = runs_db.start_job("sid-1", "/nightly", main_context=ctx)
+    runs_db.set_job_pid(jid, 4242, main_context=ctx)
+
+    with patch.object(runs_db.os, "killpg", side_effect=ProcessLookupError), \
+            patch.object(runs_db.os, "kill") as kill:
+        assert runs_db.kill_job(jid, main_context=ctx)
+
+    kill.assert_called_once_with(4242, signal.SIGTERM)
+
+
+def test_kill_job_before_the_agent_spawned_only_marks_the_row(tmp_path):
+    ctx = _ctx(tmp_path)
+    jid = runs_db.start_job("sid-1", "/nightly", main_context=ctx)
+
+    with patch.object(runs_db.os, "killpg") as killpg:
+        assert runs_db.kill_job(jid, main_context=ctx)
+
+    killpg.assert_not_called()
+    assert runs_db.job_killed(jid, main_context=ctx)
+
+
+def test_kill_job_on_a_finished_job_reports_it_gone(tmp_path):
+    ctx = _ctx(tmp_path)
+    jid = runs_db.start_job("sid-1", "/nightly", main_context=ctx)
+    runs_db.finish_job(jid, main_context=ctx)
+
+    assert not runs_db.kill_job(jid, main_context=ctx)

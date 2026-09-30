@@ -31,6 +31,8 @@ class IssueTriggeredSkill:
     statuses: tuple[str, ...]
     issue_type: str
     model: str = ""
+    # The reasoning effort (``effort``), empty for the model's default.
+    effort: str = ""
     # The agent this skill asks to be run by (``x-codee-agent``), empty when it
     # names none and the default agent from Settings should drive it.
     agent: str = ""
@@ -94,6 +96,7 @@ def find_issue_triggered_skills(
             statuses=statuses,
             issue_type=issue_type,
             model=str(metadata.get("model", "")).strip(),
+            effort=str(metadata.get("effort", "") or "").strip(),
             agent=str(metadata.get("x-codee-agent", "") or "").strip(),
             argument_name=_argument_name(metadata.get("argument-hint")),
         ))

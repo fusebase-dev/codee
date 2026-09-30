@@ -11,7 +11,7 @@ from codee_main_context.context import project_root, skills_dir as default_skill
 REPO_ROOT = project_root()
 SKILLS_DIR = default_skills_dir(REPO_ROOT)
 
-RunClaude = Callable[[str, str, str, str], str]
+RunClaude = Callable[..., str]
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class AwsSqsTriggeredSkill:
     body: str
     model: str
     agent: str = ""
+    effort: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,13 +75,23 @@ def trigger_aws_sqs_skills(
         session_id = str(uuid.uuid4())
         prompt = render_aws_sqs_prompt(skill.body, message.content)
         try:
-            response = run_claude(prompt, session_id, skill.model, skill.agent)
+            response = run_claude(prompt, session_id, skill.model, skill.agent,
+                                  effort=skill.effort)
             print(
                 f"[aws_sqs_skills] Claude response for {skill.name} ({len(response)} chars)")
             sqs_message_source.delete(message)
             runs_db.record_run(skill.name, "aws-sqs",
                                session_id, "succeeded", message=prompt,
                                user_message=prompt, response=response,
+                               main_context=main_context)
+        except runs_db.JobKilled as exc:
+            # Stopped on purpose: drop the message rather than let it be
+            # redelivered and start the same run again.
+            print(f"[aws_sqs_skills] {skill.name} was killed from the dashboard.")
+            sqs_message_source.delete(message)
+            runs_db.record_run(skill.name, "aws-sqs", session_id, "killed",
+                               error=str(exc), message=prompt,
+                               user_message=prompt,
                                main_context=main_context)
         except Exception as exc:
             print(f"[aws_sqs_skills] Failed to run {skill.name}: {exc}")
@@ -132,6 +143,7 @@ def find_aws_sqs_triggered_skills(skills_dir: Path = SKILLS_DIR) -> list[AwsSqsT
                 body=body.strip(),
                 model=metadata.get("model", "").strip(),
                 agent=metadata.get("x-codee-agent", "").strip(),
+                effort=metadata.get("effort", "").strip(),
             )
         )
     return skills

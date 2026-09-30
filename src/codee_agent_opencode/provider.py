@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
+from codee_agent_abstract import acp
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
@@ -13,6 +14,12 @@ from codee.lib.mcp_config import read_mcp_servers
 
 
 log = get_logger(__name__)
+
+# `opencode acp` answers with the display names and each model's effort levels
+# (OpenCode calls them variants); `opencode models` only lists the ids.
+ACP_COMMAND = ["opencode", "acp"]
+# How `--model` names a variant: `provider/model#variant`.
+VARIANT_SEPARATOR = "#"
 
 
 class OpenCodeAgent(AbstractCodingAgent):
@@ -27,6 +34,12 @@ class OpenCodeAgent(AbstractCodingAgent):
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:
+        try:
+            models = acp.fetch_models(ACP_COMMAND)
+            if models:
+                return models
+        except Exception as exc:
+            log.debug("Could not read the opencode catalog over ACP: %s", exc)
         try:
             result = subprocess.run(
                 [cls.CLI_COMMAND, "models"],
@@ -56,8 +69,9 @@ class OpenCodeAgent(AbstractCodingAgent):
         return prompt
 
     def run(self, user_message: str, session_id: str, model: str = "",
-            on_session_id: Callable[[str], None] | None = None) -> str:
-        return self._run(user_message, model, on_session_id)
+            on_session_id: Callable[[str], None] | None = None,
+            effort: str = "") -> str:
+        return self._run(user_message, model, effort, on_session_id)
 
     def continue_conversation(
         self,
@@ -65,15 +79,17 @@ class OpenCodeAgent(AbstractCodingAgent):
         session_id: str,
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
+        effort: str = "",
     ) -> str:
-        return self._run(user_message, model, on_session_id, session_id)
+        return self._run(user_message, model, effort, on_session_id, session_id)
 
-    def _run(self, user_message: str, model: str,
+    def _run(self, user_message: str, model: str, effort: str,
              on_session_id: Callable[[str], None] | None,
              resume_session_id: str = "") -> str:
         cmd = [self.CLI_COMMAND, "run", "--format", "json", "--auto"]
         if resume_session_id:
             cmd += ["--session", resume_session_id]
+        model = _with_variant(model, effort)
         if model:
             cmd += ["--model", model]
         cmd += ["--", user_message]
@@ -149,6 +165,21 @@ def _collect(stream, lines: list[str],
                 log.warning("Could not report opencode session %s: %s",
                             session_id, exc)
     stream.close()
+
+
+def _with_variant(model: str, effort: str) -> str:
+    """The ``--model`` value that carries ``effort`` as OpenCode's variant.
+
+    A variant only exists as a suffix of a model id, so an effort with no model
+    to hang it on is dropped, and a model id that already names a variant keeps
+    the one it names.
+    """
+    if not effort or not model or VARIANT_SEPARATOR in model:
+        if effort and not model:
+            log.warning("opencode takes an effort only with a model; "
+                        "ignoring effort %r", effort)
+        return model
+    return f"{model}{VARIANT_SEPARATOR}{effort}"
 
 
 def _relative(path: Path, cwd: Path) -> str:
