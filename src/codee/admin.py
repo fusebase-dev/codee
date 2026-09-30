@@ -2561,7 +2561,7 @@ def effort_picker() -> rx.Component:
     """Reasoning effort for the picked model, shown only when it takes one."""
     return rx.cond(
         AdminState.skill_effort_options.length() > 0,
-        field(
+        rx.box(field(
             "Reasoning effort",
             rx.select.root(
                 rx.select.trigger(width="100%"),
@@ -2587,7 +2587,8 @@ def effort_picker() -> rx.Component:
                                     rx.code("effort: ",
                                             AdminState.skill_effort),
                                     " in the skill frontmatter."))),
-                color=MUTED, font_size="0.82rem")))
+                color=MUTED, font_size="0.82rem")),
+               flex="1", min_width="0"))
 
 
 def delete_skill_dialog() -> rx.Component:
@@ -2629,7 +2630,13 @@ def skill_editor() -> rx.Component:
         field("Description", rx.text_area(value=AdminState.skill_description,
                                           on_change=AdminState.set_skill_description,
                                           width="100%", min_height="5rem")),
-        rx.grid(agent_picker(), model_picker(), effort_picker(),
+        rx.grid(agent_picker(),
+                # Effort shares the model's column; the model takes all of it
+                # when the picked model has no effort levels.
+                rx.flex(rx.box(model_picker(), flex="1", min_width="0"),
+                        effort_picker(),
+                        direction=rx.breakpoints(initial="column", sm="row"),
+                        gap="1rem", align="start", width="100%"),
                 columns=rx.breakpoints(initial="1", md="2"), gap="1rem",
                 align="start", width="100%"),
         rx.cond(AdminState.skill_type == "cron trigger",
