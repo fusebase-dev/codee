@@ -2074,6 +2074,37 @@ class AdminService:
         """Stop a running session. False if it had already finished."""
         return runs_db.kill_job(job_id, main_context=self.context)
 
+    def peep_job(self, job_id: int, limit: int = 10) -> dict[str, Any] | None:
+        """The last ``limit`` steps of a running session. None once it finished.
+
+        ``entries`` is None rather than a list when the session's agent keeps
+        no transcript Codee can read. A row that names no agent, from before
+        the dashboard recorded one, is read as the default agent's.
+        """
+        job = next((job for job in runs_db.active_jobs(main_context=self.context)
+                    if job["id"] == job_id), None)
+        if job is None:
+            return None
+        agent = (resolve_agent_code(job.get("agent") or "")
+                 or self.context.settings.coding_agent)
+        implementation = CODING_AGENTS.get(agent)
+        entries = None
+        if implementation is not None:
+            try:
+                entries = implementation.peep(job["session_id"], self.root,
+                                              limit)
+            except Exception as error:
+                print(f"[admin] Could not read job {job_id}'s transcript: "
+                      f"{error}")
+                entries = []
+        return {
+            "agent": agent_label(agent),
+            "entries": (None if entries is None else
+                        [{"kind": entry.kind, "text": entry.text,
+                          "timestamp": entry.timestamp}
+                         for entry in entries]),
+        }
+
     def set_paused(self, paused: bool) -> bool:
         """Allow or prevent future automated agent runs."""
         set_paused(self.context, paused)

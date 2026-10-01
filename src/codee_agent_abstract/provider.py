@@ -27,6 +27,21 @@ class AgentModel:
     default_effort: str = ""
 
 
+@dataclass(frozen=True)
+class PeepEntry:
+    """One recent step of a running session, as the dashboard's Peep shows it.
+
+    ``kind`` is ``thinking`` (the model's reasoning, as far as the agent writes
+    it down), ``text`` (what the model said) or ``tool`` (a tool it called,
+    with ``text`` naming the tool and what it was called on). ``timestamp`` is
+    the ISO time the agent logged it, empty when it logged none.
+    """
+
+    kind: str
+    text: str
+    timestamp: str = ""
+
+
 class AgentResponse(str):
     """Agent text with optional diagnostic output for the run record."""
 
@@ -143,6 +158,22 @@ class AbstractCodingAgent(ABC):
         than an allowlist.
         """
         return []
+
+    @classmethod
+    def peep(cls, session_id: str, cwd: Path,
+             limit: int = 10) -> list[PeepEntry] | None:
+        """The last ``limit`` steps of a live session, oldest first.
+
+        Read from the transcript the agent's CLI writes as it goes, because
+        the run itself belongs to the executor, another process. ``cwd`` is
+        the directory the agent was started in, which some CLIs file their
+        transcripts under.
+
+        None means this agent keeps no transcript Codee can read. An empty
+        list means it does but nothing is there yet, which is also the answer
+        before the CLI has written its first line. Never raises.
+        """
+        return None
 
     def describe(self) -> str:
         """Human-readable one-liner about this agent, for logs."""

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -326,3 +327,53 @@ class _EmptyQueue:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexPeepTest(unittest.TestCase):
+    THREAD = "01a03949-7aee-70e0-af79-2b81ba610169"
+
+    def _item(self, payload: dict, timestamp: str = "") -> dict:
+        return {"timestamp": timestamp, "type": "response_item",
+                "payload": payload}
+
+    def test_reads_the_last_steps_from_the_threads_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            day = Path(temporary_directory) / "sessions" / "2026" / "10" / "01"
+            day.mkdir(parents=True)
+            lines = [
+                {"type": "session_meta", "payload": {"id": self.THREAD}},
+                self._item({"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "/nightly"}]}),
+                self._item({"type": "reasoning", "summary": [],
+                            "encrypted_content": "gAAA"}),
+                self._item({"type": "reasoning", "summary": [
+                    {"type": "summary_text", "text": "**Reading the logs**"}]},
+                    "2026-10-01T10:00:00Z"),
+                self._item({"type": "function_call", "name": "shell",
+                            "arguments": '{"command": ["tail", "app.log"]}'}),
+                self._item({"type": "function_call_output",
+                            "output": "secret output"}),
+                self._item({"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text",
+                                         "text": "Found it."}]}),
+            ]
+            (day / f"rollout-2026-10-01T10-00-00-{self.THREAD}.jsonl"
+             ).write_text("".join(json.dumps(line) + "\n" for line in lines),
+                          encoding="utf-8")
+
+            with patch.dict(os.environ, {"CODEX_HOME": temporary_directory}):
+                steps = CodexAgent.peep(self.THREAD, Path("/repo"))
+
+        self.assertEqual(
+            [(step.kind, step.text) for step in steps],
+            [("thinking", "**Reading the logs**"),
+             ("tool", "shell: tail app.log"),
+             ("text", "Found it.")])
+        self.assertEqual(steps[0].timestamp, "2026-10-01T10:00:00Z")
+
+    def test_a_thread_not_reported_yet_has_no_steps(self) -> None:
+        # Until Codex names its thread, the job row holds Codee's session id.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch.dict(os.environ, {"CODEX_HOME": temporary_directory}):
+                self.assertEqual(
+                    CodexAgent.peep("codee-session-1", Path("/repo")), [])

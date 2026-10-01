@@ -22,6 +22,8 @@ RUNS_PAGE_SIZE = 20
 # The agents a skill can be run by, as the editor's picker lists them. Built
 # once: which agents exist is decided by this build, not by the settings.
 DEFAULT_AGENT_OPTION = "Default agent"
+# How many of a running session's last steps the Peep dialog shows.
+PEEP_STEPS = 10
 # The effort picker's value for "no effort set": a select item can't be empty.
 EFFORT_DEFAULT = "__default__"
 AGENT_NAMES = {agent["code"]: agent["name"] for agent in SERVICE.list_agents()}
@@ -190,6 +192,18 @@ class ActiveJob(BaseModel):
     # which the row reads as the agent running on its own default.
     agent: str = ""
     model: str = ""
+
+
+class PeepStep(BaseModel):
+    """One recent step of a running session in the Peep dialog.
+
+    ``kind`` is ``thinking``, ``text`` or ``tool``; ``timestamp`` is ISO, empty
+    when the agent logged none.
+    """
+
+    kind: str
+    text: str
+    timestamp: str = ""
 
 
 def _active_job(job: dict[str, Any]) -> ActiveJob:
@@ -394,6 +408,13 @@ class AdminState(rx.State):
     # row index can belong to another session by the time "Kill" is pressed.
     kill_job_id: int = 0
     kill_job_label: str = ""
+    # The session the Peep dialog shows, held for the same reason, with the
+    # last steps read from its transcript. ``peep_note`` says why there are
+    # none, or that the session has finished since.
+    peep_job_id: int = 0
+    peep_job_label: str = ""
+    peep_steps: list[PeepStep] = []
+    peep_note: str = ""
     paused: bool = False
     total_runs: int = 0
     last_24h_runs: int = 0
@@ -941,6 +962,48 @@ class AdminState(rx.State):
             return rx.toast.info("That session had already finished.")
         self._refresh_dashboard()
         return rx.toast.success(f"Killed {label}")
+
+    def open_peep(self, job_id: int, label: str) -> None:
+        self.peep_job_id = job_id
+        self.peep_job_label = label
+        self.peep_steps = []
+        self._load_peep()
+
+    def set_peep_dialog_open(self, is_open: bool) -> None:
+        if not is_open:
+            self.peep_job_id = 0
+            self.peep_job_label = ""
+            self.peep_steps = []
+            self.peep_note = ""
+
+    def refresh_peep(self) -> None:
+        if self.peep_job_id:
+            self._load_peep()
+
+    def _load_peep(self) -> None:
+        """Read the session's last steps, or say why there are none.
+
+        A session that finished keeps the steps already on screen, so the
+        last look at it isn't wiped by the refresh that found it gone.
+        """
+        try:
+            peep = SERVICE.peep_job(self.peep_job_id, PEEP_STEPS)
+        except Exception as error:
+            self.peep_note = f"Could not read the session: {error}"
+            return
+        if peep is None:
+            self.peep_note = ("This session has finished. Its response is "
+                              "under Runs.")
+            return
+        if peep["entries"] is None:
+            self.peep_steps = []
+            self.peep_note = (f"Peep isn't available for {peep['agent']} "
+                              "sessions yet.")
+            return
+        self.peep_steps = [PeepStep(**entry) for entry in peep["entries"]]
+        self.peep_note = ("" if self.peep_steps else
+                          "Nothing to show yet. The agent may still be "
+                          "starting up.")
 
     @rx.event(background=True)
     async def poll_dashboard(self) -> None:
@@ -2104,6 +2167,12 @@ def active_job_row(job: ActiveJob) -> rx.Component:
                     align_items="center"),
         ),
         rx.icon_button(
+            rx.icon("eye", size=14),
+            size="1", variant="ghost",
+            aria_label="Peep at session", title="Peep at session",
+            on_click=AdminState.open_peep(job.id, job.message),
+        ),
+        rx.icon_button(
             rx.icon("square", size=14),
             size="1", variant="ghost", color_scheme="red",
             aria_label="Kill session", title="Kill session",
@@ -2143,6 +2212,70 @@ def kill_job_dialog() -> rx.Component:
             max_width="27rem"),
         open=AdminState.kill_job_id != 0,
         on_open_change=AdminState.set_kill_dialog_open,
+    )
+
+
+def peep_step(step: PeepStep) -> rx.Component:
+    """One step: what kind it is and when, then what the agent wrote or ran.
+
+    Thinking and replies are markdown, with raw HTML and math off as on the
+    Runs page. A tool call is one line of code.
+    """
+    return rx.vstack(
+        rx.hstack(
+            rx.badge(
+                rx.match(step.kind, ("thinking", "Thinking"),
+                         ("tool", "Tool call"), "Message"),
+                color_scheme=rx.match(step.kind, ("thinking", "gray"),
+                                      ("tool", "blue"), "green"),
+                variant="soft"),
+            rx.cond(step.timestamp != "",
+                    rx.text(local_datetime(step.timestamp), color=MUTED,
+                            font_size="0.75rem")),
+            spacing="2", align="center"),
+        rx.cond(
+            step.kind == "tool",
+            rx.code(step.text, font_family=MONO, font_size="0.8rem",
+                    white_space="pre-wrap", overflow_wrap="anywhere",
+                    width="100%", color_scheme="gray"),
+            rx.box(rx.markdown(step.text, use_raw=False, use_math=False,
+                               use_katex=False),
+                   color=rx.cond(step.kind == "thinking", MUTED, TEXT),
+                   font_style=rx.cond(step.kind == "thinking", "italic",
+                                      "normal"),
+                   font_size="0.88rem", width="100%", overflow_x="auto")),
+        spacing="1", align="start", width="100%",
+        padding_bottom="0.75rem", border_bottom=BORDER,
+    )
+
+
+def peep_dialog() -> rx.Component:
+    """The last steps of one running session, read again on Refresh."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Peep"),
+            rx.dialog.description(
+                rx.text(AdminState.peep_job_label, font_family=MONO,
+                        font_size="0.85rem", overflow="hidden",
+                        text_overflow="ellipsis", white_space="nowrap"),
+                color=MUTED),
+            rx.vstack(
+                rx.foreach(AdminState.peep_steps, peep_step),
+                rx.cond(AdminState.peep_note != "",
+                        rx.text(AdminState.peep_note, color=MUTED,
+                                font_size="0.85rem")),
+                spacing="3", width="100%", max_height="60vh",
+                overflow_y="auto", margin_top="1rem", padding_right="0.25rem"),
+            rx.hstack(
+                rx.button(rx.icon("refresh-cw", size=14), "Refresh",
+                          variant="soft", on_click=AdminState.refresh_peep),
+                rx.dialog.close(rx.button("Close", variant="soft",
+                                          color_scheme="gray")),
+                spacing="3", justify="end", margin_top="1.25rem",
+                width="100%"),
+            max_width="48rem"),
+        open=AdminState.peep_job_id != 0,
+        on_open_change=AdminState.set_peep_dialog_open,
     )
 
 
@@ -2215,6 +2348,7 @@ def running_panel() -> rx.Component:
             ),
         ),
         kill_job_dialog(),
+        peep_dialog(),
         padding="1.25rem",
         background=SURFACE,
         border=rx.cond(is_running, f"1px solid {ACCENT}", BORDER),

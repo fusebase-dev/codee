@@ -1,9 +1,13 @@
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_abstract.provider import (
+    AbstractCodingAgent, AgentModel, PeepEntry)
+from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
+from codee_agent_claude_code.credentials import config_dir
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -60,6 +64,16 @@ class ClaudeCodeAgent(AbstractCodingAgent):
     @classmethod
     def list_models(cls) -> list[AgentModel]:
         return list(MODELS)
+
+    @classmethod
+    def peep(cls, session_id: str, cwd: Path,
+             limit: int = 10) -> list[PeepEntry] | None:
+        path = _transcript(session_id, cwd)
+        if path is None:
+            return []
+        entries = [entry for record in tail_jsonl(path)
+                   for entry in _entries(record)]
+        return entries[-limit:]
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
@@ -141,3 +155,55 @@ class ClaudeCodeAgent(AbstractCodingAgent):
                 )
             return response.get("result", stdout)
         return stdout
+
+
+# A session id names a file, so anything that could step out of the projects
+# directory is refused rather than looked up.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _transcript(session_id: str, cwd: Path) -> Path | None:
+    """Where the CLI is writing ``session_id``, or None before it starts.
+
+    The CLI files a session under its cwd with every character that is not a
+    letter or a digit turned into a dash. A long cwd is shortened and hashed
+    instead, and a symlinked one may be resolved first, so when the expected
+    folder has no such file every project folder is tried.
+    """
+    if not _SESSION_ID.match(session_id or ""):
+        return None
+    projects = config_dir() / "projects"
+    name = f"{session_id}.jsonl"
+    expected = projects / re.sub(r"[^A-Za-z0-9]", "-", str(cwd)) / name
+    if expected.is_file():
+        return expected
+    return next(projects.glob(f"*/{name}"), None)
+
+
+def _entries(record: dict) -> list[PeepEntry]:
+    """The steps one transcript line carries: what the model thought, said or ran.
+
+    Only the model's own turns are read. The CLI saves most thinking blocks
+    without their text, and those are skipped rather than shown empty.
+    """
+    if record.get("type") != "assistant":
+        return []
+    content = (record.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    timestamp = str(record.get("timestamp") or "")
+    entries = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "thinking" and str(block.get("thinking") or "").strip():
+            entries.append(PeepEntry("thinking", clip(block["thinking"]),
+                                     timestamp))
+        elif kind == "text" and str(block.get("text") or "").strip():
+            entries.append(PeepEntry("text", clip(block["text"]), timestamp))
+        elif kind == "tool_use":
+            entries.append(PeepEntry(
+                "tool", tool_summary(str(block.get("name") or "tool"),
+                                     block.get("input")), timestamp))
+    return entries

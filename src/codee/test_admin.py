@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from codee.admin import (EFFORT_DEFAULT, AdminState, ModelOption,
+from codee.admin import (EFFORT_DEFAULT, AdminState, ModelOption, PeepStep,
                          _highlight_parts, _run_preview, running_panel)
 
 
@@ -97,6 +97,69 @@ def test_killing_a_session_that_already_finished_says_so() -> None:
         AdminState.kill_job.fn(state)
 
     toast.assert_called_once_with("That session had already finished.")
+
+
+def _peep_state(**fields) -> SimpleNamespace:
+    state = SimpleNamespace(peep_job_id=0, peep_job_label="", peep_steps=[],
+                            peep_note="")
+    state.__dict__.update(fields)
+    state._load_peep = lambda: AdminState._load_peep(state)
+    return state
+
+
+def test_peep_shows_the_sessions_last_steps() -> None:
+    state = _peep_state()
+    with patch("codee.admin.SERVICE.peep_job", return_value={
+            "agent": "Claude Code",
+            "entries": [{"kind": "tool", "text": "Bash: ls",
+                         "timestamp": "2026-10-01T10:00:00Z"}]}) as peep:
+        AdminState.open_peep.fn(state, 7, "/nightly")
+
+    peep.assert_called_once_with(7, 10)
+    assert (state.peep_job_id, state.peep_job_label) == (7, "/nightly")
+    assert [(step.kind, step.text) for step in state.peep_steps] == [
+        ("tool", "Bash: ls")]
+    assert state.peep_note == ""
+
+
+def test_peep_says_when_there_is_nothing_yet() -> None:
+    state = _peep_state()
+    with patch("codee.admin.SERVICE.peep_job",
+               return_value={"agent": "Codex", "entries": []}):
+        AdminState.open_peep.fn(state, 7, "/nightly")
+
+    assert state.peep_steps == []
+    assert state.peep_note.startswith("Nothing to show yet.")
+
+
+def test_peep_says_which_agents_it_cannot_read() -> None:
+    state = _peep_state()
+    with patch("codee.admin.SERVICE.peep_job",
+               return_value={"agent": "OpenCode", "entries": None}):
+        AdminState.open_peep.fn(state, 7, "/nightly")
+
+    assert state.peep_note == "Peep isn't available for OpenCode sessions yet."
+
+
+def test_refreshing_a_finished_session_keeps_what_was_on_screen() -> None:
+    step = PeepStep(kind="text", text="Done.")
+    state = _peep_state(peep_job_id=7, peep_steps=[step])
+    with patch("codee.admin.SERVICE.peep_job", return_value=None):
+        AdminState.refresh_peep.fn(state)
+
+    assert state.peep_steps == [step]
+    assert state.peep_note.startswith("This session has finished.")
+
+
+def test_closing_the_peep_dialog_forgets_the_session() -> None:
+    state = _peep_state(peep_job_id=7, peep_job_label="/nightly",
+                        peep_steps=[PeepStep(kind="text", text="x")],
+                        peep_note="note")
+
+    AdminState.set_peep_dialog_open.fn(state, False)
+
+    assert (state.peep_job_id, state.peep_job_label, state.peep_steps,
+            state.peep_note) == (0, "", [], "")
 
 
 def test_clearing_skill_search_resets_query() -> None:

@@ -502,3 +502,81 @@ class ClaudeCodeSignInTest(unittest.TestCase):
             with self.assertRaises(oauth.OAuthApiError) as error:
                 oauth.refresh_tokens("refresh-0")
         self.assertNotIsInstance(error.exception, oauth.OAuthRefused)
+
+
+class ClaudeCodePeepTest(unittest.TestCase):
+    CWD = Path("/srv/codee/my_repo")
+
+    def _write(self, config: Path, folder: str, lines: list[dict]) -> None:
+        directory = config / "projects" / folder
+        directory.mkdir(parents=True)
+        (directory / f"{SESSION}.jsonl").write_text(
+            "".join(json.dumps(line) + "\n" for line in lines),
+            encoding="utf-8")
+
+    def _assistant(self, *blocks: dict, timestamp: str = "") -> dict:
+        return {"type": "assistant", "timestamp": timestamp,
+                "message": {"role": "assistant", "content": list(blocks)}}
+
+    def test_reads_the_last_steps_from_the_session_under_its_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = Path(temporary_directory)
+            self._write(config, "-srv-codee-my-repo", [
+                {"type": "user", "message": {"role": "user",
+                                             "content": "/nightly"}},
+                self._assistant(
+                    {"type": "thinking", "thinking": "", "signature": "s"},
+                    {"type": "thinking", "thinking": "Check the logs first."},
+                    timestamp="2026-10-01T10:00:00Z"),
+                self._assistant({"type": "tool_use", "name": "Bash",
+                                 "input": {"command": "tail app.log"}}),
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "content": "secret output"}]}},
+                self._assistant({"type": "text", "text": "Found it."}),
+            ])
+
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: str(config)}):
+                steps = ClaudeCodeAgent.peep(SESSION, self.CWD)
+
+        self.assertEqual(
+            [(step.kind, step.text) for step in steps],
+            [("thinking", "Check the logs first."),
+             ("tool", "Bash: tail app.log"),
+             ("text", "Found it.")])
+        self.assertEqual(steps[0].timestamp, "2026-10-01T10:00:00Z")
+
+    def test_keeps_only_the_last_steps_asked_for(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = Path(temporary_directory)
+            self._write(config, "-srv-codee-my-repo", [
+                self._assistant({"type": "text", "text": f"step {n}"})
+                for n in range(15)])
+
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: str(config)}):
+                steps = ClaudeCodeAgent.peep(SESSION, self.CWD, 10)
+
+        self.assertEqual([step.text for step in steps],
+                         [f"step {n}" for n in range(5, 15)])
+
+    def test_finds_the_session_filed_under_another_folder(self) -> None:
+        # A long or symlinked cwd is filed under a name Codee can't predict.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = Path(temporary_directory)
+            self._write(config, "-private-srv-codee-my-repo-1a2b", [
+                self._assistant({"type": "text", "text": "Hello"})])
+
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: str(config)}):
+                steps = ClaudeCodeAgent.peep(SESSION, self.CWD)
+
+        self.assertEqual([step.text for step in steps], ["Hello"])
+
+    def test_a_session_not_written_yet_has_no_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: temporary_directory}):
+                self.assertEqual(ClaudeCodeAgent.peep(SESSION, self.CWD), [])
+                self.assertEqual(
+                    ClaudeCodeAgent.peep("../../etc/passwd", self.CWD), [])

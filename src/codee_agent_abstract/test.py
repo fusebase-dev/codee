@@ -1,10 +1,13 @@
 import io
 import json
 import queue
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codee_agent_abstract import acp
+from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
 from codee_agent_abstract.provider import AgentModel
 
 
@@ -171,3 +174,35 @@ class AcpAwaitResultTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TranscriptTest(unittest.TestCase):
+    def test_tail_drops_the_line_cut_by_the_window_and_unparsable_ones(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "session.jsonl"
+            lines = [json.dumps({"n": n, "pad": "x" * 40}) for n in range(5)]
+            path.write_text("\n".join(lines) + "\nnot json\n{\"half\":",
+                            encoding="utf-8")
+            window = len("\n".join(lines[2:])) + len("\nnot json\n{\"half\":") + 5
+
+            records = tail_jsonl(path, window)
+
+        self.assertEqual([record["n"] for record in records], [2, 3, 4])
+
+    def test_tail_of_a_missing_file_is_empty(self) -> None:
+        self.assertEqual(tail_jsonl(Path("/nonexistent/session.jsonl")), [])
+
+    def test_a_tool_call_is_named_by_its_most_telling_argument(self) -> None:
+        self.assertEqual(tool_summary("Bash", {"command": "pytest -q",
+                                               "timeout": 60}),
+                         "Bash: pytest -q")
+        self.assertEqual(tool_summary("shell", '{"cmd": ["ls", "-la"]}'),
+                         "shell: ls -la")
+        self.assertEqual(tool_summary("TodoWrite", {"todos": []}),
+                         'TodoWrite: {"todos": []}')
+        self.assertEqual(tool_summary("exec", "print(1)"), "exec: print(1)")
+
+    def test_clip_marks_what_it_cut(self) -> None:
+        self.assertEqual(clip("  short  "), "short")
+        self.assertEqual(clip("abcdefgh", 4), "abcd …")

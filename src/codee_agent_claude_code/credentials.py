@@ -46,11 +46,15 @@ class StoredCredentials:
     expires_at: int = 0
 
 
+def config_dir() -> Path:
+    """The CLI's config directory, honouring ``CLAUDE_CONFIG_DIR``."""
+    configured = os.environ.get(CONFIG_DIR_ENV, "").strip()
+    return Path(configured) if configured else Path.home() / ".claude"
+
+
 def credentials_file() -> Path:
     """Path to ``.credentials.json``, honouring ``CLAUDE_CONFIG_DIR``."""
-    configured = os.environ.get(CONFIG_DIR_ENV, "").strip()
-    directory = Path(configured) if configured else Path.home() / ".claude"
-    return directory / CREDENTIALS_NAME
+    return config_dir() / CREDENTIALS_NAME
 
 
 def read_credentials() -> StoredCredentials:

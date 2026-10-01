@@ -1,12 +1,16 @@
 import json
+import os
 import queue
+import re
 import subprocess
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_abstract.provider import (
+    AbstractCodingAgent, AgentModel, PeepEntry)
+from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -64,6 +68,17 @@ class CodexAgent(AbstractCodingAgent):
             # or isn't logged in must not break the admin UI.
             log.warning("Could not read the codex model catalog: %s", exc)
             return []
+
+    @classmethod
+    def peep(cls, session_id: str, cwd: Path,
+             limit: int = 10) -> list[PeepEntry] | None:
+        # ``cwd`` doesn't matter: Codex files a rollout by date, not by project.
+        path = _rollout(session_id)
+        if path is None:
+            return []
+        entries = [entry for record in tail_jsonl(path)
+                   for entry in _rollout_entries(record)]
+        return entries[-limit:]
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
@@ -434,3 +449,63 @@ def _parse_events(stdout: str) -> tuple[str, bool, list[str]]:
 def _detail(errors: list[str], stderr: str) -> str:
     """Best available explanation of a failure, trimmed for the log line."""
     return ("; ".join(errors) or stderr.strip() or "no error detail")[:500]
+
+
+# A thread id names a file, so anything that could step out of the sessions
+# directory is refused rather than looked up.
+_THREAD_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _rollout(thread_id: str) -> Path | None:
+    """The rollout file Codex is writing ``thread_id`` to, or None before it starts.
+
+    Codex keeps them as ``sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl``
+    under ``CODEX_HOME``. The job row holds Codee's own session id until Codex
+    reports its thread id, and nothing matches that.
+    """
+    if not _THREAD_ID.match(thread_id or ""):
+        return None
+    configured = os.environ.get("CODEX_HOME", "").strip()
+    home = Path(configured) if configured else Path.home() / ".codex"
+    matches = sorted((home / "sessions").glob(
+        f"*/*/*/rollout-*-{thread_id}.jsonl"))
+    return matches[-1] if matches else None
+
+
+def _rollout_entries(record: dict) -> list[PeepEntry]:
+    """The steps one rollout line carries: what the model thought, said or ran.
+
+    Reasoning is mostly saved encrypted, with no summary, and is skipped then.
+    Tool output is left out; the call says what the agent is doing.
+    """
+    if record.get("type") != "response_item":
+        return []
+    item = record.get("payload")
+    if not isinstance(item, dict):
+        return []
+    timestamp = str(record.get("timestamp") or "")
+    kind = item.get("type")
+    if kind == "message" and item.get("role") == "assistant":
+        text = "\n\n".join(
+            str(part.get("text") or "") for part in item.get("content") or []
+            if isinstance(part, dict) and part.get("type") == "output_text")
+        return [PeepEntry("text", clip(text), timestamp)] if text.strip() else []
+    if kind == "reasoning":
+        text = "\n\n".join(
+            str(part.get("text") or "") for part in item.get("summary") or []
+            if isinstance(part, dict))
+        return ([PeepEntry("thinking", clip(text), timestamp)]
+                if text.strip() else [])
+    if kind == "function_call":
+        return [PeepEntry("tool", tool_summary(
+            str(item.get("name") or "tool"), item.get("arguments")), timestamp)]
+    if kind == "custom_tool_call":
+        return [PeepEntry("tool", tool_summary(
+            str(item.get("name") or "tool"), item.get("input")), timestamp)]
+    if kind == "local_shell_call":
+        return [PeepEntry("tool", tool_summary(
+            "shell", item.get("action")), timestamp)]
+    if kind == "web_search_call":
+        return [PeepEntry("tool", tool_summary(
+            "web_search", item.get("action")), timestamp)]
+    return []
