@@ -23,7 +23,20 @@ x-codee-email-address: bugs@codee.example.com
 
 ## How delivery works
 
-Codee does not fetch mail from a mailbox. It reads a directory:
+Codee reads mail from one of two places.
+
+**Mailpit.** If `MAILPIT_API_URL` is set, Codee asks
+[Mailpit](https://mailpit.axllent.org/) once a minute for mail sent to your skills'
+addresses. Other mail in Mailpit is left alone. When Codee is done with a message, it
+deletes it from Mailpit. See [Integrating with Mailpit](../tutorials/integrating-with-mailpit)
+for the setup.
+
+| Variable | Example | What it is |
+| --- | --- | --- |
+| `MAILPIT_API_URL` | `http://localhost:8025/api/v1` | Mailpit API base URL |
+| `MAILPIT_AUTH` | `user:password` | Mailpit user name and password, if it has one |
+
+**A folder.** If `MAILPIT_API_URL` is not set, Codee reads a folder:
 
 ```
 incoming mail  →  temp-emails/*.eml  →  the tick routes each file to a skill
@@ -46,18 +59,25 @@ Mail from any other domain is dropped without running anything.
 
 :::warning[This variable is not optional]
 
-It is empty by default, and an empty list allows nothing. Until it is set, every email is
-dropped and no email skill ever runs. It is read at startup, so restart Codee after
-changing it.
+It is empty by default, and an empty list allows nothing. Until you set it, every email is
+deleted and no skill runs. This includes mail in Mailpit.
+
+Codee reads it only when it starts, and only from its environment, not from `.env`.
+Restart Codee after you change it. If you use pm2, load `.env` in your shell before the
+restart, or Codee starts without it.
 :::
 
 An email address is trivial to forge, so treat this as a filter, not authentication. Do
 not put an address that accepts mail from the public internet behind a skill that can
 change code.
 
-### 2. Run the SMTP server
+### 2. Get the mail to Codee
 
-It is a separate process — `codee-start` does not launch it:
+If you use Mailpit, follow [Integrating with Mailpit](../tutorials/integrating-with-mailpit)
+and go on to step 3.
+
+Otherwise run the SMTP server Codee ships with. It is a separate process — `codee-start`
+does not launch it:
 
 ```bash
 MAIL_PORT=2525 uv run python -m codee.mail_server
@@ -78,11 +98,11 @@ visible `To`.
 
 :::warning[Check where the files land]
 
-The server writes to a `temp-emails/` directory next to its own installation, while the
-executor reads `temp-emails/` in your project directory. When Codee is installed as a
-package these are not the same place. Send one test message, find the `.eml` file, and if
-it is not in your project's `temp-emails/`, symlink it there or use your own delivery
-mechanism.
+The server saves mail to a `temp-emails/` folder next to Codee's own code. Codee reads
+mail from the `temp-emails/` folder in your project. These are two different folders, so
+by default the mail is never picked up. Send one test message and find the `.eml` file. If
+it is not in your project's `temp-emails/`, link that folder to your project, or use
+Mailpit instead.
 :::
 
 ### 3. Declare the trigger
@@ -141,19 +161,21 @@ The run appears on the **Runs** page within a minute.
 
 ## How a message is handled
 
-1. Each tick takes up to **three** `.eml` files, oldest name first, across all email
-   skills.
+1. Once a minute, Codee takes up to **three** messages, oldest first, for all email
+   skills together.
 2. A message from a domain outside `CODEE_ALLOWED_SENDER_DOMAINS` is deleted and nothing
    runs.
-3. A message no skill claims is deleted and nothing runs.
+3. A message that no skill's address matches is deleted and nothing runs. (With Mailpit
+   this doesn't happen, because Codee only asks for mail sent to your skills.)
 4. Otherwise the prompt is rendered and the agent runs.
-5. On success the file is deleted.
-6. On failure the file is **kept** and tried again on a later tick.
+5. On success, or when the run is stopped from the dashboard, the message is deleted.
+6. On failure the message is **kept** and tried again on a later tick.
 
 ## Things worth knowing
 
 - **A failing message retries forever.** Point 6 has no attempt limit. If a skill keeps
-  failing on one email, the fix is to delete the `.eml` file from `temp-emails/`.
+  failing on one email, the fix is to delete the `.eml` file from `temp-emails/`, or the
+  message from Mailpit.
 - **Three per tick.** A backlog drains at three messages a minute at best, and slower when
   runs are long, because each run blocks the tick.
 - **No reply is sent for you.** If the reporter should hear back, say so in the skill body

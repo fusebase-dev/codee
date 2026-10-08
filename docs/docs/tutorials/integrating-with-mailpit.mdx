@@ -1,0 +1,128 @@
+---
+sidebar_position: 4
+---
+
+# Integrating with Mailpit
+
+[Mailpit](https://mailpit.axllent.org/) is a small mail server with a web page and an API.
+If your mail already goes to Mailpit, Codee can read it from there. You don't need to run
+Codee's own mail server.
+
+This guide shows how to connect the two and how to check that it works.
+
+## How it works
+
+Once a minute, Codee:
+
+1. Looks at your email skills and the address each one uses, such as
+   `inbox@codee.example.com`.
+2. Asks Mailpit for the messages sent to those addresses. All other mail in Mailpit is
+   left alone.
+3. Takes up to three of them, oldest first.
+4. Checks the sender's domain. If it is not on your allowed list, the message is deleted
+   and nothing runs.
+5. Gives the message to the skill and runs the agent.
+6. Deletes the message from Mailpit when the run is done. If the run fails, the message
+   stays and Codee tries again a minute later.
+
+:::warning[Deleted means gone]
+
+Codee deletes messages from Mailpit, and Mailpit has no trash. A message that is
+dropped, for example because the sender's domain is not allowed, cannot be brought back.
+Check your settings before you send real mail.
+:::
+
+## What you need
+
+- A running Mailpit that receives the mail for your skill's address.
+- The address of Mailpit's API. It is the Mailpit web address followed by `/api/v1`, for
+  example `http://localhost:8025/api/v1`.
+- The Mailpit user name and password, if your Mailpit asks for one.
+- An email skill. See [Email trigger](../triggers/email) for how to write one.
+
+## Step 1. Tell Codee where Mailpit is
+
+Set these variables where Codee runs:
+
+```bash
+export MAILPIT_API_URL=http://localhost:8025/api/v1
+export MAILPIT_AUTH=user:password   # leave out if Mailpit has no password
+```
+
+When `MAILPIT_API_URL` is set, Codee reads mail from Mailpit. When it is not set, Codee
+reads `.eml` files from the `temp-emails/` folder instead.
+
+## Step 2. Say who may send mail
+
+```bash
+export CODEE_ALLOWED_SENDER_DOMAINS=yourcompany.com,partner.example
+```
+
+Only mail from these domains starts a run. Mail from any other domain is deleted.
+
+If you leave this empty, **all** mail is deleted and nothing ever runs. This is the most
+common mistake, so set it first.
+
+Anyone can fake a sender address. This list keeps out noise. It is not real security.
+
+## Step 3. Restart Codee and check the settings
+
+Codee reads these variables only when it starts, so restart it.
+
+Codee reads them from its environment, not from the `.env` file. If you use pm2 and keep
+the values in `.env`, load the file before you restart:
+
+```bash
+set -a; . ./.env; set +a
+pm2 restart codee --update-env
+```
+
+If you restart pm2 from a shell where `.env` was not loaded, Codee starts without these
+settings.
+
+To be sure, check what the running process sees:
+
+```bash
+tr '\0' '\n' < /proc/$(pgrep -f "codee.executor")/environ \
+  | grep -E 'MAILPIT_API_URL|CODEE_ALLOWED_SENDER_DOMAINS'
+```
+
+You should see both lines. If one is missing, fix it before you send any mail.
+
+## Step 4. Send a test message
+
+Send a message from an allowed domain to your skill's address. With
+[swaks](https://github.com/jetmore/swaks), pointed at Mailpit's SMTP port:
+
+```bash
+swaks --to inbox@codee.example.com --from you@yourcompany.com \
+      --server localhost:1025 --body 'Test: checkout fails with a 500.'
+```
+
+Within about a minute:
+
+- the message disappears from Mailpit;
+- the run shows up on the **Runs** page.
+
+The test runs the skill for real. If the skill creates tickets or sends replies, it will
+do that for the test message too.
+
+## If something goes wrong
+
+Look in Codee's log for lines that start with `[email_skills]`.
+
+| Log line | What it means | What to do |
+| --- | --- | --- |
+| `Sender of ... not in allowed domains; dropping.` | The sender's domain is not allowed, or `CODEE_ALLOWED_SENDER_DOMAINS` is empty in the running process. | Check step 2 and step 3. Send the message again. |
+| `Failed to list Mailpit messages: ...` | Codee cannot reach Mailpit, or the password is wrong. | Check `MAILPIT_API_URL` and `MAILPIT_AUTH`. Try the URL with `curl -u user:password <url>/info`. |
+| `Failed to run ... for mailpit:...` | The agent failed. The message stays in Mailpit and is tried again. | Fix the cause, or delete the message in Mailpit to stop the retries. |
+| Nothing at all | No skill has `x-codee-trigger: email`, or Codee is paused. | Check the skill and the dashboard. |
+
+## Good to know
+
+- **Bcc works.** If a message was sent to your skill's address as Bcc, Mailpit still finds
+  it, and Codee still gives it to that skill.
+- **Three messages a minute at most.** A long run makes the wait longer, because Codee
+  handles one message at a time.
+- **Codee does not reply for you.** If the sender should get an answer, say so in the
+  skill and give the agent a way to send mail.

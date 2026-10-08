@@ -7,6 +7,8 @@ from email.message import Message
 from pathlib import Path
 from typing import Callable
 
+import requests
+
 from codee_main_context.context import CodeeMainContext
 
 from codee.lib import runs_db
@@ -31,6 +33,17 @@ RunClaude = Callable[..., str]
 
 
 @dataclass(frozen=True)
+class QueuedEmail:
+    """One message waiting to be routed, wherever it is stored."""
+    name: str
+    read: Callable[[], bytes]
+    consume: Callable[[], None]
+    # Skill address the source already matched on, for recipients the raw
+    # headers don't show (Mailpit also matches the SMTP envelope, e.g. Bcc).
+    address: str = ""
+
+
+@dataclass(frozen=True)
 class EmailTriggeredSkill:
     key: str
     name: str
@@ -49,38 +62,47 @@ def trigger_email_skills(
     emails_dir: Path = EMAILS_DIR,
     main_context: CodeeMainContext
 ) -> None:
-    """Route up to MAX_EMAILS_PER_TICK queued emails to skills by recipient address."""
+    """Route up to MAX_EMAILS_PER_TICK queued emails to skills by recipient address.
+
+    Emails come from Mailpit when MAILPIT_API_URL is set, otherwise from .eml
+    files in emails_dir.
+    """
     skills_by_address = find_email_triggered_skills(skills_dir)
     if not skills_by_address:
         return
 
-    emails_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted(p for p in emails_dir.glob("*.eml") if p.is_file())
-    if not files:
-        return
-
-    for path in files[:MAX_EMAILS_PER_TICK]:
+    if _mailpit_api():
         try:
-            message = email.message_from_bytes(path.read_bytes())
-        except OSError as exc:
-            print(f"[email_skills] Failed to read {path}: {exc}")
+            queued = _mailpit_emails(skills_by_address)
+        except Exception as exc:
+            print(f"[email_skills] Failed to list Mailpit messages: {exc}")
+            return
+    else:
+        queued = _directory_emails(emails_dir)
+
+    for item in queued[:MAX_EMAILS_PER_TICK]:
+        try:
+            message = email.message_from_bytes(item.read())
+        except Exception as exc:
+            print(f"[email_skills] Failed to read {item.name}: {exc}")
             continue
 
         if not _sender_allowed(message):
             print(
-                f"[email_skills] Sender of {path.name} not in allowed domains; dropping.")
-            path.unlink(missing_ok=True)
+                f"[email_skills] Sender of {item.name} not in allowed domains; dropping.")
+            item.consume()
             continue
 
-        skill = _match_skill(message, skills_by_address)
+        skill = (_match_skill(message, skills_by_address)
+                 or skills_by_address.get(item.address))
         if skill is None:
             print(
-                f"[email_skills] No skill matches recipients of {path.name}; dropping.")
-            path.unlink(missing_ok=True)
+                f"[email_skills] No skill matches recipients of {item.name}; dropping.")
+            item.consume()
             continue
 
         print(
-            f"[email_skills] Running {skill.name} for email {path.name} -> {skill.address}")
+            f"[email_skills] Running {skill.name} for email {item.name} -> {skill.address}")
         session_id = str(uuid.uuid4())
         prompt = render_email_prompt(skill.body, message)
         try:
@@ -88,7 +110,7 @@ def trigger_email_skills(
                                   effort=skill.effort)
             print(
                 f"[email_skills] Claude response for {skill.name} ({len(response)} chars)")
-            path.unlink(missing_ok=True)
+            item.consume()
             runs_db.record_run(skill.name, "email", session_id,
                                "succeeded", message=prompt,
                                user_message=prompt, response=response,
@@ -96,20 +118,79 @@ def trigger_email_skills(
         except runs_db.JobKilled as exc:
             # Stopped on purpose: consume the email so the next tick doesn't
             # start the same run again.
-            print(f"[email_skills] {skill.name} for {path.name} was killed "
+            print(f"[email_skills] {skill.name} for {item.name} was killed "
                   "from the dashboard.")
-            path.unlink(missing_ok=True)
+            item.consume()
             runs_db.record_run(skill.name, "email", session_id, "killed",
                                error=str(exc), message=prompt,
                                user_message=prompt,
                                main_context=main_context)
         except Exception as exc:
             print(
-                f"[email_skills] Failed to run {skill.name} for {path.name}: {exc}")
+                f"[email_skills] Failed to run {skill.name} for {item.name}: {exc}")
             runs_db.record_run(skill.name, "email", session_id, "failed",
                                error=str(exc)[:500], message=prompt,
                                user_message=prompt,
                                main_context=main_context)
+
+
+def _directory_emails(emails_dir: Path) -> list[QueuedEmail]:
+    """.eml files dropped by mail_server (or anything else), oldest name first."""
+    emails_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        QueuedEmail(path.name, path.read_bytes,
+                    lambda path=path: path.unlink(missing_ok=True))
+        for path in sorted(p for p in emails_dir.glob("*.eml") if p.is_file())
+    ]
+
+
+def _mailpit_api() -> str:
+    return os.environ.get("MAILPIT_API_URL", "").strip().rstrip("/")
+
+
+def _mailpit_auth() -> tuple[str, str] | None:
+    """MAILPIT_AUTH=user:password (basic auth), optional."""
+    user, _, password = os.environ.get("MAILPIT_AUTH", "").partition(":")
+    return (user, password) if user else None
+
+
+def _mailpit_emails(
+    skills_by_address: dict[str, EmailTriggeredSkill],
+) -> list[QueuedEmail]:
+    """Mailpit messages addressed to a skill, oldest first.
+
+    Searching by address leaves every other message in Mailpit untouched.
+    """
+    api, auth = _mailpit_api(), _mailpit_auth()
+    found: dict[str, tuple[str, str]] = {}  # ID -> (Created, address)
+    for address in skills_by_address:
+        resp = requests.get(f"{api}/search",
+                            params={"query": f'addressed:"{address}"', "limit": 50},
+                            auth=auth, timeout=30)
+        resp.raise_for_status()
+        for meta in resp.json().get("messages") or []:
+            found.setdefault(meta["ID"], (meta.get("Created", ""), address))
+
+    def read(message_id: str) -> bytes:
+        resp = requests.get(f"{api}/message/{message_id}/raw", auth=auth, timeout=30)
+        resp.raise_for_status()
+        return resp.content
+
+    def delete(message_id: str) -> None:
+        try:
+            resp = requests.delete(f"{api}/messages", json={"IDs": [message_id]},
+                                   auth=auth, timeout=30)
+            resp.raise_for_status()
+        except Exception as exc:
+            print(f"[email_skills] Failed to delete Mailpit message {message_id}: {exc}")
+
+    return [
+        QueuedEmail(f"mailpit:{message_id}",
+                    lambda message_id=message_id: read(message_id),
+                    lambda message_id=message_id: delete(message_id),
+                    address=address)
+        for message_id, (_, address) in sorted(found.items(), key=lambda kv: kv[1])
+    ]
 
 
 def find_email_triggered_skills(skills_dir: Path = SKILLS_DIR) -> dict[str, EmailTriggeredSkill]:
