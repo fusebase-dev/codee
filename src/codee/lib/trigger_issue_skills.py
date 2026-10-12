@@ -33,6 +33,8 @@ class IssueTriggeredSkill:
     model: str = ""
     # The reasoning effort (``effort``), empty for the model's default.
     effort: str = ""
+    # The context window (``x-codee-context-tier``), empty for the default one.
+    context_tier: str = ""
     # The agent this skill asks to be run by (``x-codee-agent``), empty when it
     # names none and the default agent from Settings should drive it.
     agent: str = ""
@@ -97,6 +99,7 @@ def find_issue_triggered_skills(
             issue_type=issue_type,
             model=str(metadata.get("model", "")).strip(),
             effort=str(metadata.get("effort", "") or "").strip(),
+            context_tier=str(metadata.get("x-codee-context-tier", "") or "").strip(),
             agent=str(metadata.get("x-codee-agent", "") or "").strip(),
             argument_name=_argument_name(metadata.get("argument-hint")),
         ))

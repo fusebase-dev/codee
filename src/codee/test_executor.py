@@ -293,13 +293,14 @@ class RunAgentSelectionTest(unittest.TestCase):
         with patch.object(executor, "_agent_for_skill",
                           return_value=agent) as chosen:
             reply = executor._run_agent("/nightly", "sid-1", "gpt-6-astra",
-                                        "codex", effort="xhigh")
+                                        "codex", effort="xhigh",
+                                        context_tier="long_context")
 
         self.assertEqual(reply, "done")
         chosen.assert_called_once_with("codex")
         self.assertEqual(agent.run.call_args.args[:3],
                          ("/nightly", "sid-1", "gpt-6-astra"))
-        self.assertEqual(agent.run.call_args.args[4], "xhigh")
+        self.assertEqual(agent.run.call_args.args[4:], ("xhigh", "long_context"))
 
     def test_an_issue_skills_effort_reaches_its_worker(self) -> None:
         with patch.object(executor, "_max_parallel_agents", return_value=1), \
@@ -307,11 +308,12 @@ class RunAgentSelectionTest(unittest.TestCase):
                 patch.object(executor.threading, "Thread") as thread:
             launched = executor._submit_task(
                 "NIM-9", "/skill NIM-9", "sid-9", "skill", "claude-opus-5",
-                "", "/skill NIM-9", "max")
+                "", "/skill NIM-9", "max", "long_context")
         executor._inflight.discard("NIM-9")
 
         self.assertTrue(launched)
-        self.assertEqual(thread.call_args.kwargs["args"][-1], "max")
+        self.assertEqual(thread.call_args.kwargs["args"][-2:],
+                         ("max", "long_context"))
 
 
 class RunTaskLoggingTest(unittest.TestCase):

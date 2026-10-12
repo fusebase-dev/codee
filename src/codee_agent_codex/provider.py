@@ -82,7 +82,7 @@ class CodexAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
-            effort: str = "") -> str:
+            effort: str = "", context_tier: str = "") -> str:
         # ``session_id`` is not passed on: Codex mints its own thread id and has
         # no flag to be handed one. It announces that id on its first line of
         # output, which is what ``on_session_id`` carries back — reported while
@@ -124,6 +124,7 @@ class CodexAgent(AbstractCodingAgent):
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
         effort: str = "",
+        context_tier: str = "",
     ) -> str:
         result = self._exec(user_message, model, effort, on_session_id,
                             session_id)

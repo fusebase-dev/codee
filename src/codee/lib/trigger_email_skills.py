@@ -53,6 +53,7 @@ class EmailTriggeredSkill:
     model: str
     agent: str = ""
     effort: str = ""
+    context_tier: str = ""
 
 
 def trigger_email_skills(
@@ -107,7 +108,8 @@ def trigger_email_skills(
         prompt = render_email_prompt(skill.body, message)
         try:
             response = run_claude(prompt, session_id, skill.model, skill.agent,
-                                  effort=skill.effort)
+                                  effort=skill.effort,
+                                  context_tier=skill.context_tier)
             print(
                 f"[email_skills] Claude response for {skill.name} ({len(response)} chars)")
             item.consume()
@@ -239,6 +241,7 @@ def find_email_triggered_skills(skills_dir: Path = SKILLS_DIR) -> dict[str, Emai
             model=metadata.get("model", "").strip(),
             agent=metadata.get("x-codee-agent", "").strip(),
             effort=metadata.get("effort", "").strip(),
+            context_tier=metadata.get("x-codee-context-tier", "").strip(),
         )
     return skills_by_address
 

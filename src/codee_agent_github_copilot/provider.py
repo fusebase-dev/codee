@@ -1,7 +1,10 @@
 import json
 import os
+import queue
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -39,6 +42,13 @@ ACP_COMMAND = ["copilot", "--acp"]
 AUTO_MODEL = "auto"
 AUTO_TIERS = ("efficiency", "balance", "intelligence")
 DEFAULT_AUTO_TIER = "balance"
+
+# Which models take a long context window, and how long each window is, is only
+# in the catalog the SDK's headless server answers `models.list` with: a model
+# that offers it carries `billing.tokenPrices.longContext`. ACP doesn't say.
+HEADLESS_COMMAND = ["copilot", "--headless", "--stdio", "--no-auto-update"]
+DEFAULT_CONTEXT = "default"
+LONG_CONTEXT = "long_context"
 
 # Ceiling on what one run may spend. AI credits bill at $0.04 each, so the
 # default is the same $20 cap the Claude Code agent puts on a run.
@@ -111,10 +121,20 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             # or isn't logged in must not break the admin UI.
             log.warning("Could not read the copilot model catalog: %s", exc)
             return []
+        try:
+            windows = _context_tiers(_headless_models())
+        except Exception as exc:
+            # Without it the models are still worth offering, just with no
+            # choice of context window.
+            log.warning("Could not read copilot's context windows: %s", exc)
+            windows = {}
         # ACP reports no options for Auto; its tiers come from `--auto-tier`.
         return [AgentModel(model.id, model.name, AUTO_TIERS, DEFAULT_AUTO_TIER,
                            "Tier")
-                if model.id == AUTO_MODEL else model
+                if model.id == AUTO_MODEL
+                else AgentModel(model.id, model.name, model.efforts,
+                                model.default_effort,
+                                context_tiers=windows.get(model.id, ()))
                 for model in models]
 
     @classmethod
@@ -130,7 +150,7 @@ class GitHubCopilotAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
-            effort: str = "") -> str:
+            effort: str = "", context_tier: str = "") -> str:
         # The session is ours to name and the CLI is told to use it, so the
         # answer is known before the run starts.
         if on_session_id:
@@ -160,6 +180,9 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             cmd += ["--auto-tier", effort or DEFAULT_AUTO_TIER]
         elif effort:
             cmd += ["--reasoning-effort", effort]
+        # Also passed when unset, for the same reason as the tier: the CLI
+        # otherwise runs on the context tier its own config has stored.
+        cmd += ["--context", context_tier or DEFAULT_CONTEXT]
         debug_enabled = os.environ.get(
             COPILOT_DEBUG_ENV_VAR, "").strip().lower() == "true"
         if debug_enabled:
@@ -212,6 +235,106 @@ class GitHubCopilotAgent(AbstractCodingAgent):
                 f"Copilot run produced no response: {_detail(errors, stderr)}"
             )
         return AgentResponse(reply, stderr if debug_enabled else "")
+
+
+def _headless_models() -> list[dict]:
+    """The model catalog Copilot's headless server answers ``models.list`` with.
+
+    The server speaks JSON-RPC framed with ``Content-Length`` headers, and quits
+    as soon as its stdin closes, before answering, so it is kept open until the
+    reply arrives or ``acp.TIMEOUT_SECONDS`` pass.
+    """
+    process = subprocess.Popen(
+        HEADLESS_COMMAND, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL)
+    try:
+        replies: queue.Queue[dict] = queue.Queue()
+        threading.Thread(target=_read_framed, args=(process.stdout, replies),
+                         daemon=True).start()
+        body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                           "method": "models.list", "params": {}}).encode()
+        process.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        process.stdin.flush()
+        deadline = time.monotonic() + acp.TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("copilot --headless did not answer models.list")
+            try:
+                reply = replies.get(timeout=min(remaining, 0.5))
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        f"copilot --headless exited {process.returncode}")
+                continue
+            if reply.get("id") != 1:
+                continue
+            if "error" in reply:
+                raise RuntimeError(f"models.list errored: {reply['error']}")
+            result = reply.get("result")
+            models = result.get("models") if isinstance(result, dict) else result
+            return [model for model in models or [] if isinstance(model, dict)]
+    finally:
+        process.kill()
+
+
+def _read_framed(stream, replies: "queue.Queue[dict]") -> None:
+    """Pump ``Content-Length`` framed JSON messages from ``stream`` into a queue."""
+    while True:
+        length = None
+        while True:
+            line = stream.readline()
+            if not line:
+                return
+            line = line.strip()
+            if not line:
+                break
+            name, _, value = line.decode("ascii", "replace").partition(":")
+            if name.strip().lower() == "content-length":
+                length = int(value.strip())
+        if length is None:
+            continue
+        try:
+            message = json.loads(stream.read(length))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(message, dict):
+            replies.put(message)
+
+
+def _context_tiers(models: list[dict]) -> dict[str, tuple[tuple[str, str], ...]]:
+    """The context windows of each model that offers a long one, by model id.
+
+    The default window is labelled by its prompt budget and the long one by the
+    model's whole window, which is how Copilot itself sizes them ("200K" and
+    "1M" for Claude Sonnet 5.5).
+    """
+    tiers = {}
+    for model in models:
+        prices = (model.get("billing") or {}).get("tokenPrices") or {}
+        long_context = prices.get("longContext")
+        if not isinstance(long_context, dict):
+            continue
+        limits = (model.get("capabilities") or {}).get("limits") or {}
+        default_size = prices.get("maxPromptTokens") or prices.get("contextMax")
+        long_size = (limits.get("max_context_window_tokens")
+                     or long_context.get("maxPromptTokens")
+                     or long_context.get("contextMax"))
+        tiers[str(model.get("id", ""))] = (
+            (DEFAULT_CONTEXT, _tokens(default_size) or "Default"),
+            (LONG_CONTEXT, _tokens(long_size) or "Long"))
+    return tiers
+
+
+def _tokens(count) -> str:
+    """``count`` tokens the way a context window is usually named: 200K, 1M."""
+    if not isinstance(count, (int, float)) or count <= 0:
+        return ""
+    if count >= 1_000_000:
+        # Truncated, so a 1,050,000 window still reads as the 1M it is sold as.
+        tenths = int(count // 100_000) / 10
+        return f"{tenths:g}M"
+    return f"{round(count / 1000)}K"
 
 
 def _events_file(session_id: str) -> Path | None:

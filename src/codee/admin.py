@@ -125,6 +125,8 @@ class ModelOption(BaseModel):
     has none, and ``default_effort`` the one it runs at when the skill sets
     none, empty when the agent doesn't say. ``effort_label`` names levels that
     aren't a reasoning effort (Copilot Auto's tiers), empty otherwise.
+    ``context_tiers`` are ``[value, label]`` pairs for the context windows the
+    model offers, the default first, and empty when there is no choice.
     """
 
     id: str
@@ -132,6 +134,7 @@ class ModelOption(BaseModel):
     efforts: list[str] = []
     default_effort: str = ""
     effort_label: str = ""
+    context_tiers: list[list[str]] = []
 
 
 class ConversationMessage(BaseModel):
@@ -385,6 +388,8 @@ class AdminState(rx.State):
     skill_model: str = ""
     # The skill's `effort:`, empty for the model's own default.
     skill_effort: str = ""
+    # The skill's `x-codee-context-tier:`, empty for the default window.
+    skill_context_tier: str = ""
     # The agent code the skill declares, empty for the default agent.
     skill_agent: str = ""
     skill_type: str = "knowledge"
@@ -649,6 +654,29 @@ class AdminState(rx.State):
             model is None or self.skill_effort not in model.efforts)
 
     @rx.var
+    def skill_context_choices(self) -> list[list[str]]:
+        """``[value, label]`` for each context window the picked model offers.
+
+        Empty, and the picker hidden, for a model with no choice of window. A
+        tier the skill already carries is always listed, as with effort.
+        """
+        model = _model_option(self.agent_models, self.skill_model)
+        choices = [list(tier) for tier in model.context_tiers] if model else []
+        if (self.skill_context_tier
+                and all(value != self.skill_context_tier
+                        for value, _ in choices)):
+            choices.append([self.skill_context_tier, self.skill_context_tier])
+        return choices
+
+    @rx.var
+    def skill_context_value(self) -> str:
+        """The context picker's value: the skill's tier, or the default one."""
+        model = _model_option(self.agent_models, self.skill_model)
+        if self.skill_context_tier or not (model and model.context_tiers):
+            return self.skill_context_tier
+        return model.context_tiers[0][0]
+
+    @rx.var
     def custom_model_query(self) -> str:
         """The search text when it names no known model, so it can be used as-is."""
         query = self.model_query.strip()
@@ -716,6 +744,7 @@ class AdminState(rx.State):
         self.skill_agent = agent
         self.skill_model = ""
         self.skill_effort = ""
+        self.skill_context_tier = ""
         self.model_query = ""
         return AdminState.load_agent_models
 
@@ -725,18 +754,30 @@ class AdminState(rx.State):
     def choose_model(self, model_id: str) -> None:
         """Pick a model from the list, or use whatever the user typed.
 
-        An effort the newly picked model is known not to take is cleared, since
-        it would only make that model's run fail. One the catalog can't vouch
-        either way for stays, and the picker keeps showing it.
+        An effort or context window the newly picked model is known not to
+        take is cleared, since it would only make that model's run fail. One
+        the catalog can't vouch either way for stays, and the picker keeps
+        showing it.
         """
         self.skill_model = model_id.strip()
         self.model_query = ""
         model = _model_option(self.agent_models, self.skill_model)
-        if model is not None and self.skill_effort not in model.efforts:
+        if model is None:
+            return
+        if self.skill_effort not in model.efforts:
             self.skill_effort = ""
+        if all(value != self.skill_context_tier
+               for value, _ in model.context_tiers):
+            self.skill_context_tier = ""
 
     def set_skill_effort(self, value: str) -> None:
         self.skill_effort = "" if value == EFFORT_DEFAULT else value
+
+    def set_skill_context_tier(self, value: str) -> None:
+        """Pick a context window; the model's default one is stored as unset."""
+        model = _model_option(self.agent_models, self.skill_model)
+        default = model.context_tiers[0][0] if model and model.context_tiers else ""
+        self.skill_context_tier = "" if value == default else value
 
     @rx.event(background=True)
     async def load_agent_models(self) -> None:
@@ -814,6 +855,7 @@ class AdminState(rx.State):
         self.skill_description = skill["description"]
         self.skill_model = skill["model"]
         self.skill_effort = skill["effort"]
+        self.skill_context_tier = skill["context_tier"]
         self.skill_agent = skill["agent"]
         self.model_query = ""
         self.skill_type = skill["type"]
@@ -839,6 +881,7 @@ class AdminState(rx.State):
             "description": self.skill_description,
             "model": self.skill_model,
             "effort": self.skill_effort,
+            "context_tier": self.skill_context_tier,
             "agent": self.skill_agent,
             "type": self.skill_type,
             "cron": self.skill_cron,
@@ -2765,6 +2808,32 @@ def effort_picker() -> rx.Component:
                flex="1", min_width="0"))
 
 
+def context_picker() -> rx.Component:
+    """Context window for the picked model, shown only when it offers a choice."""
+    return rx.cond(
+        AdminState.skill_context_choices.length() > 0,
+        rx.box(field(
+            "Context window",
+            rx.select.root(
+                rx.select.trigger(width="100%"),
+                rx.select.content(
+                    rx.foreach(AdminState.skill_context_choices,
+                               lambda choice: rx.select.item(
+                                   choice[1], value=choice[0]))),
+                value=AdminState.skill_context_value,
+                on_change=AdminState.set_skill_context_tier),
+            rx.text(
+                rx.cond(
+                    AdminState.skill_context_tier == "",
+                    "Runs on the model's default window.",
+                    rx.fragment("Saved as ",
+                                rx.code("x-codee-context-tier: ",
+                                        AdminState.skill_context_tier),
+                                " in the skill frontmatter.")),
+                color=MUTED, font_size="0.82rem")),
+               flex="1", min_width="0"))
+
+
 def delete_skill_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.trigger(
@@ -2805,10 +2874,11 @@ def skill_editor() -> rx.Component:
                                           on_change=AdminState.set_skill_description,
                                           width="100%", min_height="5rem")),
         rx.grid(agent_picker(),
-                # Effort shares the model's column; the model takes all of it
-                # when the picked model has no effort levels.
+                # Effort and context window share the model's column; the
+                # model takes all of it when the picked model has neither.
                 rx.flex(rx.box(model_picker(), flex="1", min_width="0"),
                         effort_picker(),
+                        context_picker(),
                         direction=rx.breakpoints(initial="column", sm="row"),
                         gap="1rem", align="start", width="100%"),
                 columns=rx.breakpoints(initial="1", md="2"), gap="1rem",

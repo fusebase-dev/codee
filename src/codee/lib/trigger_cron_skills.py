@@ -21,9 +21,10 @@ SKILLS_DIR = default_skills_dir(REPO_ROOT)
 DEFAULT_CATCHUP = timedelta(hours=24)
 
 
-# (prompt, session_id, model, agent, *, effort) -> agent reply. `model` is the
-# skill's `model:` frontmatter, `agent` its `x-codee-agent:` and `effort` its
-# `effort:`, each empty when the skill declares none.
+# (prompt, session_id, model, agent, *, effort, context_tier) -> agent reply.
+# `model` is the skill's `model:` frontmatter, `agent` its `x-codee-agent:`,
+# `effort` its `effort:` and `context_tier` its `x-codee-context-tier:`, each
+# empty when the skill declares none.
 RunClaude = Callable[..., str]
 
 
@@ -43,6 +44,7 @@ class ScheduledSkill:
     model: str
     agent: str = ""
     effort: str = ""
+    context_tier: str = ""
 
 
 def _get_force_file_path(main_context: CodeeMainContext) -> Path:
@@ -122,7 +124,8 @@ def trigger_cron_skills(
         session_id = str(uuid.uuid4())
         try:
             response = run_claude(skill.body, session_id, skill.model,
-                                  skill.agent, effort=skill.effort)
+                                  skill.agent, effort=skill.effort,
+                                  context_tier=skill.context_tier)
             print(
                 f"[cron_skills] Claude response for {skill.name} ({len(response)} chars)")
             runs_db.record_run(skill.name, "cron", session_id,
@@ -212,6 +215,7 @@ def _find_scheduled_skills(skills_dir: Path = SKILLS_DIR) -> list[ScheduledSkill
                 model=metadata.get("model", "").strip(),
                 agent=metadata.get("x-codee-agent", "").strip(),
                 effort=metadata.get("effort", "").strip(),
+                context_tier=metadata.get("x-codee-context-tier", "").strip(),
             )
         )
     return skills

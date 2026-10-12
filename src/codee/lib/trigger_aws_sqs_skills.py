@@ -24,6 +24,7 @@ class AwsSqsTriggeredSkill:
     model: str
     agent: str = ""
     effort: str = ""
+    context_tier: str = ""
 
 
 @dataclass(frozen=True)
@@ -76,7 +77,8 @@ def trigger_aws_sqs_skills(
         prompt = render_aws_sqs_prompt(skill.body, message.content)
         try:
             response = run_claude(prompt, session_id, skill.model, skill.agent,
-                                  effort=skill.effort)
+                                  effort=skill.effort,
+                                  context_tier=skill.context_tier)
             print(
                 f"[aws_sqs_skills] Claude response for {skill.name} ({len(response)} chars)")
             sqs_message_source.delete(message)
@@ -144,6 +146,7 @@ def find_aws_sqs_triggered_skills(skills_dir: Path = SKILLS_DIR) -> list[AwsSqsT
                 model=metadata.get("model", "").strip(),
                 agent=metadata.get("x-codee-agent", "").strip(),
                 effort=metadata.get("effort", "").strip(),
+                context_tier=metadata.get("x-codee-context-tier", "").strip(),
             )
         )
     return skills

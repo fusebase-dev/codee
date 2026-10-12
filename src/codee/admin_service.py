@@ -88,6 +88,7 @@ MANAGED = {
     "model",
     "effort",
     "disable-model-invocation",
+    "x-codee-context-tier",
     "cron",
     "x-codee-agent",
     "x-codee-trigger",
@@ -638,6 +639,8 @@ def _skill_run_summary(
     ]
     if skill.effort:
         lines.append(f"Effort: {skill.effort}")
+    if skill.context_tier:
+        lines.append(f"Context: {skill.context_tier}")
     lines.append(f"Skill: {skill.name}")
     return lines
 
@@ -977,6 +980,8 @@ class AdminService:
                 "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
                 "model": str(frontmatter.get("model", "") or "").strip(),
                 "effort": str(frontmatter.get("effort", "") or "").strip(),
+                "context_tier": str(frontmatter.get(
+                    "x-codee-context-tier", "") or "").strip(),
                 "issue_status": _format_issue_status(
                     frontmatter.get("x-codee-issue-status", [])
                 ),
@@ -1030,7 +1035,8 @@ class AdminService:
         return [{"id": model.id, "name": model.name,
                  "efforts": list(model.efforts),
                  "default_effort": model.default_effort,
-                 "effort_label": model.effort_label}
+                 "effort_label": model.effort_label,
+                 "context_tiers": [list(tier) for tier in model.context_tiers]}
                 for model in models]
 
     def resolve_skill_slug(self, label: str) -> str:
@@ -1782,6 +1788,7 @@ class AdminService:
             "description": str(frontmatter.get("description", "")),
             "model": str(frontmatter.get("model", "") or ""),
             "effort": str(frontmatter.get("effort", "") or ""),
+            "context_tier": str(frontmatter.get("x-codee-context-tier", "") or ""),
             "agent": _agent_code(frontmatter.get("x-codee-agent", "")),
             "type": infer_skill_type(frontmatter),
             "cron": str(frontmatter.get("x-codee-cron", frontmatter.get("cron", "0 0 * * *"))),
@@ -1825,9 +1832,10 @@ class AdminService:
             "name": name,
             "description": skill["description"],
         }
-        # All three are left out entirely when unset, so the skill keeps
-        # running on the default agent, whatever model that agent defaults to
-        # and that model's own effort, rather than on an empty value.
+        # These are left out entirely when unset, so the skill keeps running on
+        # the default agent, whatever model that agent defaults to, that
+        # model's own effort and its default context window, rather than on an
+        # empty value.
         agent = skill.get("agent", "").strip()
         if agent:
             if resolve_agent_code(agent) is None:
@@ -1839,6 +1847,9 @@ class AdminService:
         effort = skill.get("effort", "").strip()
         if effort:
             frontmatter["effort"] = effort
+        context_tier = skill.get("context_tier", "").strip()
+        if context_tier and context_tier != "default":
+            frontmatter["x-codee-context-tier"] = context_tier
         skill_type = skill["type"]
         if skill_type == "slash command":
             frontmatter["disable-model-invocation"] = True

@@ -2522,6 +2522,32 @@ class AdminServiceSkillModelTest(unittest.TestCase):
             frontmatter, _ = parse_skill(write.call_args.args[1])
             self.assertEqual(frontmatter["effort"], "xhigh")
 
+    def test_save_writes_a_long_context_tier_and_drops_the_default(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            skills_dir = Path(temporary_directory)
+            service = self._service(
+                skills_dir, "name: nightly\nx-codee-context-tier: long_context\n")
+            self.assertEqual(service.load_skill("nightly")["context_tier"],
+                             "long_context")
+            self.assertEqual(service.load_skill("nightly")["extra"], "")
+
+            written = {}
+            for tier in ("long_context", "default", ""):
+                with patch.object(service, "_write_and_push",
+                                  return_value=(True, True, "saved")) as write:
+                    service.save_skill({
+                        "slug": "nightly", "name": "nightly",
+                        "description": "", "type": "knowledge",
+                        "model": "claude-opus-5.5", "context_tier": tier,
+                        "body": "Body",
+                    })
+                frontmatter, _ = parse_skill(write.call_args.args[1])
+                written[tier] = frontmatter.get("x-codee-context-tier")
+
+            self.assertEqual(written, {"long_context": "long_context",
+                                       "default": None, "": None})
+
     def test_an_empty_effort_is_left_out_of_the_frontmatter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             skills_dir = Path(temporary_directory)
@@ -2743,7 +2769,7 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
         self.assertEqual(
             first, [{"id": "claude-opus-5", "name": "Claude Opus 5",
                      "efforts": ["low", "high"], "default_effort": "high",
-                     "effort_label": ""}])
+                     "effort_label": "", "context_tiers": []}])
         self.assertEqual(second, first)
         list_models.assert_called_once()
 
@@ -2758,7 +2784,7 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
         self.assertEqual(
             models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra",
                       "efforts": [], "default_effort": "",
-                      "effort_label": ""}])
+                      "effort_label": "", "context_tiers": []}])
         claude_models.assert_not_called()
 
     def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
@@ -2769,7 +2795,7 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
             self.assertEqual(service.list_agent_models("cursor"),
                              [{"id": "claude-opus-5", "name": "Claude Opus 5",
                                "efforts": [], "default_effort": "",
-                      "effort_label": ""}])
+                      "effort_label": "", "context_tiers": []}])
 
     def test_every_agent_codee_can_run_is_offered(self) -> None:
         service = self._service(CodingAgent.CLAUDE_CODE)
@@ -2799,7 +2825,7 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
             self.assertEqual(service.list_agent_models(),
                              [{"id": "gpt-6", "name": "GPT-6",
                                "efforts": [], "default_effort": "",
-                      "effort_label": ""}])
+                      "effort_label": "", "context_tiers": []}])
 
 
 class AdminServiceAgentsFileTest(unittest.TestCase):

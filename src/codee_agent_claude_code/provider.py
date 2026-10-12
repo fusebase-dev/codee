@@ -77,7 +77,7 @@ class ClaudeCodeAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
-            effort: str = "") -> str:
+            effort: str = "", context_tier: str = "") -> str:
         # The session is ours to name and the CLI is told to use it, so the
         # answer is known before the run starts.
         if on_session_id:
@@ -91,6 +91,7 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
         effort: str = "",
+        context_tier: str = "",
     ) -> str:
         if on_session_id:
             on_session_id(session_id)

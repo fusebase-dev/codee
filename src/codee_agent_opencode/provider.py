@@ -71,7 +71,7 @@ class OpenCodeAgent(AbstractCodingAgent):
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
-            effort: str = "") -> str:
+            effort: str = "", context_tier: str = "") -> str:
         return self._run(user_message, model, effort, on_session_id)
 
     def continue_conversation(
@@ -81,6 +81,7 @@ class OpenCodeAgent(AbstractCodingAgent):
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
         effort: str = "",
+        context_tier: str = "",
     ) -> str:
         return self._run(user_message, model, effort, on_session_id, session_id)
 

@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 from codee_agent_abstract.provider import AgentModel
 from codee_agent_github_copilot.provider import (
-    COPILOT_DEBUG_ENV_VAR, MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent)
+    COPILOT_DEBUG_ENV_VAR, MAX_AI_CREDITS_ENV_VAR, GitHubCopilotAgent,
+    _context_tiers)
 from codee_main_context.context import Settings
 
 SESSION = "82232f47-df60-4cb3-8c3a-de12074c9205"
@@ -80,11 +81,12 @@ class CopilotRunTest(unittest.TestCase):
     def setUp(self) -> None:
         self.agent = GitHubCopilotAgent(Settings(), Path("/repo"))
 
-    def _run(self, completed, model: str = "", effort: str = "") -> str:
+    def _run(self, completed, model: str = "", effort: str = "",
+             context_tier: str = "") -> str:
         with patch("subprocess.run", return_value=completed) as run:
             self.captured = run
             return self.agent.run("/do-it CORE-1", SESSION, model,
-                                  effort=effort)
+                                  effort=effort, context_tier=context_tier)
 
     def test_returns_the_last_assistant_message(self) -> None:
         stdout = _stream(
@@ -207,6 +209,25 @@ class CopilotRunTest(unittest.TestCase):
 
         self.assertNotIn("--auto-tier", self.captured.call_args.args[0])
 
+    def test_the_skill_context_tier_is_passed_on_the_command_line(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "claude-opus-5.5",
+                  context_tier="long_context")
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--context") + 1], "long_context")
+
+    def test_no_context_tier_pins_the_default_window(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "claude-opus-5.5")
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--context") + 1], "default")
+
     def test_no_model_leaves_the_agent_on_its_default(self) -> None:
         stdout = _stream(_event("assistant.message", {"content": "ok"}),
                          _event("result", exitCode=0))
@@ -321,7 +342,9 @@ class CopilotModelCatalogTest(unittest.TestCase):
                               ("low", "high"), "high")]
 
         with patch("codee_agent_github_copilot.provider.acp.fetch_models",
-                   return_value=catalog) as fetch:
+                   return_value=catalog) as fetch, \
+                patch("codee_agent_github_copilot.provider._headless_models",
+                      return_value=[]):
             self.assertEqual(GitHubCopilotAgent.list_models(), catalog)
 
         fetch.assert_called_once_with(["copilot", "--acp"])
@@ -331,13 +354,59 @@ class CopilotModelCatalogTest(unittest.TestCase):
                    AgentModel("claude-opus-5", "Claude Opus 5")]
 
         with patch("codee_agent_github_copilot.provider.acp.fetch_models",
-                   return_value=catalog):
+                   return_value=catalog), \
+                patch("codee_agent_github_copilot.provider._headless_models",
+                      return_value=[]):
             models = GitHubCopilotAgent.list_models()
 
         self.assertEqual(models[0], AgentModel(
             "auto", "Auto", ("efficiency", "balance", "intelligence"),
             "balance", "Tier"))
         self.assertEqual(models[1], catalog[1])
+
+    def test_models_with_a_long_context_offer_both_windows(self) -> None:
+        catalog = [AgentModel("claude-opus-5.5", "Claude Opus 5.5",
+                              ("low", "high"), "high"),
+                   AgentModel("claude-haiku-4.5", "Claude Haiku 4.5")]
+        headless = [
+            {"id": "claude-opus-5.5",
+             "capabilities": {"limits": {"max_context_window_tokens": 1000000}},
+             "billing": {"tokenPrices": {"maxPromptTokens": 200000,
+                                         "longContext": {"inputPrice": 400}}}},
+            {"id": "claude-haiku-4.5",
+             "capabilities": {"limits": {"max_context_window_tokens": 200000}},
+             "billing": {"tokenPrices": {}}},
+        ]
+
+        with patch("codee_agent_github_copilot.provider.acp.fetch_models",
+                   return_value=catalog), \
+                patch("codee_agent_github_copilot.provider._headless_models",
+                      return_value=headless):
+            opus, haiku = GitHubCopilotAgent.list_models()
+
+        self.assertEqual(opus.context_tiers,
+                         (("default", "200K"), ("long_context", "1M")))
+        self.assertEqual(opus.efforts, ("low", "high"))
+        self.assertEqual(haiku.context_tiers, ())
+
+    def test_a_window_a_little_over_a_million_still_reads_as_1m(self) -> None:
+        tiers = _context_tiers([{
+            "id": "gpt-6.1-sol",
+            "capabilities": {"limits": {"max_context_window_tokens": 1050000}},
+            "billing": {"tokenPrices": {"maxPromptTokens": 272000,
+                                        "longContext": {}}}}])
+
+        self.assertEqual(tiers["gpt-6.1-sol"],
+                         (("default", "272K"), ("long_context", "1M")))
+
+    def test_no_context_windows_still_lists_the_models(self) -> None:
+        catalog = [AgentModel("claude-opus-5.5", "Claude Opus 5.5")]
+
+        with patch("codee_agent_github_copilot.provider.acp.fetch_models",
+                   return_value=catalog), \
+                patch("codee_agent_github_copilot.provider._headless_models",
+                      side_effect=RuntimeError("no answer")):
+            self.assertEqual(GitHubCopilotAgent.list_models(), catalog)
 
     def test_an_unavailable_cli_yields_no_models_rather_than_raising(self) -> None:
         with patch("codee_agent_abstract.acp.subprocess.Popen",

@@ -172,7 +172,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append((model, agent))
             return "done"
 
@@ -204,7 +205,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -239,7 +241,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append(session_id)
             if len(calls) == 1:
                 raise RuntimeError("over limit")
@@ -275,7 +278,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append(session_id)
             raise runs_db.JobKilled()
 
@@ -321,7 +325,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -379,7 +384,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append((message, session_id))
             return "done"
 
@@ -415,7 +421,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append(session_id)
             return "done"
 
@@ -456,7 +463,8 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append(session_id)
             raise RuntimeError("over limit")
 
@@ -488,15 +496,18 @@ class CronSkillTests(unittest.TestCase):
         calls = []
 
         def run_claude(message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
-            calls.append((model, effort))
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
+            calls.append((model, effort, context_tier))
             return "done"
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             skills_dir = root / "skills"
             for slug, model_line in (("with-model", "model: claude-opus-5\n"
-                                                    "effort: high\n"),
+                                                    "effort: high\n"
+                                                    "x-codee-context-tier: "
+                                                    "long_context\n"),
                                      ("without-model", "")):
                 skill_dir = skills_dir / slug
                 skill_dir.mkdir(parents=True)
@@ -516,7 +527,8 @@ class CronSkillTests(unittest.TestCase):
                                 main_context=_ctx(root))
 
         # Sorted by directory name, so the skill declaring a model comes first.
-        self.assertEqual(calls, [("claude-opus-5", "high"), ("", "")])
+        self.assertEqual(calls, [("claude-opus-5", "high", "long_context"),
+                                 ("", "", "")])
 
     def test_reconcile_runs_one_aws_sqs_message_per_tick(self):
         calls = []
@@ -528,7 +540,8 @@ class CronSkillTests(unittest.TestCase):
         sqs_source = FakeSqsMessageSource([message])
 
         def run_claude(user_message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             calls.append((user_message, session_id))
             return "done"
 
@@ -568,7 +581,8 @@ class CronSkillTests(unittest.TestCase):
         sqs_source = FakeSqsMessageSource([message])
 
         def run_claude(user_message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             raise runs_db.JobKilled()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -599,7 +613,8 @@ class CronSkillTests(unittest.TestCase):
 
     def test_reconcile_survives_unconfigured_aws_client(self):
         def run_claude(user_message: str, session_id: str, model: str = "",
-                       agent: str = "", effort: str = "") -> str:
+                       agent: str = "", effort: str = "",
+                       context_tier: str = "") -> str:
             raise AssertionError("should not run without an SQS client")
 
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -39,6 +39,10 @@ class AgentModel:
     reasoning effort, and names them for the picker (Copilot's Auto offers
     routing tiers). Such a setting always has a value, so the picker has no
     "model default" entry and shows ``default_effort`` until one is chosen.
+
+    ``context_tiers`` are the context windows the model can run with, as
+    ``(value, label)`` pairs such as ``("long_context", "1M")``, the first one
+    being the default. Empty when the agent offers no choice of window.
     """
 
     id: str
@@ -46,6 +50,7 @@ class AgentModel:
     efforts: tuple[str, ...] = ()
     default_effort: str = ""
     effort_label: str = ""
+    context_tiers: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -107,13 +112,16 @@ class AbstractCodingAgent(ABC):
     @abstractmethod
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
-            effort: str = "") -> str:
+            effort: str = "", context_tier: str = "") -> str:
         """Run the agent with the message in ``session_id`` and return its text.
 
         ``model`` is the skill's ``model:`` frontmatter, or empty for the agent's
         default. Agents that read the frontmatter themselves may ignore it.
         ``effort`` is the skill's ``effort:`` frontmatter, a level from the
         model's ``AgentModel.efforts``, or empty for the model's default.
+        ``context_tier`` is its ``x-codee-context-tier:``, a value from the
+        model's ``AgentModel.context_tiers``, or empty for the default window;
+        agents that offer no tiers ignore it.
 
         ``on_session_id`` is called with the session the agent actually ran
         under, as early as that is known. Most agents are handed one and run
@@ -134,6 +142,7 @@ class AbstractCodingAgent(ABC):
         model: str = "",
         on_session_id: Callable[[str], None] | None = None,
         effort: str = "",
+        context_tier: str = "",
     ) -> str:
         """Continue an existing agent conversation and return its final reply.
 
@@ -141,7 +150,8 @@ class AbstractCodingAgent(ABC):
         need no special implementation. Agents with a distinct resume command
         override this method.
         """
-        return self.run(user_message, session_id, model, on_session_id, effort)
+        return self.run(user_message, session_id, model, on_session_id, effort,
+                        context_tier)
 
     def skill_prompt(self, slug: str, path: Path, argument: str = "",
                      argument_name: str = "") -> str:

@@ -70,7 +70,8 @@ class EmailTriggerTests(unittest.TestCase):
         patch.object(module.runs_db, "record_run").start()
         self.addCleanup(patch.stopall)
 
-    def run_claude(self, prompt, session_id, model, agent, effort=""):
+    def run_claude(self, prompt, session_id, model, agent, effort="",
+                   context_tier=""):
         self.prompts.append(prompt)
         return "ok"
 

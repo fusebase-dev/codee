@@ -230,15 +230,20 @@ CATALOG = [
     ModelOption(id="claude-opus-4-6", name="Claude Opus 4.6",
                 efforts=["low", "medium", "high", "max"]),
     ModelOption(id="claude-haiku-4-5", name="Claude Haiku 4.5"),
+    ModelOption(id="claude-sonnet-5.5", name="Claude Sonnet 5.5",
+                efforts=["low", "medium", "high"], default_effort="medium",
+                context_tiers=[["default", "200K"], ["long_context", "1M"]]),
     ModelOption(id="auto", name="Auto",
                 efforts=["efficiency", "balance", "intelligence"],
                 default_effort="balance", effort_label="Tier"),
 ]
 
 
-def _editor(model: str = "", effort: str = "") -> SimpleNamespace:
+def _editor(model: str = "", effort: str = "",
+            context_tier: str = "") -> SimpleNamespace:
     return SimpleNamespace(agent_models=CATALOG, skill_model=model,
-                           skill_effort=effort, model_query="")
+                           skill_effort=effort, skill_context_tier=context_tier,
+                           model_query="")
 
 
 def _var(name: str, state: SimpleNamespace):
@@ -333,11 +338,45 @@ def test_choosing_model_default_effort_clears_it() -> None:
     assert state.skill_effort == "low"
 
 
+def test_the_context_picker_offers_the_models_windows() -> None:
+    state = _editor("claude-sonnet-5.5")
+
+    assert _var("skill_context_choices", state) == [
+        ["default", "200K"], ["long_context", "1M"]]
+    assert _var("skill_context_value", state) == "default"
+    assert _var("skill_context_value",
+                _editor("claude-sonnet-5.5", context_tier="long_context")
+                ) == "long_context"
+
+
+def test_a_model_without_a_choice_of_window_hides_the_context_picker() -> None:
+    assert _var("skill_context_choices", _editor("claude-opus-5-5")) == []
+    assert _var("skill_context_choices", _editor("")) == []
+
+
+def test_picking_the_default_window_stores_nothing() -> None:
+    state = _editor("claude-sonnet-5.5")
+
+    AdminState.set_skill_context_tier.fn(state, "long_context")
+    assert state.skill_context_tier == "long_context"
+    AdminState.set_skill_context_tier.fn(state, "default")
+    assert state.skill_context_tier == ""
+
+
+def test_picking_a_model_without_long_context_clears_it() -> None:
+    state = _editor("claude-sonnet-5.5", context_tier="long_context")
+
+    AdminState.choose_model.fn(state, "claude-opus-5-5")
+
+    assert state.skill_context_tier == ""
+
+
 def test_switching_agent_resets_model_and_effort() -> None:
     state = SimpleNamespace(skill_agent="", skill_model="claude-opus-5-5",
-                            skill_effort="high", model_query="")
+                            skill_effort="high",
+                            skill_context_tier="long_context", model_query="")
 
     AdminState.set_skill_agent.fn(state, "Codex")
 
-    assert (state.skill_agent, state.skill_model, state.skill_effort) == (
-        "codex", "", "")
+    assert (state.skill_agent, state.skill_model, state.skill_effort,
+            state.skill_context_tier) == ("codex", "", "", "")

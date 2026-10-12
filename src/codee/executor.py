@@ -292,12 +292,14 @@ def _pull_latest_code() -> bool:
 
 
 def _run_agent(user_message: str, session_id: str, model: str = "",
-               agent_code: str = "", label: str = "", effort: str = "") -> str:
+               agent_code: str = "", label: str = "", effort: str = "",
+               context_tier: str = "") -> str:
     """Run the skill's coding agent and return its response text.
 
     ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
     that can't be told which model to use ignore it. ``effort`` comes from its
-    ``effort:`` frontmatter the same way. ``agent_code`` comes from
+    ``effort:`` frontmatter the same way, and ``context_tier`` from its
+    ``x-codee-context-tier:``. ``agent_code`` comes from
     its ``x-codee-agent:`` frontmatter and picks which agent runs at all, empty
     for the default one. Wraps the agent run in job tracking; the agent itself
     raises on any failure so callers can retry.
@@ -311,8 +313,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
                                agent=agent.DISPLAY_NAME,
                                model=model, main_context=context)
     log.debug("job %s started: session=%s message=%r model=%r effort=%r "
-              "agent=%s", job_id, session_id, user_message, model, effort,
-              agent.describe())
+              "context_tier=%r agent=%s", job_id, session_id, user_message,
+              model, effort, context_tier, agent.describe())
 
     def opened(agent_session_id: str) -> None:
         """Record the session the agent actually opened, if it isn't ours.
@@ -330,7 +332,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
 
     _job_scope.job_id = job_id
     try:
-        return agent.run(user_message, session_id, model, opened, effort)
+        return agent.run(user_message, session_id, model, opened, effort,
+                         context_tier)
     except Exception:
         # The agent exits however SIGTERM makes it exit, usually as a failure.
         # Asked for from the dashboard, that is a kill and not worth a retry.
@@ -352,7 +355,7 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
 
 def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
               model: str = "", agent_code: str = "", label: str = "",
-              effort: str = "") -> None:
+              effort: str = "", context_tier: str = "") -> None:
     """Pool worker: run one task's coding agent, then release its in-flight slot.
 
     Logs the outcome to the runs table like the cron/email/sqs triggers do, so
@@ -368,7 +371,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
     shown = label or message
     try:
         response = _run_agent(message, session_id, model, agent_code, label,
-                              effort)
+                              effort, context_tier)
         log.info("Agent response for %s (%d chars): %s",
                  task_id, len(response), response)
         runs_db.record_run(skill_name, "issue", session_id, "succeeded",
@@ -399,7 +402,7 @@ def _run_task(task_id: str, message: str, session_id: str, skill_name: str,
 
 def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
                  model: str = "", agent_code: str = "", label: str = "",
-                 effort: str = "") -> bool:
+                 effort: str = "", context_tier: str = "") -> bool:
     """Start a task's agent unless one is already in flight or we're at the cap.
 
     Returns True if launched, False if skipped — as a duplicate, or because
@@ -426,7 +429,7 @@ def _submit_task(task_id: str, message: str, session_id: str, skill_name: str,
     # killing it mid-run, which is what the thread pool used to give us.
     threading.Thread(target=_run_task, name=f"task-agent-{task_id}",
                      args=(task_id, message, session_id, skill_name, model,
-                           agent_code, label, effort)).start()
+                           agent_code, label, effort, context_tier)).start()
     log.info("Started an agent for %s (%d running, max %d).",
              task_id, depth, limit)
     return True
@@ -528,7 +531,8 @@ def run_once() -> None:
                  task_id, status, issue_type, summary, session_id)
 
         _submit_task(task_id, message, session_id, skill.name,
-                     skill.model, skill.agent, label, skill.effort)
+                     skill.model, skill.agent, label, skill.effort,
+                     skill.context_tier)
 
 
 def main() -> None:
