@@ -62,6 +62,14 @@ def _model_option(models: list["ModelOption"],
     return None
 
 
+def _effort_options(model: "ModelOption | None", effort: str) -> list[str]:
+    """The levels ``model`` takes, plus ``effort`` when the model lacks it."""
+    options = list(model.efforts) if model else []
+    if effort and effort not in options:
+        options.append(effort)
+    return options
+
+
 def _usage_row(account: Any) -> "ClaudeAccount":
     """One account's dashboard row, with its percentages rounded to whole numbers.
 
@@ -115,13 +123,15 @@ class ModelOption(BaseModel):
 
     ``efforts`` are the reasoning effort levels the model takes, empty when it
     has none, and ``default_effort`` the one it runs at when the skill sets
-    none, empty when the agent doesn't say.
+    none, empty when the agent doesn't say. ``effort_label`` names levels that
+    aren't a reasoning effort (Copilot Auto's tiers), empty otherwise.
     """
 
     id: str
     name: str
     efforts: list[str] = []
     default_effort: str = ""
+    effort_label: str = ""
 
 
 class ConversationMessage(BaseModel):
@@ -586,15 +596,41 @@ class AdminState(rx.State):
         effort the skill already carries is always listed, so a value written by
         hand stays visible and can be cleared rather than being dropped unseen.
         """
+        return _effort_options(
+            _model_option(self.agent_models, self.skill_model),
+            self.skill_effort)
+
+    @rx.var
+    def skill_effort_choices(self) -> list[list[str]]:
+        """``[value, label]`` for each effort option; a tier reads capitalized."""
         model = _model_option(self.agent_models, self.skill_model)
-        options = list(model.efforts) if model else []
-        if self.skill_effort and self.skill_effort not in options:
-            options.append(self.skill_effort)
-        return options
+        tiered = bool(model and model.effort_label)
+        return [[option, option.capitalize() if tiered else option]
+                for option in _effort_options(model, self.skill_effort)]
+
+    @rx.var
+    def skill_effort_label(self) -> str:
+        """The picker's title: what the picked model calls its levels."""
+        model = _model_option(self.agent_models, self.skill_model)
+        return (model.effort_label if model and model.effort_label
+                else "Reasoning effort")
+
+    @rx.var
+    def skill_effort_has_default(self) -> bool:
+        """Whether the picker offers "Model default".
+
+        A tier always has a value, so for a tiered model the picker shows its
+        default level selected instead.
+        """
+        model = _model_option(self.agent_models, self.skill_model)
+        return not (model and model.effort_label)
 
     @rx.var
     def skill_effort_value(self) -> str:
         """The effort picker's value; the select can't hold an empty one."""
+        model = _model_option(self.agent_models, self.skill_model)
+        if not self.skill_effort and model and model.effort_label:
+            return model.default_effort
         return self.skill_effort or EFFORT_DEFAULT
 
     @rx.var
@@ -2696,21 +2732,25 @@ def effort_picker() -> rx.Component:
     return rx.cond(
         AdminState.skill_effort_options.length() > 0,
         rx.box(field(
-            "Reasoning effort",
+            AdminState.skill_effort_label,
             rx.select.root(
                 rx.select.trigger(width="100%"),
                 rx.select.content(
-                    rx.select.item(AdminState.skill_effort_default_label,
-                                   value=EFFORT_DEFAULT),
-                    rx.foreach(AdminState.skill_effort_options,
-                               lambda effort: rx.select.item(effort,
-                                                             value=effort))),
+                    rx.cond(AdminState.skill_effort_has_default,
+                            rx.select.item(
+                                AdminState.skill_effort_default_label,
+                                value=EFFORT_DEFAULT)),
+                    rx.foreach(AdminState.skill_effort_choices,
+                               lambda choice: rx.select.item(
+                                   choice[1], value=choice[0]))),
                 value=AdminState.skill_effort_value,
                 on_change=AdminState.set_skill_effort),
             rx.text(
                 rx.cond(
                     AdminState.skill_effort == "",
-                    "Runs at the model's own effort.",
+                    rx.cond(AdminState.skill_effort_has_default,
+                            "Runs at the model's own effort.",
+                            "Runs on the default tier."),
                     rx.cond(
                         AdminState.skill_effort_unlisted,
                         rx.fragment(

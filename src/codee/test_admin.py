@@ -230,6 +230,9 @@ CATALOG = [
     ModelOption(id="claude-opus-4-6", name="Claude Opus 4.6",
                 efforts=["low", "medium", "high", "max"]),
     ModelOption(id="claude-haiku-4-5", name="Claude Haiku 4.5"),
+    ModelOption(id="auto", name="Auto",
+                efforts=["efficiency", "balance", "intelligence"],
+                default_effort="balance", effort_label="Tier"),
 ]
 
 
@@ -249,6 +252,35 @@ def test_the_effort_picker_offers_the_picked_models_levels() -> None:
         "low", "medium", "high", "xhigh", "max"]
     assert _var("skill_effort_default_label", state) == "Model default (medium)"
     assert _var("skill_effort_value", state) == EFFORT_DEFAULT
+
+
+def test_a_reasoning_effort_picker_keeps_its_label_and_model_default() -> None:
+    state = _editor("claude-opus-5-5")
+
+    assert _var("skill_effort_label", state) == "Reasoning effort"
+    assert _var("skill_effort_has_default", state) is True
+    assert _var("skill_effort_choices", state)[3] == ["xhigh", "xhigh"]
+
+
+def test_copilot_auto_offers_tiers_with_balance_preselected() -> None:
+    state = _editor("auto")
+
+    assert _var("skill_effort_label", state) == "Tier"
+    assert _var("skill_effort_choices", state) == [
+        ["efficiency", "Efficiency"], ["balance", "Balance"],
+        ["intelligence", "Intelligence"]]
+    assert _var("skill_effort_has_default", state) is False
+    assert _var("skill_effort_value", state) == "balance"
+    assert _var("skill_effort_value",
+                _editor("auto", "intelligence")) == "intelligence"
+
+
+def test_switching_to_auto_drops_a_reasoning_effort() -> None:
+    state = _editor("claude-opus-5-5", "high")
+
+    AdminState.choose_model.fn(state, "auto")
+
+    assert state.skill_effort == ""
 
 
 def test_a_model_without_effort_control_hides_the_picker() -> None:

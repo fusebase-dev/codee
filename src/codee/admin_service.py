@@ -1029,7 +1029,8 @@ class AdminService:
                     self._models_cache[agent_key] = models
         return [{"id": model.id, "name": model.name,
                  "efforts": list(model.efforts),
-                 "default_effort": model.default_effort}
+                 "default_effort": model.default_effort,
+                 "effort_label": model.effort_label}
                 for model in models]
 
     def resolve_skill_slug(self, label: str) -> str:

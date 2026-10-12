@@ -33,6 +33,13 @@ _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 # the only way to ask the CLI what it can run.
 ACP_COMMAND = ["copilot", "--acp"]
 
+# `auto` lets Copilot route each request to a model. It takes no reasoning
+# effort but a routing tier, which the skill's `effort:` carries instead and
+# goes to the CLI as `--auto-tier`. Balance is what runs when none is set.
+AUTO_MODEL = "auto"
+AUTO_TIERS = ("efficiency", "balance", "intelligence")
+DEFAULT_AUTO_TIER = "balance"
+
 # Ceiling on what one run may spend. AI credits bill at $0.04 each, so the
 # default is the same $20 cap the Claude Code agent puts on a run.
 MAX_AI_CREDITS_ENV_VAR = "CODEE_COPILOT_MAX_AI_CREDITS"
@@ -98,12 +105,17 @@ class GitHubCopilotAgent(AbstractCodingAgent):
     @classmethod
     def list_models(cls) -> list[AgentModel]:
         try:
-            return acp.fetch_models(ACP_COMMAND)
+            models = acp.fetch_models(ACP_COMMAND)
         except Exception as exc:
             # The picker falls back to free text, so a CLI that isn't installed
             # or isn't logged in must not break the admin UI.
             log.warning("Could not read the copilot model catalog: %s", exc)
             return []
+        # ACP reports no options for Auto; its tiers come from `--auto-tier`.
+        return [AgentModel(model.id, model.name, AUTO_TIERS, DEFAULT_AUTO_TIER,
+                           "Tier")
+                if model.id == AUTO_MODEL else model
+                for model in models]
 
     @classmethod
     def peep(cls, session_id: str, cwd: Path,
@@ -142,7 +154,11 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         # body alone — so a skill's model only takes effect via this flag.
         if model:
             cmd += ["--model", model]
-        if effort:
+        # Auto's tier is passed even when unset, so a run doesn't pick up
+        # whatever tier the machine's own Copilot config has stored.
+        if model == AUTO_MODEL:
+            cmd += ["--auto-tier", effort or DEFAULT_AUTO_TIER]
+        elif effort:
             cmd += ["--reasoning-effort", effort]
         debug_enabled = os.environ.get(
             COPILOT_DEBUG_ENV_VAR, "").strip().lower() == "true"

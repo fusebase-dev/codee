@@ -2742,7 +2742,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
 
         self.assertEqual(
             first, [{"id": "claude-opus-5", "name": "Claude Opus 5",
-                     "efforts": ["low", "high"], "default_effort": "high"}])
+                     "efforts": ["low", "high"], "default_effort": "high",
+                     "effort_label": ""}])
         self.assertEqual(second, first)
         list_models.assert_called_once()
 
@@ -2756,7 +2757,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
 
         self.assertEqual(
             models, [{"id": "gpt-6-astra", "name": "GPT-6 Astra",
-                      "efforts": [], "default_effort": ""}])
+                      "efforts": [], "default_effort": "",
+                      "effort_label": ""}])
         claude_models.assert_not_called()
 
     def test_an_agent_codee_cannot_run_falls_back_to_the_default(self) -> None:
@@ -2766,7 +2768,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
                           return_value=[AgentModel("claude-opus-5", "Claude Opus 5")]):
             self.assertEqual(service.list_agent_models("cursor"),
                              [{"id": "claude-opus-5", "name": "Claude Opus 5",
-                               "efforts": [], "default_effort": ""}])
+                               "efforts": [], "default_effort": "",
+                      "effort_label": ""}])
 
     def test_every_agent_codee_can_run_is_offered(self) -> None:
         service = self._service(CodingAgent.CLAUDE_CODE)
@@ -2795,7 +2798,8 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
             self.assertEqual(service.list_agent_models(), [])
             self.assertEqual(service.list_agent_models(),
                              [{"id": "gpt-6", "name": "GPT-6",
-                               "efforts": [], "default_effort": ""}])
+                               "efforts": [], "default_effort": "",
+                      "effort_label": ""}])
 
 
 class AdminServiceAgentsFileTest(unittest.TestCase):

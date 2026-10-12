@@ -34,12 +34,18 @@ class AgentModel:
     skill editor only offers an effort picker when there is something to pick.
     ``default_effort`` is the level the agent uses when none is given, empty
     when the agent doesn't say.
+
+    ``effort_label`` is set when the model's levels are something other than a
+    reasoning effort, and names them for the picker (Copilot's Auto offers
+    routing tiers). Such a setting always has a value, so the picker has no
+    "model default" entry and shows ``default_effort`` until one is chosen.
     """
 
     id: str
     name: str
     efforts: tuple[str, ...] = ()
     default_effort: str = ""
+    effort_label: str = ""
 
 
 @dataclass(frozen=True)

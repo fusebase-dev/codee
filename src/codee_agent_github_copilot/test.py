@@ -180,6 +180,33 @@ class CopilotRunTest(unittest.TestCase):
 
         self.assertNotIn("--reasoning-effort", self.captured.call_args.args[0])
 
+    def test_auto_takes_the_skill_effort_as_its_tier(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "auto", "intelligence")
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--auto-tier") + 1], "intelligence")
+        self.assertNotIn("--reasoning-effort", cmd)
+
+    def test_auto_without_a_tier_runs_on_balance(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "auto")
+
+        cmd = self.captured.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--auto-tier") + 1], "balance")
+
+    def test_other_models_get_no_tier(self) -> None:
+        stdout = _stream(_event("assistant.message", {"content": "ok"}),
+                         _event("result", exitCode=0))
+
+        self._run(_completed(stdout), "gpt-6-sol", "high")
+
+        self.assertNotIn("--auto-tier", self.captured.call_args.args[0])
+
     def test_no_model_leaves_the_agent_on_its_default(self) -> None:
         stdout = _stream(_event("assistant.message", {"content": "ok"}),
                          _event("result", exitCode=0))
@@ -298,6 +325,19 @@ class CopilotModelCatalogTest(unittest.TestCase):
             self.assertEqual(GitHubCopilotAgent.list_models(), catalog)
 
         fetch.assert_called_once_with(["copilot", "--acp"])
+
+    def test_auto_offers_its_routing_tiers(self) -> None:
+        catalog = [AgentModel("auto", "Auto"),
+                   AgentModel("claude-opus-5", "Claude Opus 5")]
+
+        with patch("codee_agent_github_copilot.provider.acp.fetch_models",
+                   return_value=catalog):
+            models = GitHubCopilotAgent.list_models()
+
+        self.assertEqual(models[0], AgentModel(
+            "auto", "Auto", ("efficiency", "balance", "intelligence"),
+            "balance", "Tier"))
+        self.assertEqual(models[1], catalog[1])
 
     def test_an_unavailable_cli_yields_no_models_rather_than_raising(self) -> None:
         with patch("codee_agent_abstract.acp.subprocess.Popen",
