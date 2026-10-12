@@ -206,25 +206,36 @@ class JiraTasksProvider(AbstractTasksProvider):
         # are all in this one string.
         log.debug("JQL for work item %s: %s", mapping.name, params["jql"])
 
-        try:
-            resp = requests.get(
-                url,
-                params=params,
-                auth=(self._user_email, self._api_token),
-                headers={"Accept": "application/json"},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as exc:
-            if raise_errors:
-                raise TasksProviderError(_describe_error(exc)) from exc
-            log.error("JIRA API error for work item %s: %s",
-                      mapping.name, _describe_error(exc))
-            return []
+        # Every page, not just the first: issues the executor skips (children
+        # of a story Codee owns) still match the query, and fifty of them used
+        # to fill the only page and hide a newer task behind them. The
+        # connection check queries without statuses, so it keeps to one page
+        # rather than walking the whole project.
+        issues: list[dict] = []
+        while True:
+            try:
+                resp = requests.get(
+                    url,
+                    params=params,
+                    auth=(self._user_email, self._api_token),
+                    headers={"Accept": "application/json"},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as exc:
+                if raise_errors:
+                    raise TasksProviderError(_describe_error(exc)) from exc
+                log.error("JIRA API error for work item %s: %s",
+                          mapping.name, _describe_error(exc))
+                return []
+            issues.extend(data.get("issues", []))
+            next_page = data.get("nextPageToken")
+            if not (statuses and next_page):
+                break
+            params["nextPageToken"] = next_page
 
-        tasks = [self._to_task(issue, mapping.name)
-                 for issue in data.get("issues", [])]
+        tasks = [self._to_task(issue, mapping.name) for issue in issues]
         log.debug("JQL for work item %s matched %d issue(s)%s", mapping.name,
                   len(tasks),
                   ": " + ", ".join(_describe_task(task) for task in tasks)
