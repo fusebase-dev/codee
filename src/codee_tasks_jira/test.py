@@ -274,6 +274,37 @@ class JiraTasksProviderTest(unittest.TestCase):
         self.assertEqual([task.key for task in tasks],
                          ["CORE-9", "CORE-1", "CORE-2"])
 
+    def test_a_poll_reads_every_page(self) -> None:
+        # A full first page of skipped story children must not hide the task
+        # on the next page.
+        stories = Mock(status_code=200)
+        stories.json.return_value = {"issues": []}
+        first = Mock(status_code=200)
+        first.json.return_value = {"issues": [_issue("CORE-1")],
+                                   "nextPageToken": "page-2"}
+        last = Mock(status_code=200)
+        last.json.return_value = {"issues": [_issue("CORE-2")], "isLast": True}
+
+        with patch("codee_tasks_jira.provider.requests.get",
+                   side_effect=[stories, first, last]) as get:
+            tasks = self.provider.get_tasks(["Ready"])
+
+        self.assertEqual([task.key for task in tasks], ["CORE-1", "CORE-2"])
+        self.assertEqual(get.call_args.kwargs["params"]["nextPageToken"],
+                         "page-2")
+
+    def test_the_connection_check_reads_one_page(self) -> None:
+        # Without statuses the query is the whole project.
+        page = Mock(status_code=200)
+        page.json.return_value = {"issues": [_issue()],
+                                  "nextPageToken": "page-2"}
+
+        with patch("codee_tasks_jira.provider.requests.get",
+                   return_value=page) as get:
+            self.provider.get_tasks([], raise_errors=True)
+
+        self.assertEqual(get.call_count, 2)  # one per work item
+
     def test_one_failing_work_item_does_not_lose_the_others(self) -> None:
         # A mistyped condition on one work item must not stop the rest being
         # worked: the executor's tick has to survive it.
