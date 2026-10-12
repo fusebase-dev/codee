@@ -3874,8 +3874,8 @@ def claude_code_setting() -> rx.Component:
 
 def github_copilot_setting() -> rx.Component:
     """Settings used only by GitHub Copilot CLI runs."""
-    return rx.box(
-        rx.heading("GitHub Copilot", size="4", margin_bottom="1rem"),
+    return rx.vstack(
+        rx.text("GitHub Copilot", font_size="0.9rem", font_weight="600"),
         field(
             "Prompt prefix",
             rx.text_area(
@@ -3891,7 +3891,18 @@ def github_copilot_setting() -> rx.Component:
                 font_size="0.82rem",
             ),
         ),
-        padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
+        spacing="3", width="100%")
+
+
+def coding_agent_advanced() -> rx.Component:
+    """Collapsed by default: agent-specific tweaks most setups never touch."""
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=rx.text("Advanced", font_size="0.9rem", font_weight="600"),
+            content=rx.box(github_copilot_setting(), padding="1rem 0.25rem",
+                           width="100%"),
+        ),
+        type="single", collapsible=True, variant="ghost", width="100%")
 
 
 def conversation_message(message: ConversationMessage) -> rx.Component:
@@ -4065,13 +4076,16 @@ def settings_page() -> rx.Component:
                                type="number", min=1, width="100%"),
                       rx.text("How many task agents may run at once.",
                               color=MUTED, font_size="0.82rem")),
+                # Only Copilot has advanced settings so far, so the section
+                # would be empty on a machine without it.
+                coding_agent_advanced() if GITHUB_COPILOT_AVAILABLE
+                else rx.fragment(),
                 spacing="4", width="100%"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         # Decided when the page is built rather than with an rx.cond, because
         # which agents a machine has is not state: there is no event that could
         # ever flip it, and nothing on the page should be able to.
         claude_code_setting() if CLAUDE_CODE_AVAILABLE else rx.fragment(),
-        github_copilot_setting() if GITHUB_COPILOT_AVAILABLE else rx.fragment(),
         rx.box(
             rx.heading("Tasks provider", size="4", margin_bottom="1rem"),
             field("Provider", rx.select(["jira", "azure_devops"], value=AdminState.tasks_provider,
