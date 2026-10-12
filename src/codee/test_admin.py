@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from codee.admin import (EFFORT_DEFAULT, AdminState, ModelOption, PeepStep,
-                         _highlight_parts, _run_preview, running_panel)
+                         _context_summary, _highlight_parts, _run_preview,
+                         running_panel)
 
 
 def test_pause_with_running_agents_explains_they_will_finish() -> None:
@@ -101,7 +102,7 @@ def test_killing_a_session_that_already_finished_says_so() -> None:
 
 def _peep_state(**fields) -> SimpleNamespace:
     state = SimpleNamespace(peep_job_id=0, peep_job_label="", peep_steps=[],
-                            peep_note="")
+                            peep_note="", peep_context="")
     state.__dict__.update(fields)
     state._load_peep = lambda: AdminState._load_peep(state)
     return state
@@ -112,7 +113,9 @@ def test_peep_shows_the_sessions_last_steps() -> None:
     with patch("codee.admin.SERVICE.peep_job", return_value={
             "agent": "Claude Code",
             "entries": [{"kind": "tool", "text": "Bash: ls",
-                         "timestamp": "2026-10-01T10:00:00Z"}]}) as peep:
+                         "timestamp": "2026-10-01T10:00:00Z"}],
+            "context": {"tokens": 41245, "window": 128000,
+                        "compactions": 1}}) as peep:
         AdminState.open_peep.fn(state, 7, "/nightly")
 
     peep.assert_called_once_with(7, 10)
@@ -120,6 +123,17 @@ def test_peep_shows_the_sessions_last_steps() -> None:
     assert [(step.kind, step.text) for step in state.peep_steps] == [
         ("tool", "Bash: ls")]
     assert state.peep_note == ""
+    assert state.peep_context == (
+        "Context: 41,245 / 128,000 tokens (32%) · 1 compaction")
+
+
+def test_the_context_line_says_only_what_the_agent_wrote_down() -> None:
+    assert _context_summary(None) == ""
+    assert _context_summary({"tokens": 41245, "window": 0,
+                             "compactions": 0}) == (
+        "Context: 41,245 tokens · 0 compactions")
+    assert _context_summary({"tokens": 0, "window": 0,
+                             "compactions": 3}) == "Context: 3 compactions"
 
 
 def test_peep_says_when_there_is_nothing_yet() -> None:
@@ -154,12 +168,12 @@ def test_refreshing_a_finished_session_keeps_what_was_on_screen() -> None:
 def test_closing_the_peep_dialog_forgets_the_session() -> None:
     state = _peep_state(peep_job_id=7, peep_job_label="/nightly",
                         peep_steps=[PeepStep(kind="text", text="x")],
-                        peep_note="note")
+                        peep_note="note", peep_context="Context: 1 compaction")
 
     AdminState.set_peep_dialog_open.fn(state, False)
 
     assert (state.peep_job_id, state.peep_job_label, state.peep_steps,
-            state.peep_note) == (0, "", [], "")
+            state.peep_note, state.peep_context) == (0, "", [], "", "")
 
 
 def test_clearing_skill_search_resets_query() -> None:

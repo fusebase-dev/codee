@@ -10,10 +10,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlparse
 
-from codee_agent_abstract.provider import AgentModel, PeepEntry
+from codee_agent_abstract.provider import AgentModel, ContextUsage, PeepEntry
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_codex.provider import CodexAgent
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
+from codee_agent_opencode.provider import OpenCodeAgent
 
 from codee.admin_service import (
     MCP_CHECK, TASKS_CHECK, USAGE_CACHE_SECONDS,
@@ -3782,14 +3783,20 @@ class PeepJobTest(unittest.TestCase):
 
             with patch.object(CodexAgent, "peep", return_value=[
                     PeepEntry("tool", "shell: ls", "2026-10-01T10:00:00Z")]
-                              ) as peep:
+                              ) as peep, \
+                    patch.object(CodexAgent, "context_usage",
+                                 return_value=ContextUsage(51863, 258400, 2)
+                                 ) as context_usage:
                 result = service.peep_job(job_id)
 
         peep.assert_called_once_with("thread-1", root, 10)
+        context_usage.assert_called_once_with("thread-1", root)
         self.assertEqual(result, {
             "agent": "Codex",
             "entries": [{"kind": "tool", "text": "shell: ls",
-                         "timestamp": "2026-10-01T10:00:00Z"}]})
+                         "timestamp": "2026-10-01T10:00:00Z"}],
+            "context": {"tokens": 51863, "window": 258400,
+                        "compactions": 2}})
 
     def test_a_row_naming_no_agent_is_read_as_the_default_agents(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3798,11 +3805,30 @@ class PeepJobTest(unittest.TestCase):
                                        main_context=service.context)
 
             with patch.object(ClaudeCodeAgent, "peep",
-                              return_value=[]) as peep:
+                              return_value=[]) as peep, \
+                    patch.object(ClaudeCodeAgent, "context_usage",
+                                 return_value=None):
                 result = service.peep_job(job_id)
 
         peep.assert_called_once()
-        self.assertEqual(result, {"agent": "Claude Code", "entries": []})
+        self.assertEqual(result, {"agent": "Claude Code", "entries": [],
+                                  "context": None})
+
+    def test_steps_read_before_the_usage_failed_are_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            job_id = runs_db.start_job("sid-1", "/nightly",
+                                       main_context=service.context)
+
+            with patch.object(ClaudeCodeAgent, "peep", return_value=[
+                    PeepEntry("text", "Done.")]), \
+                    patch.object(ClaudeCodeAgent, "context_usage",
+                                 side_effect=OSError("gone")):
+                result = service.peep_job(job_id)
+
+        self.assertEqual(result["entries"],
+                         [{"kind": "text", "text": "Done.", "timestamp": ""}])
+        self.assertIsNone(result["context"])
 
     def test_an_agent_without_a_transcript_says_so(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -3811,9 +3837,13 @@ class PeepJobTest(unittest.TestCase):
                                        agent="OpenCode",
                                        main_context=service.context)
 
-            result = service.peep_job(job_id)
+            with patch.object(OpenCodeAgent, "peep", return_value=None), \
+                    patch.object(OpenCodeAgent, "context_usage",
+                                 return_value=None):
+                result = service.peep_job(job_id)
 
-        self.assertEqual(result, {"agent": "OpenCode", "entries": None})
+        self.assertEqual(result, {"agent": "OpenCode", "entries": None,
+                                  "context": None})
 
     def test_a_finished_session_is_none(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

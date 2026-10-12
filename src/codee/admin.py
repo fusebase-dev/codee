@@ -219,6 +219,25 @@ class PeepStep(BaseModel):
     timestamp: str = ""
 
 
+def _context_summary(context: dict[str, int] | None) -> str:
+    """One line on how full a session's context window is, "" when unknown.
+
+    Reads "Context: 41,245 / 128,000 tokens (32%) · 1 compaction", dropping
+    the window and share when the agent didn't say how big it is.
+    """
+    if not context:
+        return ""
+    tokens, window = context["tokens"], context["window"]
+    compactions = context["compactions"]
+    parts = []
+    if tokens and window:
+        parts.append(f"{tokens:,} / {window:,} tokens ({tokens / window:.0%})")
+    elif tokens:
+        parts.append(f"{tokens:,} tokens")
+    parts.append(f"{compactions} compaction{'' if compactions == 1 else 's'}")
+    return "Context: " + " · ".join(parts)
+
+
 def _active_job(job: dict[str, Any]) -> ActiveJob:
     """One in-flight run as its dashboard row reads it.
 
@@ -425,11 +444,13 @@ class AdminState(rx.State):
     kill_job_label: str = ""
     # The session the Peep dialog shows, held for the same reason, with the
     # last steps read from its transcript. ``peep_note`` says why there are
-    # none, or that the session has finished since.
+    # none, or that the session has finished since. ``peep_context`` is one
+    # line on how full its context window is, empty when the agent can't tell.
     peep_job_id: int = 0
     peep_job_label: str = ""
     peep_steps: list[PeepStep] = []
     peep_note: str = ""
+    peep_context: str = ""
     paused: bool = False
     total_runs: int = 0
     last_24h_runs: int = 0
@@ -1046,6 +1067,7 @@ class AdminState(rx.State):
         self.peep_job_id = job_id
         self.peep_job_label = label
         self.peep_steps = []
+        self.peep_context = ""
         self._load_peep()
 
     def set_peep_dialog_open(self, is_open: bool) -> None:
@@ -1054,6 +1076,7 @@ class AdminState(rx.State):
             self.peep_job_label = ""
             self.peep_steps = []
             self.peep_note = ""
+            self.peep_context = ""
 
     def refresh_peep(self) -> None:
         if self.peep_job_id:
@@ -1080,6 +1103,7 @@ class AdminState(rx.State):
                               "sessions yet.")
             return
         self.peep_steps = [PeepStep(**entry) for entry in peep["entries"]]
+        self.peep_context = _context_summary(peep.get("context"))
         self.peep_note = ("" if self.peep_steps else
                           "Nothing to show yet. The agent may still be "
                           "starting up.")
@@ -2338,6 +2362,9 @@ def peep_dialog() -> rx.Component:
                         font_size="0.85rem", overflow="hidden",
                         text_overflow="ellipsis", white_space="nowrap"),
                 color=MUTED),
+            rx.cond(AdminState.peep_context != "",
+                    rx.text(AdminState.peep_context, color=MUTED,
+                            font_size="0.8rem", margin_top="0.35rem")),
             rx.vstack(
                 rx.foreach(AdminState.peep_steps, peep_step),
                 rx.cond(AdminState.peep_note != "",

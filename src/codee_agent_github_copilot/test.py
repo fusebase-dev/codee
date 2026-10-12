@@ -479,3 +479,53 @@ class GitHubCopilotPeepTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GitHubCopilotContextUsageTest(unittest.TestCase):
+    def _usage_record(self, input_tokens: int, limit: int, **fields) -> dict:
+        return {"type": "session.usage_record", **fields, "data": {"usage": {
+            "model": "claude-opus-5", "inputTokens": input_tokens,
+            "cacheReadTokens": input_tokens - 100, "outputTokens": 500,
+            "maxPromptTokens": limit}}}
+
+    def _usage_of(self, *records: dict) -> object:
+        with tempfile.TemporaryDirectory() as home:
+            folder = Path(home) / "session-state" / SESSION
+            folder.mkdir(parents=True)
+            (folder / "events.jsonl").write_text(
+                "".join(json.dumps(record) + "\n" for record in records),
+                encoding="utf-8")
+            with patch.dict(os.environ, {"COPILOT_HOME": home}):
+                return GitHubCopilotAgent.context_usage(SESSION, Path("/repo"))
+
+    def test_reads_the_last_calls_tokens_and_counts_the_compactions(
+            self) -> None:
+        usage = self._usage_of(
+            self._usage_record(120000, 128000),
+            {"type": "session.compaction_complete",
+             "data": {"success": True, "preCompactionTokens": 120500,
+                      "postCompactionTokens": 9000, "tokenLimit": 128000}},
+            {"type": "session.compaction_complete",
+             "data": {"success": False, "error": "timeout"}},
+            self._usage_record(30000, 128000),
+            self._usage_record(90000, 64000, agentId="explore-1"),
+            {"type": "session.compaction_complete", "agentId": "explore-1",
+             "data": {"success": True, "postCompactionTokens": 1}})
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (30500, 128000, 1))
+
+    def test_a_compaction_leaves_what_it_kept_until_the_next_call(
+            self) -> None:
+        usage = self._usage_of(
+            self._usage_record(120000, 128000),
+            {"type": "session.compaction_complete",
+             "data": {"success": True, "postCompactionTokens": 9000,
+                      "tokenLimit": 128000}})
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (9000, 128000, 1))
+
+    def test_a_cli_that_logs_no_usage_says_nothing(self) -> None:
+        self.assertIsNone(self._usage_of(
+            {"type": "assistant.message", "data": {"content": "Hi"}}))

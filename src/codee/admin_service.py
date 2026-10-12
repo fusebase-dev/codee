@@ -2094,8 +2094,10 @@ class AdminService:
         """The last ``limit`` steps of a running session. None once it finished.
 
         ``entries`` is None rather than a list when the session's agent keeps
-        no transcript Codee can read. A row that names no agent, from before
-        the dashboard recorded one, is read as the default agent's.
+        no transcript Codee can read. ``context`` says how full the session's
+        context window is, None when the agent can't tell. A row that names no
+        agent, from before the dashboard recorded one, is read as the default
+        agent's.
         """
         job = next((job for job in runs_db.active_jobs(main_context=self.context)
                     if job["id"] == job_id), None)
@@ -2104,21 +2106,26 @@ class AdminService:
         agent = (resolve_agent_code(job.get("agent") or "")
                  or self.context.settings.coding_agent)
         implementation = CODING_AGENTS.get(agent)
-        entries = None
+        entries = context = None
         if implementation is not None:
             try:
                 entries = implementation.peep(job["session_id"], self.root,
                                               limit)
+                context = implementation.context_usage(job["session_id"],
+                                                       self.root)
             except Exception as error:
                 print(f"[admin] Could not read job {job_id}'s transcript: "
                       f"{error}")
-                entries = []
+                entries = entries or []
         return {
             "agent": agent_label(agent),
             "entries": (None if entries is None else
                         [{"kind": entry.kind, "text": entry.text,
                           "timestamp": entry.timestamp}
                          for entry in entries]),
+            "context": (None if context is None else
+                        {"tokens": context.tokens, "window": context.window,
+                         "compactions": context.compactions}),
         }
 
     def set_paused(self, paused: bool) -> bool:

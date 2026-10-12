@@ -1,5 +1,7 @@
 import io
 import json
+import os
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -204,3 +206,126 @@ class OpenCodeRunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpenCodeSessionTest(unittest.TestCase):
+    """Peep and context usage, read from OpenCode's SQLite database."""
+
+    SESSION = "ses_f0d0cbe84ffeNWiy62O86QX1MO"
+
+    def _database(self, data_home: str, *messages: tuple[str, dict],
+                  catalog: dict | None = None) -> None:
+        folder = Path(data_home) / "opencode"
+        folder.mkdir()
+        connection = sqlite3.connect(folder / "opencode.db")
+        connection.execute(
+            "CREATE TABLE session_message (id text PRIMARY KEY, "
+            "session_id text NOT NULL, type text NOT NULL, "
+            "seq integer NOT NULL, time_created integer NOT NULL, "
+            "time_updated integer NOT NULL, data text NOT NULL)")
+        connection.execute(
+            "CREATE TABLE kv (key text PRIMARY KEY, value text NOT NULL, "
+            "time_created integer NOT NULL, time_updated integer NOT NULL)")
+        for seq, (kind, data) in enumerate(messages):
+            connection.execute(
+                "INSERT INTO session_message VALUES (?, ?, ?, ?, 0, 0, ?)",
+                (f"msg_{seq}", self.SESSION, kind, seq, json.dumps(data)))
+        connection.execute(
+            "INSERT INTO session_message VALUES ('other', 'ses_other', "
+            "'assistant', 0, 0, 0, ?)",
+            (json.dumps({"content": [{"type": "text", "text": "Not mine"}]}),))
+        if catalog is not None:
+            connection.execute(
+                "INSERT INTO kv VALUES ('models-dev:catalog', ?, 0, 0)",
+                (json.dumps({"updatedAt": 0, "body": json.dumps(catalog)}),))
+        connection.commit()
+        connection.close()
+
+    def _assistant(self, *content: dict, tokens: dict | None = None,
+                   created: int = 1790782423879) -> tuple[str, dict]:
+        return ("assistant", {
+            "time": {"created": created},
+            "model": {"id": "gpt-5-mini", "providerID": "github-copilot"},
+            "content": list(content),
+            "tokens": tokens or {"input": 0, "output": 0, "reasoning": 0,
+                                 "cache": {"read": 0, "write": 0}}})
+
+    def test_reads_the_last_steps_of_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as data_home:
+            self._database(
+                data_home,
+                ("user", {"text": "/nightly"}),
+                self._assistant(
+                    {"type": "reasoning", "text": "Reading the logs first.",
+                     "time": {"created": 1790782427293}},
+                    {"type": "tool", "name": "read", "state": {
+                        "status": "completed",
+                        "input": {"filePath": "/repo/app.log"},
+                        "output": "secret output"}}),
+                ("compaction", {"status": "completed", "summary": "..."}),
+                self._assistant({"type": "text", "text": "Found it."}))
+            with patch.dict(os.environ, {"XDG_DATA_HOME": data_home}):
+                steps = OpenCodeAgent.peep(self.SESSION, Path("/repo"))
+
+        self.assertEqual(
+            [(step.kind, step.text) for step in steps],
+            [("thinking", "Reading the logs first."),
+             ("tool", "read: /repo/app.log"),
+             ("text", "Found it.")])
+        self.assertEqual(steps[0].timestamp, "2026-09-30T15:33:47.293Z")
+        self.assertEqual(steps[1].timestamp, "2026-09-30T15:33:43.879Z")
+
+    def test_reads_the_last_finished_calls_tokens_and_counts_compactions(
+            self) -> None:
+        with tempfile.TemporaryDirectory() as data_home:
+            self._database(
+                data_home,
+                self._assistant(tokens={"input": 90000, "output": 10,
+                                        "reasoning": 0,
+                                        "cache": {"read": 0, "write": 0}}),
+                ("compaction", {"status": "completed", "reason": "auto"}),
+                ("compaction", {"status": "running"}),
+                self._assistant(tokens={"input": 600, "output": 100,
+                                        "reasoning": 50,
+                                        "cache": {"read": 30000,
+                                                  "write": 250}}),
+                # Still streaming: its tokens aren't in yet.
+                self._assistant({"type": "text", "text": "Working"}),
+                catalog={"github-copilot": {"models": {"gpt-5-mini": {
+                    "limit": {"context": 264000, "input": 128000,
+                              "output": 64000}}}}})
+            with patch.dict(os.environ, {"XDG_DATA_HOME": data_home}):
+                usage = OpenCodeAgent.context_usage(self.SESSION, Path("/"))
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (31000, 128000, 1))
+
+    def test_a_model_the_catalog_doesnt_list_has_no_window(self) -> None:
+        with tempfile.TemporaryDirectory() as data_home:
+            self._database(
+                data_home,
+                self._assistant(tokens={"input": 500, "output": 0,
+                                        "reasoning": 0,
+                                        "cache": {"read": 0, "write": 0}}),
+                catalog={"anthropic": {"models": {}}})
+            with patch.dict(os.environ, {"XDG_DATA_HOME": data_home}):
+                usage = OpenCodeAgent.context_usage(self.SESSION, Path("/"))
+
+        self.assertEqual((usage.tokens, usage.window), (500, 0))
+
+    def test_no_database_yet_means_nothing_to_show(self) -> None:
+        with tempfile.TemporaryDirectory() as data_home:
+            with patch.dict(os.environ, {"XDG_DATA_HOME": data_home}):
+                self.assertEqual(
+                    OpenCodeAgent.peep(self.SESSION, Path("/")), [])
+                self.assertIsNone(
+                    OpenCodeAgent.context_usage(self.SESSION, Path("/")))
+
+    def test_an_opencode_before_2_cannot_be_read(self) -> None:
+        with tempfile.TemporaryDirectory() as data_home:
+            folder = Path(data_home) / "opencode"
+            folder.mkdir()
+            sqlite3.connect(folder / "opencode.db").close()
+            with patch.dict(os.environ, {"XDG_DATA_HOME": data_home}):
+                self.assertIsNone(
+                    OpenCodeAgent.peep(self.SESSION, Path("/")))

@@ -44,6 +44,36 @@ def tail_jsonl(path: Path, max_bytes: int = TAIL_BYTES) -> list[dict]:
     return records
 
 
+def scan_jsonl(path: Path, marker: bytes) -> list[dict]:
+    """The JSON objects on the lines of ``path`` that contain ``marker``.
+
+    Reads the whole file, a line at a time, for the rare events a tail can't
+    count (compactions). Only the lines carrying ``marker`` are parsed, so a
+    transcript of many megabytes costs one pass over its bytes. [] when the
+    file can't be read.
+    """
+    records = []
+    try:
+        with path.open("rb") as handle:
+            for line in handle:
+                if marker not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+    except OSError:
+        return []
+    return records
+
+
+def token_count(value: object) -> int:
+    """``value`` as a token count, 0 when it isn't a whole number."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def clip(text: str, limit: int = MAX_ENTRY_CHARS) -> str:
     """``text`` trimmed, and cut to ``limit`` characters with a marker if longer."""
     text = text.strip()
@@ -64,7 +94,8 @@ def tool_summary(name: str, arguments: object) -> str:
         except ValueError:
             return clip(f"{name}: {arguments}", 600)
     if isinstance(arguments, dict):
-        for key in ("command", "cmd", "file_path", "path", "pattern", "url",
+        for key in ("command", "cmd", "file_path", "filePath", "path",
+                    "pattern", "url",
                     "query", "description", "prompt"):
             value = arguments.get(key)
             if value:

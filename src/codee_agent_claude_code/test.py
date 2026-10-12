@@ -580,3 +580,66 @@ class ClaudeCodePeepTest(unittest.TestCase):
                 self.assertEqual(ClaudeCodeAgent.peep(SESSION, self.CWD), [])
                 self.assertEqual(
                     ClaudeCodeAgent.peep("../../etc/passwd", self.CWD), [])
+
+
+class ClaudeCodeContextUsageTest(unittest.TestCase):
+    CWD = Path("/srv/codee/my_repo")
+
+    def _usage(self, model: str, input_tokens: int, output_tokens: int = 0,
+               **fields) -> dict:
+        return {"type": "assistant", **fields,
+                "message": {"role": "assistant", "model": model, "content": [],
+                            "usage": {"input_tokens": input_tokens,
+                                      "cache_creation_input_tokens": 1000,
+                                      "cache_read_input_tokens": 40000,
+                                      "output_tokens": output_tokens}}}
+
+    def _usage_of(self, *lines: dict) -> object:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config = Path(temporary_directory)
+            directory = config / "projects" / "-srv-codee-my-repo"
+            directory.mkdir(parents=True)
+            (directory / f"{SESSION}.jsonl").write_text(
+                "".join(json.dumps(line) + "\n" for line in lines),
+                encoding="utf-8")
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: str(config)}):
+                return ClaudeCodeAgent.context_usage(SESSION, self.CWD)
+
+    def test_reads_the_last_calls_tokens_and_counts_the_compactions(
+            self) -> None:
+        usage = self._usage_of(
+            self._usage("claude-opus-5-5", 10),
+            {"type": "system", "subtype": "compact_boundary",
+             "compactMetadata": {"trigger": "auto", "preTokens": 900000}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result",
+                 "content": "grep compact_boundary transcript.jsonl"}]}},
+            self._usage("claude-opus-5-5", 5, 500),
+            self._usage("claude-sonnet-5", 900000, isSidechain=True),
+            self._usage("<synthetic>", 0))
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (41505, 1_000_000, 1))
+
+    def test_an_older_model_has_the_narrow_window(self) -> None:
+        usage = self._usage_of(self._usage("claude-haiku-4-5", 59000))
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (100000, 200_000, 0))
+
+    def test_a_narrow_model_holding_more_than_it_fits_has_the_wide_one(
+            self) -> None:
+        usage = self._usage_of(
+            self._usage("claude-sonnet-4-5-20250929", 300000))
+
+        self.assertEqual(usage.window, 1_000_000)
+
+    def test_a_session_with_no_model_call_yet_says_nothing(self) -> None:
+        self.assertIsNone(self._usage_of(
+            {"type": "user", "message": {"role": "user", "content": "/x"}}))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: temporary_directory}):
+                self.assertIsNone(
+                    ClaudeCodeAgent.context_usage(SESSION, self.CWD))

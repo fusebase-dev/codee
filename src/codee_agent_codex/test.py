@@ -377,3 +377,43 @@ class CodexPeepTest(unittest.TestCase):
             with patch.dict(os.environ, {"CODEX_HOME": temporary_directory}):
                 self.assertEqual(
                     CodexAgent.peep("codee-session-1", Path("/repo")), [])
+
+
+class CodexContextUsageTest(unittest.TestCase):
+    THREAD = "01a03949-7aee-70e0-af79-2b81ba610169"
+
+    def _token_count(self, total: int, window: int) -> dict:
+        return {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"total_tokens": total * 10},
+            "last_token_usage": {"input_tokens": total - 100,
+                                 "cached_input_tokens": total - 1000,
+                                 "output_tokens": 100,
+                                 "total_tokens": total},
+            "model_context_window": window}}}
+
+    def _usage_of(self, *lines: dict) -> object:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            day = Path(temporary_directory) / "sessions" / "2026" / "10" / "01"
+            day.mkdir(parents=True)
+            (day / f"rollout-2026-10-01T10-00-00-{self.THREAD}.jsonl"
+             ).write_text("".join(json.dumps(line) + "\n" for line in lines),
+                          encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": temporary_directory}):
+                return CodexAgent.context_usage(self.THREAD, Path("/repo"))
+
+    def test_reads_the_last_calls_tokens_and_counts_the_compactions(
+            self) -> None:
+        usage = self._usage_of(
+            self._token_count(200000, 258400),
+            {"type": "compacted", "payload": {"message": "summary"}},
+            {"type": "event_msg", "payload": {"type": "context_compacted"}},
+            self._token_count(51863, 258400),
+            {"type": "event_msg",
+             "payload": {"type": "token_count", "info": None}})
+
+        self.assertEqual((usage.tokens, usage.window, usage.compactions),
+                         (51863, 258400, 1))
+
+    def test_a_thread_with_no_model_call_yet_says_nothing(self) -> None:
+        self.assertIsNone(self._usage_of(
+            {"type": "session_meta", "payload": {"id": self.THREAD}}))

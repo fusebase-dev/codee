@@ -5,8 +5,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract.provider import (
-    AbstractCodingAgent, AgentModel, PeepEntry)
-from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
+    AbstractCodingAgent, AgentModel, ContextUsage, PeepEntry)
+from codee_agent_abstract.transcript import (
+    clip, scan_jsonl, tail_jsonl, token_count, tool_summary)
 from codee_agent_claude_code.credentials import config_dir
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
@@ -42,6 +43,19 @@ MODELS = [
     AgentModel("haiku", "Latest Haiku (alias)"),
 ]
 
+# The transcript doesn't say how big the context window is, so it is looked up
+# by model: 1M since the 4.6 generation, 200K before it and on Haiku 4.5.
+WIDE_WINDOW = 1_000_000
+NARROW_WINDOW = 200_000
+_NARROW_WINDOW_MODEL = re.compile(
+    r"^claude-(3|haiku-4|(opus|sonnet)-4(-[015])?(-\d{8})?$)")
+# The CLI's own notices are saved as assistant turns of this "model", with
+# usage all zero; they say nothing about the window.
+SYNTHETIC_MODEL = "<synthetic>"
+# Written to the transcript, as a system line, each time the session is
+# compacted.
+COMPACT_BOUNDARY = "compact_boundary"
+
 
 class ClaudeCodeAgent(AbstractCodingAgent):
     """Runs the ``claude`` CLI in a fresh session, under the id the caller supplies."""
@@ -74,6 +88,34 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         entries = [entry for record in tail_jsonl(path)
                    for entry in _entries(record)]
         return entries[-limit:]
+
+    @classmethod
+    def context_usage(cls, session_id: str,
+                      cwd: Path) -> ContextUsage | None:
+        path = _transcript(session_id, cwd)
+        if path is None:
+            return None
+        tokens, model = 0, ""
+        for record in tail_jsonl(path):
+            message = record.get("message")
+            if (record.get("type") != "assistant" or record.get("isSidechain")
+                    or not isinstance(message, dict)
+                    or message.get("model") == SYNTHETIC_MODEL
+                    or not isinstance(message.get("usage"), dict)):
+                continue
+            usage = message["usage"]
+            tokens = sum(token_count(usage.get(key)) for key in (
+                "input_tokens", "cache_creation_input_tokens",
+                "cache_read_input_tokens", "output_tokens"))
+            model = str(message.get("model") or "")
+        compactions = sum(
+            1 for record in scan_jsonl(path, COMPACT_BOUNDARY.encode())
+            if record.get("type") == "system"
+            and record.get("subtype") == COMPACT_BOUNDARY)
+        if not tokens and not compactions:
+            return None
+        return ContextUsage(tokens, _context_window(model, tokens) if tokens
+                            else 0, compactions)
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
@@ -179,6 +221,17 @@ def _transcript(session_id: str, cwd: Path) -> Path | None:
     if expected.is_file():
         return expected
     return next(projects.glob(f"*/{name}"), None)
+
+
+def _context_window(model: str, tokens: int) -> int:
+    """The context window ``model`` runs with, given ``tokens`` already in it.
+
+    A session holding more than the narrow window must have the wide one,
+    whatever its model looks like.
+    """
+    if _NARROW_WINDOW_MODEL.match(model) and tokens <= NARROW_WINDOW:
+        return NARROW_WINDOW
+    return WIDE_WINDOW
 
 
 def _entries(record: dict) -> list[PeepEntry]:

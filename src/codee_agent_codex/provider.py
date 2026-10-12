@@ -9,8 +9,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract.provider import (
-    AbstractCodingAgent, AgentModel, PeepEntry, resolve_command)
-from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
+    AbstractCodingAgent, AgentModel, ContextUsage, PeepEntry, resolve_command)
+from codee_agent_abstract.transcript import (
+    clip, scan_jsonl, tail_jsonl, token_count, tool_summary)
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -33,6 +34,10 @@ TURN_FAILED = "turn.failed"
 ITEM_COMPLETED = "item.completed"
 ERROR = "error"
 AGENT_MESSAGE = "agent_message"
+# What the rollout, which Peep reads, records after each model call (the tokens
+# it used and the window's size), and each time the thread is compacted.
+TOKEN_COUNT = "token_count"
+COMPACTED = "compacted"
 
 # `codex` has no "list models" command, but its app server answers `model/list`
 # with the account's live catalog — ids, display names and the reasoning effort
@@ -79,6 +84,32 @@ class CodexAgent(AbstractCodingAgent):
         entries = [entry for record in tail_jsonl(path)
                    for entry in _rollout_entries(record)]
         return entries[-limit:]
+
+    @classmethod
+    def context_usage(cls, session_id: str,
+                      cwd: Path) -> ContextUsage | None:
+        path = _rollout(session_id)
+        if path is None:
+            return None
+        tokens = window = 0
+        for record in tail_jsonl(path):
+            payload = record.get("payload")
+            if (record.get("type") != "event_msg"
+                    or not isinstance(payload, dict)
+                    or payload.get("type") != TOKEN_COUNT
+                    or not isinstance(payload.get("info"), dict)):
+                continue
+            info = payload["info"]
+            last = info.get("last_token_usage")
+            tokens = token_count((last if isinstance(last, dict) else {}
+                                  ).get("total_tokens"))
+            window = token_count(info.get("model_context_window"))
+        compactions = sum(
+            1 for record in scan_jsonl(path, f'"{COMPACTED}"'.encode())
+            if record.get("type") == COMPACTED)
+        if not tokens and not compactions:
+            return None
+        return ContextUsage(tokens, window, compactions)
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,

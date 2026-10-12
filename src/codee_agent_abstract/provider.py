@@ -68,6 +68,21 @@ class PeepEntry:
     timestamp: str = ""
 
 
+@dataclass(frozen=True)
+class ContextUsage:
+    """How full a live session's context window is, as the Peep dialog shows it.
+
+    ``tokens`` is what the model's last call put in the window: its prompt and
+    its reply, which the next call carries forward. ``window`` is the size of
+    that window. Either is 0 when the agent didn't write it down.
+    ``compactions`` is how many times the session has been compacted so far.
+    """
+
+    tokens: int = 0
+    window: int = 0
+    compactions: int = 0
+
+
 class AgentResponse(str):
     """Agent text with optional diagnostic output for the run record."""
 
@@ -203,6 +218,16 @@ class AbstractCodingAgent(ABC):
         None means this agent keeps no transcript Codee can read. An empty
         list means it does but nothing is there yet, which is also the answer
         before the CLI has written its first line. Never raises.
+        """
+        return None
+
+    @classmethod
+    def context_usage(cls, session_id: str,
+                      cwd: Path) -> ContextUsage | None:
+        """How full a live session's context window is, read like ``peep``.
+
+        None when this agent keeps no transcript Codee can read, or the
+        transcript says nothing about it yet. Never raises.
         """
         return None
 

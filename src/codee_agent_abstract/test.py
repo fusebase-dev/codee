@@ -7,7 +7,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codee_agent_abstract import acp
-from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
+from codee_agent_abstract.transcript import (
+    clip, scan_jsonl, tail_jsonl, tool_summary)
 from codee_agent_abstract.provider import AgentModel, resolve_command
 
 
@@ -221,6 +222,21 @@ class TranscriptTest(unittest.TestCase):
 
     def test_tail_of_a_missing_file_is_empty(self) -> None:
         self.assertEqual(tail_jsonl(Path("/nonexistent/session.jsonl")), [])
+
+    def test_scan_reads_only_the_lines_carrying_the_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "session.jsonl"
+            path.write_text(
+                json.dumps({"type": "compacted", "n": 1}) + "\n"
+                + json.dumps({"type": "message", "n": 2}) + "\n"
+                + "not json, but compacted\n"
+                + json.dumps({"type": "compacted", "n": 3}) + "\n",
+                encoding="utf-8")
+
+            records = scan_jsonl(path, b"compacted")
+
+        self.assertEqual([record["n"] for record in records], [1, 3])
+        self.assertEqual(scan_jsonl(Path("/nonexistent.jsonl"), b"x"), [])
 
     def test_a_tool_call_is_named_by_its_most_telling_argument(self) -> None:
         self.assertEqual(tool_summary("Bash", {"command": "pytest -q",

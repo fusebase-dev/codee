@@ -10,8 +10,9 @@ from pathlib import Path
 
 from codee_agent_abstract import acp
 from codee_agent_abstract.provider import (
-    AbstractCodingAgent, AgentModel, AgentResponse, PeepEntry)
-from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
+    AbstractCodingAgent, AgentModel, AgentResponse, ContextUsage, PeepEntry)
+from codee_agent_abstract.transcript import (
+    clip, scan_jsonl, tail_jsonl, token_count, tool_summary)
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -26,6 +27,11 @@ RESULT = "result"
 # The session's events log, which Peep reads, also names each tool call as it
 # starts.
 TOOL_EXECUTION_START = "tool.execution_start"
+# It records each model call's tokens and prompt limit, and each compaction,
+# with what is left in the window after it. Sub-agents log theirs to the same
+# file under an ``agentId``; only the main agent's say how full the session is.
+USAGE_RECORD = "session.usage_record"
+COMPACTION_COMPLETE = "session.compaction_complete"
 
 # What a session id has to look like before it is put into a path.
 _SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -147,6 +153,38 @@ class GitHubCopilotAgent(AbstractCodingAgent):
         entries = [entry for record in tail_jsonl(path)
                    for entry in _events_entries(record)]
         return entries[-limit:]
+
+    @classmethod
+    def context_usage(cls, session_id: str,
+                      cwd: Path) -> ContextUsage | None:
+        path = _events_file(session_id)
+        if path is None:
+            return None
+        tokens = window = 0
+        for record in tail_jsonl(path):
+            data = record.get("data")
+            if record.get("agentId") or not isinstance(data, dict):
+                continue
+            kind = record.get("type")
+            if kind == USAGE_RECORD and isinstance(data.get("usage"), dict):
+                usage = data["usage"]
+                if usage.get("parentToolCallId"):
+                    continue
+                tokens = (token_count(usage.get("inputTokens"))
+                          + token_count(usage.get("outputTokens")))
+                window = token_count(usage.get("maxPromptTokens")) or window
+            elif kind == COMPACTION_COMPLETE and data.get("success"):
+                tokens = token_count(data.get("postCompactionTokens"))
+                window = token_count(data.get("tokenLimit")) or window
+        compactions = sum(
+            1 for record in scan_jsonl(path, COMPACTION_COMPLETE.encode())
+            if record.get("type") == COMPACTION_COMPLETE
+            and not record.get("agentId")
+            and isinstance(record.get("data"), dict)
+            and record["data"].get("success"))
+        if not tokens and not compactions:
+            return None
+        return ContextUsage(tokens, window, compactions)
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,

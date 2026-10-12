@@ -1,13 +1,16 @@
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from codee_agent_abstract import acp
 from codee_agent_abstract.provider import (
-    AbstractCodingAgent, AgentModel, resolve_command)
+    AbstractCodingAgent, AgentModel, ContextUsage, PeepEntry, resolve_command)
+from codee_agent_abstract.transcript import clip, token_count, tool_summary
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -21,6 +24,30 @@ log = get_logger(__name__)
 ACP_COMMAND = ["opencode", "acp"]
 # How `--model` names a variant: `provider/model#variant`.
 VARIANT_SEPARATOR = "#"
+
+# OpenCode keeps every session in one SQLite database under its data directory,
+# a row per message, and the models.dev catalog it runs on (each model's
+# context limits) in the same file. Peep reads both, read-only.
+DATABASE = "opencode.db"
+CATALOG_KEY = "models-dev:catalog"
+_LAST_ASSISTANT_MESSAGES = (
+    "SELECT data FROM session_message WHERE session_id = ? "
+    "AND type = 'assistant' ORDER BY seq DESC LIMIT ?")
+# A message's tokens stay zero until its call finishes, so the last one that
+# has any is the one that says how full the window is.
+_LAST_USAGE = (
+    "SELECT data FROM session_message WHERE session_id = ? "
+    "AND type = 'assistant' "
+    "AND coalesce(json_extract(data, '$.tokens.input'), 0) "
+    "+ coalesce(json_extract(data, '$.tokens.cache.read'), 0) "
+    "+ coalesce(json_extract(data, '$.tokens.cache.write'), 0) > 0 "
+    "ORDER BY seq DESC LIMIT 1")
+_COMPACTIONS = (
+    "SELECT count(*) FROM session_message WHERE session_id = ? "
+    "AND type = 'compaction' AND json_extract(data, '$.status') = 'completed'")
+_MODEL_LIMIT = (
+    "SELECT json_extract(json_extract(value, '$.body'), ?) FROM kv "
+    "WHERE key = ?")
 
 
 class OpenCodeAgent(AbstractCodingAgent):
@@ -61,6 +88,43 @@ class OpenCodeAgent(AbstractCodingAgent):
         except Exception as exc:
             log.warning("Could not read the opencode model catalog: %s", exc)
             return []
+
+    @classmethod
+    def peep(cls, session_id: str, cwd: Path,
+             limit: int = 10) -> list[PeepEntry] | None:
+        # ``cwd`` doesn't matter: OpenCode files every project's sessions in
+        # the one database.
+        rows = _query(_LAST_ASSISTANT_MESSAGES, (session_id, limit))
+        if rows is None:
+            return None
+        entries = [entry for (data,) in reversed(rows)
+                   for entry in _message_entries(data)]
+        return entries[-limit:]
+
+    @classmethod
+    def context_usage(cls, session_id: str,
+                      cwd: Path) -> ContextUsage | None:
+        rows = _query(_LAST_USAGE, (session_id,)) or []
+        message = _json_object(rows[0][0]) if rows else {}
+        tokens = message.get("tokens")
+        used = window = 0
+        if isinstance(tokens, dict):
+            cache = tokens.get("cache")
+            cache = cache if isinstance(cache, dict) else {}
+            # The sum OpenCode's own sidebar shows as the context in use.
+            used = (sum(token_count(tokens.get(key))
+                        for key in ("input", "output", "reasoning"))
+                    + token_count(cache.get("read"))
+                    + token_count(cache.get("write")))
+            model = message.get("model")
+            if used and isinstance(model, dict):
+                window = _context_window(str(model.get("providerID") or ""),
+                                         str(model.get("id") or ""))
+        counted = _query(_COMPACTIONS, (session_id,)) or [(0,)]
+        compactions = token_count(counted[0][0])
+        if not used and not compactions:
+            return None
+        return ContextUsage(used, window, compactions)
 
     def skill_prompt(self, slug: str, path: Path, argument: str = "",
                      argument_name: str = "") -> str:
@@ -182,6 +246,101 @@ def _with_variant(model: str, effort: str) -> str:
                         "ignoring effort %r", effort)
         return model
     return f"{model}{VARIANT_SEPARATOR}{effort}"
+
+
+def _database() -> Path:
+    """Where OpenCode keeps its database: ``opencode/`` under XDG_DATA_HOME."""
+    configured = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(configured) if configured else Path.home() / ".local" / "share"
+    return base / "opencode" / DATABASE
+
+
+def _query(sql: str, parameters: tuple) -> list[tuple] | None:
+    """The rows ``sql`` reads from OpenCode's database, opened read-only.
+
+    [] when there is no database yet or it can't be read just now. None when
+    it has no ``session_message`` table: an OpenCode older than 2.0, which
+    keeps its sessions another way.
+    """
+    path = _database()
+    if not path.is_file():
+        return []
+    try:
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True,
+                                     timeout=2)
+    except sqlite3.Error:
+        return []
+    try:
+        return connection.execute(sql, parameters).fetchall()
+    except sqlite3.OperationalError as exc:
+        return None if "no such table: session_message" in str(exc) else []
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+
+
+def _json_object(data: object) -> dict:
+    """``data`` parsed as a JSON object, {} when it is anything else."""
+    try:
+        value = json.loads(data) if isinstance(data, str) else None
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _iso(milliseconds: object) -> str:
+    """An epoch time in milliseconds as ISO UTC, "" when there is none."""
+    if not token_count(milliseconds):
+        return ""
+    moment = datetime.fromtimestamp(milliseconds / 1000, timezone.utc)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _message_entries(data: str) -> list[PeepEntry]:
+    """The steps one assistant message carries: what the model thought, said or ran.
+
+    Tool output is left out; the call says what the agent is doing.
+    """
+    message = _json_object(data)
+    time = message.get("time")
+    created = time.get("created") if isinstance(time, dict) else None
+    content = message.get("content")
+    entries = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict):
+            continue
+        time = block.get("time")
+        timestamp = _iso((time.get("created") if isinstance(time, dict)
+                          else None) or created)
+        kind = block.get("type")
+        text = str(block.get("text") or "")
+        if kind == "reasoning" and text.strip():
+            entries.append(PeepEntry("thinking", clip(text), timestamp))
+        elif kind == "text" and text.strip():
+            entries.append(PeepEntry("text", clip(text), timestamp))
+        elif kind == "tool":
+            state = block.get("state")
+            entries.append(PeepEntry("tool", tool_summary(
+                str(block.get("name") or "tool"),
+                state.get("input") if isinstance(state, dict) else None),
+                timestamp))
+    return entries
+
+
+def _context_window(provider: str, model: str) -> int:
+    """How many tokens ``model`` takes in, from OpenCode's models.dev catalog.
+
+    Its input limit where the catalog gives one (that is what OpenCode
+    compacts against), else its whole context. 0 for a model the catalog
+    doesn't list, such as one configured by hand.
+    """
+    if not provider or not model or '"' in provider + model:
+        return 0
+    rows = _query(_MODEL_LIMIT,
+                  (f'$."{provider}".models."{model}".limit', CATALOG_KEY))
+    limit = _json_object(rows[0][0]) if rows else {}
+    return token_count(limit.get("input")) or token_count(limit.get("context"))
 
 
 def _relative(path: Path, cwd: Path) -> str:
