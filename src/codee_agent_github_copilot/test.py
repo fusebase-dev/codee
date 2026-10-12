@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -302,6 +303,70 @@ class CopilotModelCatalogTest(unittest.TestCase):
         with patch("codee_agent_abstract.acp.subprocess.Popen",
                    side_effect=FileNotFoundError("copilot")):
             self.assertEqual(GitHubCopilotAgent.list_models(), [])
+
+
+class GitHubCopilotPeepTest(unittest.TestCase):
+    def _write_events(self, home: str, *records: dict) -> None:
+        folder = Path(home) / "session-state" / SESSION
+        folder.mkdir(parents=True)
+        (folder / "events.jsonl").write_text(
+            "".join(json.dumps(record) + "\n" for record in records),
+            encoding="utf-8")
+
+    def test_reads_the_last_steps_from_the_sessions_events(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            self._write_events(
+                home,
+                {"type": "session.start", "data": {"sessionId": SESSION}},
+                {"type": "user.message", "data": {"content": "Do the task"}},
+                {"type": "assistant.message",
+                 "timestamp": "2026-10-01T10:00:00Z",
+                 "data": {"content": "",
+                          "reasoningText": "Reading the logs first.",
+                          "toolRequests": [{"name": "bash", "arguments": {
+                              "command": "tail app.log"}}]}},
+                {"type": "tool.execution_start",
+                 "timestamp": "2026-10-01T10:00:01Z",
+                 "data": {"toolName": "bash",
+                          "arguments": {"command": "tail app.log"}}},
+                {"type": "tool.execution_complete",
+                 "data": {"result": {"content": "secret output"}}},
+                {"type": "assistant.message",
+                 "data": {"content": "Found it.", "toolRequests": []}},
+            )
+            with patch.dict(os.environ, {"COPILOT_HOME": home}):
+                steps = GitHubCopilotAgent.peep(SESSION, Path("/repo"))
+
+        self.assertEqual(
+            [(step.kind, step.text) for step in steps],
+            [("thinking", "Reading the logs first."),
+             ("tool", "bash: tail app.log"),
+             ("text", "Found it.")])
+        self.assertEqual(steps[0].timestamp, "2026-10-01T10:00:00Z")
+        self.assertEqual(steps[1].timestamp, "2026-10-01T10:00:01Z")
+
+    def test_keeps_only_the_last_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            self._write_events(home, *[
+                {"type": "assistant.message", "data": {"content": f"Step {n}"}}
+                for n in range(5)])
+            with patch.dict(os.environ, {"COPILOT_HOME": home}):
+                steps = GitHubCopilotAgent.peep(SESSION, Path("/repo"), 2)
+
+        self.assertEqual([step.text for step in steps], ["Step 3", "Step 4"])
+
+    def test_a_session_not_started_yet_has_no_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"COPILOT_HOME": home}):
+                self.assertEqual(
+                    GitHubCopilotAgent.peep(SESSION, Path("/repo")), [])
+
+    def test_a_session_id_that_is_not_a_plain_name_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            with patch.dict(os.environ, {"COPILOT_HOME": home}):
+                self.assertEqual(
+                    GitHubCopilotAgent.peep("../outside", Path("/repo")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

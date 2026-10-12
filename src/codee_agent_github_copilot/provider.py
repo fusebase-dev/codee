@@ -1,11 +1,14 @@
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract import acp
-from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel, AgentResponse
+from codee_agent_abstract.provider import (
+    AbstractCodingAgent, AgentModel, AgentResponse, PeepEntry)
+from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -17,6 +20,12 @@ log = get_logger(__name__)
 ASSISTANT_MESSAGE = "assistant.message"
 SESSION_ERROR = "session.error"
 RESULT = "result"
+# The session's events log, which Peep reads, also names each tool call as it
+# starts.
+TOOL_EXECUTION_START = "tool.execution_start"
+
+# What a session id has to look like before it is put into a path.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # `copilot` has no "list models" command, but its Agent Client Protocol mode
 # answers session/new with the account's live catalog — ids and display names
@@ -95,6 +104,17 @@ class GitHubCopilotAgent(AbstractCodingAgent):
             # or isn't logged in must not break the admin UI.
             log.warning("Could not read the copilot model catalog: %s", exc)
             return []
+
+    @classmethod
+    def peep(cls, session_id: str, cwd: Path,
+             limit: int = 10) -> list[PeepEntry] | None:
+        # ``cwd`` doesn't matter: Copilot files a session by its id alone.
+        path = _events_file(session_id)
+        if path is None:
+            return []
+        entries = [entry for record in tail_jsonl(path)
+                   for entry in _events_entries(record)]
+        return entries[-limit:]
 
     def run(self, user_message: str, session_id: str, model: str = "",
             on_session_id: Callable[[str], None] | None = None,
@@ -176,6 +196,48 @@ class GitHubCopilotAgent(AbstractCodingAgent):
                 f"Copilot run produced no response: {_detail(errors, stderr)}"
             )
         return AgentResponse(reply, stderr if debug_enabled else "")
+
+
+def _events_file(session_id: str) -> Path | None:
+    """The events log Copilot is writing ``session_id`` to, or None before it starts.
+
+    Copilot keeps it as ``session-state/<session id>/events.jsonl`` under
+    ``COPILOT_HOME``, and the id is the one Codee hands the CLI.
+    """
+    if not _SESSION_ID.match(session_id or ""):
+        return None
+    configured = os.environ.get("COPILOT_HOME", "").strip()
+    home = Path(configured) if configured else Path.home() / ".copilot"
+    path = home / "session-state" / session_id / "events.jsonl"
+    return path if path.is_file() else None
+
+
+def _events_entries(record: dict) -> list[PeepEntry]:
+    """The steps one events line carries: what the model thought, said or ran.
+
+    A message's tool requests are left to the ``tool.execution_start`` lines
+    that follow, which name the same calls, so each shows once. Tool output is
+    left out; the call says what the agent is doing.
+    """
+    data = record.get("data")
+    if not isinstance(data, dict):
+        return []
+    timestamp = str(record.get("timestamp") or "")
+    kind = record.get("type")
+    if kind == ASSISTANT_MESSAGE:
+        entries = []
+        reasoning = str(data.get("reasoningText") or "")
+        if reasoning.strip():
+            entries.append(PeepEntry("thinking", clip(reasoning), timestamp))
+        content = str(data.get("content") or "")
+        if content.strip():
+            entries.append(PeepEntry("text", clip(content), timestamp))
+        return entries
+    if kind == TOOL_EXECUTION_START:
+        return [PeepEntry("tool", tool_summary(
+            str(data.get("toolName") or "tool"), data.get("arguments")),
+            timestamp)]
+    return []
 
 
 def _relative(path: Path, cwd: Path) -> str:

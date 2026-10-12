@@ -3778,12 +3778,12 @@ class PeepJobTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             service = self._service(Path(temporary_directory))
             job_id = runs_db.start_job("sid-1", "/nightly",
-                                       agent="GitHub Copilot",
+                                       agent="OpenCode",
                                        main_context=service.context)
 
             result = service.peep_job(job_id)
 
-        self.assertEqual(result, {"agent": "GitHub Copilot", "entries": None})
+        self.assertEqual(result, {"agent": "OpenCode", "entries": None})
 
     def test_a_finished_session_is_none(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
