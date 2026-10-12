@@ -640,9 +640,27 @@ def _skill_run_summary(
     if skill.effort:
         lines.append(f"Effort: {skill.effort}")
     if skill.context_tier:
-        lines.append(f"Context: {skill.context_tier}")
+        lines.append(f"Context: {context_tier_label(skill.context_tier)}")
     lines.append(f"Skill: {skill.name}")
     return lines
+
+
+def context_tier_label(tier: str) -> str:
+    """A skill's ``x-codee-context-tier:`` as a person reads it.
+
+    The window's own size ("1M") is only known from the agent's model catalog,
+    which takes a CLI run to read, so places that list skills say the tier.
+    """
+    return tier.replace("_", " ")
+
+
+def _skill_model_line(skill: IssueTriggeredSkill) -> str:
+    """The model a skill runs on, with its effort and context tier when set."""
+    return " \u00b7 ".join(filter(None, [
+        skill.model or WORKFLOW_DEFAULT_MODEL_LABEL,
+        skill.effort,
+        context_tier_label(skill.context_tier),
+    ]))
 
 
 def _with_agent_tooltips(
@@ -696,10 +714,10 @@ def _node_with_agent_tooltip(
         if lines:
             lines.append("")
         lines.extend(_skill_run_summary(skill, default_agent))
-    # The models named under the status name on the node itself. Skills sharing
-    # an entry status often ask for the same one, so it is said once.
-    models = list(dict.fromkeys(
-        skill.model or WORKFLOW_DEFAULT_MODEL_LABEL for skill in handled))
+    # The models named under the status name on the node itself, each with its
+    # effort and context tier. Skills sharing an entry status often ask for the
+    # same one, so it is said once.
+    models = list(dict.fromkeys(_skill_model_line(skill) for skill in handled))
     return {
         **node,
         "className": " ".join(

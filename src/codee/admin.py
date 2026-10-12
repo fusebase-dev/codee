@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from codee.admin_api import api_app
 from codee.admin_service import (
     AGENTS_FILE, TASKS_CHECKS, WORKFLOW_HIGHLIGHT_GROUPS, AdminService,
-    SKILL_TYPES, WorkflowGeneration, normalize_work_items)
+    SKILL_TYPES, WorkflowGeneration, context_tier_label, normalize_work_items)
 from codee.workflow_graph import workflow_graph
 from codee_main_context.context import (
     DEFAULT_ISSUE_TYPES, TasksProvider, credential_field)
@@ -50,7 +50,8 @@ def _skill_summary(skill: dict[str, str]) -> SkillSummary:
     """One listing row, with its agent named the way the editor's picker does."""
     return SkillSummary(**{
         **skill,
-        "agent": AGENT_NAMES.get(skill["agent"], DEFAULT_AGENT_OPTION)})
+        "agent": AGENT_NAMES.get(skill["agent"], DEFAULT_AGENT_OPTION),
+        "context_tier": context_tier_label(skill["context_tier"])})
 
 
 def _model_option(models: list["ModelOption"],
@@ -114,6 +115,9 @@ class SkillSummary(BaseModel):
     agent: str = ""
     model: str = ""
     effort: str = ""
+    # The skill's `x-codee-context-tier:` as a person reads it, empty for the
+    # model's default window.
+    context_tier: str = ""
     issue_status: str = ""
     issue_type: str = ""
 
@@ -2615,6 +2619,9 @@ def skill_card(skill: SkillSummary) -> rx.Component:
             rx.cond(skill.effort != "",
                     rx.code(skill.effort, font_size="0.72rem",
                             color_scheme="gray")),
+            rx.cond(skill.context_tier != "",
+                    rx.code(skill.context_tier, font_size="0.72rem",
+                            color_scheme="gray", title="Context window")),
             spacing="2", align="center", width="100%",
             class_name="skill-card-meta"),
         rx.cond(
