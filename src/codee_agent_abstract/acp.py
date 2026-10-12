@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from codee_agent_abstract.provider import AgentModel
+from codee_agent_abstract.provider import AgentModel, resolve_command
 from codee_main_context.logging import get_logger
 
 
@@ -39,7 +39,7 @@ def fetch_models(command: list[str]) -> list[AgentModel]:
     that into an empty catalog, since the picker takes a typed model id too.
     """
     process = subprocess.Popen(
-        command,
+        resolve_command(command),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

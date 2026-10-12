@@ -7,6 +7,21 @@ from pathlib import Path
 from codee_main_context.context import Settings
 
 
+def resolve_command(command: list[str]) -> list[str]:
+    """``command`` with its executable looked up on PATH the way a shell would.
+
+    On Windows an npm-installed CLI is a ``.cmd`` shim (``opencode.cmd``), and
+    Popen only tries ``.exe`` on a bare name, so it can't start a CLI that
+    ``is_installed`` finds. A name that isn't on PATH is left as it is, so the
+    spawn still fails with ``FileNotFoundError``.
+
+    Only for commands whose arguments are fixed: a ``.cmd`` runs under cmd.exe,
+    which reinterprets ``&``, ``%`` and newlines in free text such as a prompt.
+    """
+    path = shutil.which(command[0])
+    return [path, *command[1:]] if path else command
+
+
 @dataclass(frozen=True)
 class AgentModel:
     """One model a coding agent can run, as the admin UI shows and stores it.

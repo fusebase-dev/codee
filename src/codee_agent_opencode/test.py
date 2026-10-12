@@ -188,6 +188,19 @@ class OpenCodeRunTest(unittest.TestCase):
         self.assertEqual([model.id for model in models], [
             "anthropic/claude-opus-4-1", "openai/gpt-5"])
 
+    def test_the_models_command_runs_the_cli_on_path(self) -> None:
+        # On Windows the CLI is an npm .cmd shim that a bare name never finds.
+        shim = r"C:\Users\me\AppData\Roaming\npm\opencode.CMD"
+        result = Mock(returncode=0, stderr="", stdout="openai/gpt-5\n")
+        with patch("codee_agent_opencode.provider.acp.fetch_models",
+                   return_value=[]), \
+                patch("codee_agent_abstract.provider.shutil.which",
+                      return_value=shim), \
+                patch("subprocess.run", return_value=result) as run:
+            OpenCodeAgent.list_models()
+
+        self.assertEqual(run.call_args.args[0], [shim, "models"])
+
 
 if __name__ == "__main__":
     unittest.main()

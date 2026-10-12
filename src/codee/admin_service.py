@@ -1022,7 +1022,11 @@ class AdminService:
                     print(f"[admin] Failed to list models for "
                           f"{agent_key.value}: {error}")
                     models = []
-                self._models_cache[agent_key] = models
+                # An empty catalog is usually a CLI that couldn't be started or
+                # wasn't signed in yet, so it is asked again next time rather
+                # than left empty until a restart.
+                if models:
+                    self._models_cache[agent_key] = models
         return [{"id": model.id, "name": model.name,
                  "efforts": list(model.efforts),
                  "default_effort": model.default_effort}

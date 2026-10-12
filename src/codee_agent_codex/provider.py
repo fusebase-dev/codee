@@ -9,7 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract.provider import (
-    AbstractCodingAgent, AgentModel, PeepEntry)
+    AbstractCodingAgent, AgentModel, PeepEntry, resolve_command)
 from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
@@ -297,7 +297,7 @@ def _fetch_app_server_models() -> list[AgentModel]:
     then ``model/list``. No thread is started and no prompt is ever sent.
     """
     process = subprocess.Popen(
-        ["codex", "app-server"],
+        resolve_command(["codex", "app-server"]),
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

@@ -6,7 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 from codee_agent_abstract import acp
-from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_abstract.provider import (
+    AbstractCodingAgent, AgentModel, resolve_command)
 from codee_main_context.context import Settings
 from codee_main_context.logging import get_logger
 
@@ -42,7 +43,7 @@ class OpenCodeAgent(AbstractCodingAgent):
             log.debug("Could not read the opencode catalog over ACP: %s", exc)
         try:
             result = subprocess.run(
-                [cls.CLI_COMMAND, "models"],
+                resolve_command([cls.CLI_COMMAND, "models"]),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

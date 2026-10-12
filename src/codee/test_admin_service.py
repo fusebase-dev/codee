@@ -2785,6 +2785,18 @@ class AdminServiceAgentModelsTest(unittest.TestCase):
                           side_effect=RuntimeError("copilot is not logged in")):
             self.assertEqual(service.list_agent_models(), [])
 
+    def test_an_empty_catalog_is_asked_for_again_next_time(self) -> None:
+        # A CLI that couldn't be started or signed in yet would otherwise leave
+        # the picker empty until the admin process restarts.
+        service = self._service(CodingAgent.GITHUB_COPILOT)
+
+        with patch.object(GitHubCopilotAgent, "list_models",
+                          side_effect=[[], [AgentModel("gpt-6", "GPT-6")]]):
+            self.assertEqual(service.list_agent_models(), [])
+            self.assertEqual(service.list_agent_models(),
+                             [{"id": "gpt-6", "name": "GPT-6",
+                               "efforts": [], "default_effort": ""}])
+
 
 class AdminServiceAgentsFileTest(unittest.TestCase):
     def _service(self, root: Path) -> AdminService:

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from codee_agent_abstract import acp
 from codee_agent_abstract.transcript import clip, tail_jsonl, tool_summary
-from codee_agent_abstract.provider import AgentModel
+from codee_agent_abstract.provider import AgentModel, resolve_command
 
 
 def _effort_option(values: list[str], current: str) -> dict:
@@ -79,7 +79,9 @@ class _FakeServer:
 class AcpCatalogTest(unittest.TestCase):
     def _fetch(self, server: _FakeServer) -> list[AgentModel]:
         with patch("codee_agent_abstract.acp.subprocess.Popen",
-                   return_value=server) as popen:
+                   return_value=server) as popen, \
+                patch("codee_agent_abstract.provider.shutil.which",
+                      return_value=None):
             models = acp.fetch_models(["agent", "--acp"])
         self.assertEqual(popen.call_args.args[0], ["agent", "--acp"])
         self.assertEqual(popen.call_args.kwargs["encoding"], "utf-8")
@@ -139,6 +141,33 @@ class AcpCatalogTest(unittest.TestCase):
         self.assertEqual(self._fetch(server), [AgentModel("m1", "M1")])
         self.assertNotIn("session/set_config_option",
                          [request["method"] for request in server.requests])
+
+
+class ResolveCommandTest(unittest.TestCase):
+    def test_an_npm_shim_is_spawned_by_the_path_which_finds(self) -> None:
+        # Popen only appends .exe to a bare name on Windows, so `opencode`
+        # never reaches the opencode.CMD npm installs.
+        shim = r"C:\Users\me\AppData\Roaming\npm\opencode.CMD"
+        with patch("codee_agent_abstract.provider.shutil.which",
+                   return_value=shim):
+            self.assertEqual(resolve_command(["opencode", "acp"]),
+                             [shim, "acp"])
+
+    def test_a_cli_not_on_path_is_left_to_fail_as_before(self) -> None:
+        with patch("codee_agent_abstract.provider.shutil.which",
+                   return_value=None):
+            self.assertEqual(resolve_command(["opencode", "acp"]),
+                             ["opencode", "acp"])
+
+    def test_the_acp_server_is_started_from_the_resolved_path(self) -> None:
+        with patch("codee_agent_abstract.provider.shutil.which",
+                   return_value="/opt/bin/agent"), \
+                patch("codee_agent_abstract.acp.subprocess.Popen",
+                      side_effect=FileNotFoundError("agent")) as popen, \
+                self.assertRaises(FileNotFoundError):
+            acp.fetch_models(["agent", "--acp"])
+
+        self.assertEqual(popen.call_args.args[0], ["/opt/bin/agent", "--acp"])
 
 
 class AcpAwaitResultTest(unittest.TestCase):
