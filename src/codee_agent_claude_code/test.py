@@ -286,6 +286,109 @@ class ClaudeCodeCredentialsTest(unittest.TestCase):
         self.assertEqual([path.name for path in self.home.iterdir()],
                          [credentials.CREDENTIALS_NAME])
 
+    PROFILE = {
+        "account": {"uuid": "acc-2", "email": "two@example.com",
+                    "display_name": "Two"},
+        "organization": {"uuid": "org-2", "name": "Two Ltd",
+                         "has_extra_usage_enabled": False},
+    }
+
+    def test_the_signed_in_account_is_named_in_the_global_config(self) -> None:
+        config = self.home / credentials.GLOBAL_CONFIG_NAME
+        config.write_text(json.dumps({
+            "numStartups": 4,
+            "oauthAccount": {"emailAddress": "one@example.com",
+                             "organizationRole": "admin"}}))
+
+        self.assertTrue(credentials.write_oauth_account(self.PROFILE))
+
+        stored = json.loads(config.read_text())
+        self.assertEqual(stored["numStartups"], 4)
+        # Replaced, not merged: the old account's role must not describe
+        # the new one.
+        self.assertEqual(stored["oauthAccount"], {
+            "accountUuid": "acc-2", "emailAddress": "two@example.com",
+            "displayName": "Two", "organizationUuid": "org-2",
+            "organizationName": "Two Ltd", "hasExtraUsageEnabled": False})
+
+    def test_a_cli_that_never_ran_gets_no_global_config(self) -> None:
+        self.assertFalse(credentials.write_oauth_account(self.PROFILE))
+
+        self.assertFalse(
+            (self.home / credentials.GLOBAL_CONFIG_NAME).exists())
+
+
+class ClaudeCodeKeychainTest(unittest.TestCase):
+    """On macOS the CLI reads its credentials from the Keychain first."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        home = Path(self._temporary.name)
+        self._uses_keychain = credentials._uses_keychain
+        # The file goes to a temp home; the Keychain is never really touched.
+        for patcher in (patch.object(Path, "home", return_value=home),
+                        patch.object(credentials, "_uses_keychain",
+                                     return_value=True),
+                        patch.dict(os.environ, {"USER": "someone"})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        os.environ.pop(credentials.CONFIG_DIR_ENV, None)
+        self.path = home / ".claude" / credentials.CREDENTIALS_NAME
+
+    @staticmethod
+    def _found(payload: dict) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
+
+    def test_the_keychain_wins_over_the_file(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(
+            {"claudeAiOauth": {"accessToken": "from-file"}}))
+        with patch("subprocess.run", return_value=self._found(
+                {"claudeAiOauth": {"accessToken": "from-keychain"}})):
+            self.assertEqual(credentials.read_access_token(), "from-keychain")
+
+    def test_signing_in_writes_the_keychain_and_the_file(self) -> None:
+        existing = {"claudeAiOauth": {"accessToken": "old",
+                                      "subscriptionType": "max"},
+                    "mcpOAuth": {"kept": True}}
+        with patch("subprocess.run", side_effect=[
+                self._found(existing),
+                subprocess.CompletedProcess([], 0, "", "")]) as run:
+            credentials.write_credentials("token-2", "refresh-2", 2)
+
+        command = run.call_args_list[1]
+        self.assertEqual(command.args[0], ["security", "-i"])
+        # The secret goes in on stdin, never on the command line.
+        script = command.kwargs["input"]
+        self.assertIn('-a "someone" -s "Claude Code-credentials"', script)
+        written = json.loads(bytes.fromhex(
+            script.split('-X "')[1].split('"')[0]))
+        self.assertEqual(written["claudeAiOauth"]["accessToken"], "token-2")
+        self.assertEqual(written["claudeAiOauth"]["subscriptionType"], "max")
+        self.assertEqual(written["mcpOAuth"], {"kept": True})
+        self.assertEqual(json.loads(self.path.read_text())
+                         ["claudeAiOauth"]["accessToken"], "token-2")
+
+    def test_a_keychain_that_refuses_the_write_is_an_error(self) -> None:
+        with patch("subprocess.run", side_effect=[
+                subprocess.CompletedProcess([], 44, "", "not found"),
+                subprocess.CompletedProcess([], 1, "", "denied")]), \
+                self.assertRaises(credentials.CredentialsUnwritable):
+            credentials.write_credentials("token-2", "refresh-2", 2)
+
+    def test_a_moved_config_dir_leaves_the_default_item_alone(self) -> None:
+        # The CLI files a moved config's credentials under another item name,
+        # so the default item would be the wrong one to write.
+        uses_keychain = self._uses_keychain
+        with patch.object(credentials.sys, "platform", "darwin"), \
+                patch.object(credentials.shutil, "which",
+                             return_value="/usr/bin/security"):
+            self.assertTrue(uses_keychain())
+            with patch.dict(os.environ,
+                            {credentials.CONFIG_DIR_ENV: "/elsewhere"}):
+                self.assertFalse(uses_keychain())
+
 
 class ClaudeCodeAccountTest(unittest.TestCase):
     """Reading which account an access key belongs to."""

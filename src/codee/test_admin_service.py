@@ -519,6 +519,84 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                          ["one@example.com"])
         self.assertTrue(accounts[0].in_use)
 
+    # A refresh window that will not have closed by the time the test runs.
+    NEVER_EXPIRES = 4102444800000  # 2100-01-01
+
+    def _claude_home(self) -> Path:
+        """Point the CLI's config at a temp dir, so nothing real is written."""
+        home = self.directory / "claude-home"
+        home.mkdir()
+        environment = patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(home)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        return home
+
+    def test_setting_an_account_current_signs_the_cli_in_as_it(self) -> None:
+        home = self._claude_home()
+        (home / ".claude.json").write_text(json.dumps(
+            {"oauthAccount": {"emailAddress": "one@example.com"}}))
+        self._connect("one@example.com")
+        second_tokens = claude_oauth.Tokens(
+            "access-2", "refresh-2", expires_at=1789300823639,
+            refresh_expires_at=self.NEVER_EXPIRES, scopes=("user:profile",),
+            subscription_type="pro")
+        self._connect("two@example.com", tokens=second_tokens)
+        second = self.service.claude_code_accounts()[1]
+
+        with patch("codee.admin_service.ensure_fresh",
+                   side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_profile", return_value={
+                    "account": {"uuid": "acc-2",
+                                "email": "two@example.com"}}):
+            switched, message = self.service.use_claude_code_account(second.id)
+
+        self.assertTrue(switched, message)
+        self.assertTrue(self.service.claude_code_accounts()[1].in_use)
+        oauth = json.loads((home / ".credentials.json").read_text())[
+            "claudeAiOauth"]
+        self.assertEqual(oauth["accessToken"], "access-2")
+        self.assertEqual(oauth["refreshToken"], "refresh-2")
+        self.assertEqual(oauth["subscriptionType"], "pro")
+        self.assertEqual(
+            json.loads((home / ".claude.json").read_text())["oauthAccount"],
+            {"accountUuid": "acc-2", "emailAddress": "two@example.com"})
+
+    def test_an_unreadable_profile_does_not_undo_the_switch(self) -> None:
+        home = self._claude_home()
+        self._connect("one@example.com", tokens=claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=1789300823639,
+            refresh_expires_at=self.NEVER_EXPIRES))
+
+        with patch("codee.admin_service.ensure_fresh",
+                   side_effect=lambda a, c: a), \
+                patch("codee.admin_service.fetch_profile",
+                      side_effect=AccountUnavailable("no route")):
+            switched, _ = self.service.use_claude_code_account(
+                self.service.claude_code_accounts()[0].id)
+
+        self.assertTrue(switched)
+        self.assertTrue((home / ".credentials.json").exists())
+
+    def test_an_account_that_needs_signing_in_again_is_not_switched_to(self) -> None:
+        home = self._claude_home()
+        expired = claude_oauth.Tokens(
+            "access-1", "refresh-1", expires_at=1, refresh_expires_at=1)
+        self._connect("one@example.com", tokens=expired)
+
+        switched, message = self.service.use_claude_code_account(
+            self.service.claude_code_accounts()[0].id)
+
+        self.assertFalse(switched)
+        self.assertIn("connected again", message)
+        self.assertFalse((home / ".credentials.json").exists())
+
+    def test_a_disconnected_account_is_not_switched_to(self) -> None:
+        self._claude_home()
+
+        switched, _ = self.service.use_claude_code_account(42)
+
+        self.assertFalse(switched)
+
     def test_disconnecting_an_account_forgets_its_tokens(self) -> None:
         self._connect()
         account = self.service.claude_code_accounts()[0]

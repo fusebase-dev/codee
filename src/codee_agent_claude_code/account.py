@@ -31,6 +31,21 @@ def fetch_account(access_token: str) -> str:
 
     Raises :class:`AccountUnavailable` when there is no answer to show.
     """
+    label = read_account(fetch_profile(access_token))
+    if not label:
+        raise AccountUnavailable("the profile named no account")
+    return label
+
+
+def fetch_profile(access_token: str) -> dict:
+    """The whole profile response for one key: the account and its organization.
+
+    What :func:`fetch_account` reads its label from, and what signing the CLI
+    in needs in full — it records the account's ids and organization next to
+    the token, not just the email.
+
+    Raises :class:`AccountUnavailable` when there is no answer to read.
+    """
     try:
         response = oauth.get(PROFILE_PATH, access_token)
     except oauth.OAuthApiError as error:
@@ -47,10 +62,7 @@ def fetch_account(access_token: str) -> str:
             if response.status_code in (401, 403)
             else f"HTTP {response.status_code}{detail}")
 
-    label = read_account(response.payload)
-    if not label:
-        raise AccountUnavailable("the profile named no account")
-    return label
+    return response.payload
 
 
 def read_account(payload: dict) -> str:

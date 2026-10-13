@@ -20,8 +20,10 @@ from dotenv import load_dotenv
 from codee_database import claude_code_accounts, oauth_tokens
 from codee_tasks_azure_devops import oauth as azure_oauth
 from codee_agent_abstract.provider import AbstractCodingAgent, AgentModel
+from codee_agent_claude_code import credentials as claude_credentials
 from codee_agent_claude_code import oauth as claude_oauth
-from codee_agent_claude_code.account import AccountUnavailable, fetch_account
+from codee_agent_claude_code.account import (
+    AccountUnavailable, fetch_account, fetch_profile)
 from codee_agent_claude_code.provider import ClaudeCodeAgent
 from codee_agent_claude_code.usage import (
     SESSION_WINDOW, WEEKLY_WINDOW, UsageRateLimited, UsageUnavailable,
@@ -2479,6 +2481,57 @@ class AdminService:
         """Forget one account, and repoint the rotation if it was the one in use."""
         claude_code_accounts.remove_account(account_id, self.context)
         self._reconcile_claude_code_account()
+
+    def use_claude_code_account(self, account_id: int) -> tuple[bool, str]:
+        """Make one account the one in use, and sign the CLI in as it now.
+
+        Returns whether it worked and a sentence to show either way. Both
+        halves are done here rather than left to the next rotation check: the
+        pointer alone would only take effect up to five minutes later, and only
+        in a running executor.
+
+        The token is renewed first, because an account waiting its turn holds
+        one that may have expired hours ago. Its profile goes into
+        ``.claude.json`` too, so the CLI names the account it is now running
+        as instead of the previous one. That part is best-effort: the
+        credentials are what makes the switch, and a profile that could not be
+        read is fetched by the CLI itself on its next run.
+        """
+        try:
+            stored = {account.id: account for account
+                      in claude_code_accounts.accounts(self.context)}
+        except Exception as error:  # noqa: BLE001 - the UI must never see a traceback
+            return False, f"Could not read the connected accounts: {error}"
+        account = stored.get(account_id)
+        if account is None:
+            return False, "That account is no longer connected"
+        name = account.label or f"account {account.id}"
+        now = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if account.needs_reconnect(now):
+            return False, f"{name} has to be connected again first"
+
+        try:
+            account = ensure_fresh(account, self.context)
+            # A renewal the API refused retires the account rather than
+            # raising, so the only way to hear about it is to look again.
+            renewed = {row.id: row for row
+                       in claude_code_accounts.accounts(self.context)}
+            if renewed[account.id].needs_reconnect(now):
+                return False, f"{name} has to be connected again first"
+            claude_credentials.write_credentials(
+                account.access_token, account.refresh_token,
+                account.expires_at, account.scopes, account.subscription_type)
+            claude_code_accounts.set_current_account(account.id, self.context)
+        except Exception as error:  # noqa: BLE001
+            return False, f"Could not switch to {name}: {error}"
+
+        try:
+            claude_credentials.write_oauth_account(
+                fetch_profile(account.access_token))
+        except Exception as error:  # noqa: BLE001 - the switch itself landed
+            print(f"[admin] Switched Claude Code to {name} but could not "
+                  f"record its profile: {error}")
+        return True, f"Claude Code is now running as {name}"
 
     def _reconcile_claude_code_account(self) -> None:
         """Point the current account at a connected one.

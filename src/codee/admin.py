@@ -470,6 +470,9 @@ class AdminState(rx.State):
     # slow loop of its own.
     claude_account_usage: list[ClaudeAccount] = []
     claude_usage_loading: bool = False
+    # The account a "Set current" click is switching to, or 0. One at a time:
+    # two switches racing would leave the CLI on whichever wrote last.
+    claude_switching_account: int = 0
 
     runs: list[RunRecord] = []
     runs_has_more: bool = False
@@ -1174,6 +1177,36 @@ class AdminState(rx.State):
                     self.claude_account_usage = [_usage_row(account)
                                                  for account in measured]
             await asyncio.sleep(USAGE_POLL_INTERVAL)
+
+    @rx.event(background=True)
+    async def use_claude_code_account(self, account_id: int) -> Any:
+        """Make one account current and sign Claude Code in as it.
+
+        In the background because it can be two network round trips — renewing
+        the token, then reading the profile — and the dashboard redraws every
+        second meanwhile. The usage rows are redrawn as soon as it lands, so
+        the "in use" badge moves without waiting out the slow usage loop.
+        """
+        async with self:
+            if self.claude_switching_account:
+                return
+            self.claude_switching_account = account_id
+
+        try:
+            switched, message = await asyncio.to_thread(
+                SERVICE.use_claude_code_account, account_id)
+            measured = await asyncio.to_thread(
+                SERVICE.claude_code_account_usage)
+        except Exception as error:  # noqa: BLE001 - never leave the row spinning
+            switched, message = False, f"{type(error).__name__}: {error}"
+            measured = None
+
+        async with self:
+            self.claude_switching_account = 0
+            if measured is not None:
+                self.claude_account_usage = [_usage_row(account)
+                                             for account in measured]
+        yield rx.toast.success(message) if switched else rx.toast.error(message)
 
     def _fetch_runs_page(self, offset: int,
                          limit: int = RUNS_PAGE_SIZE) -> list[RunRecord]:
@@ -2519,6 +2552,20 @@ def claude_account_usage_row(account: ClaudeAccount) -> rx.Component:
                              variant="soft", flex_shrink="0"),
                     rx.fragment()),
             rx.spacer(),
+            # Not on the live one, and not on one that cannot be signed in
+            # with: there is nothing to switch to in either case.
+            rx.cond(
+                account.in_use | account.needs_reconnect,
+                rx.fragment(),
+                rx.button(
+                    "Set current", type="button", size="1", variant="soft",
+                    flex_shrink="0",
+                    loading=AdminState.claude_switching_account == account.id,
+                    disabled=AdminState.claude_switching_account != 0,
+                    title="Make this the account Claude Code runs on, and "
+                          "write its credentials into Claude Code's config",
+                    on_click=lambda: AdminState.use_claude_code_account(
+                        account.id))),
             spacing="2", align="center", width="100%",
             margin_bottom="0.6rem"),
         rx.cond(
