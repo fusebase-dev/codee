@@ -103,6 +103,12 @@ class ClaudeKeyRotation:
 
         try:
             usage = fetch_usage(current.access_token)
+            if usage.auth_rejected:
+                renewed = self._refreshed(current, force=True)
+                if renewed.access_token != current.access_token:
+                    self._sign_in(renewed)
+                    current = renewed
+                    usage = fetch_usage(current.access_token)
         except UsageUnavailable as error:
             # Keep the account we have: a question we could not ask says
             # nothing about the answer, and rotating on it would work through
@@ -174,6 +180,11 @@ class ClaudeKeyRotation:
         """
         stored = credentials.read_credentials()
         if stored.access_token and stored.access_token == account.access_token:
+            account = self._refreshed(account)
+            if stored != credentials.StoredCredentials(
+                    account.access_token, account.refresh_token,
+                    account.expires_at):
+                self._sign_in(account)
             self._signed_in = account.id
             return account
 
@@ -339,7 +350,7 @@ def ensure_fresh(account: Account, main_context: CodeeMainContext,
     expired token would report itself rejected rather than report its
     allowance.
     """
-    if not account.refresh_token:
+    if not account.refresh_token or account.needs_reconnect(_now_ms()):
         return account
     if not force and account.expires_at - _now_ms() > REFRESH_MARGIN_MS:
         return account
@@ -349,7 +360,7 @@ def ensure_fresh(account: Account, main_context: CodeeMainContext,
         log.warning("%s can no longer be renewed and has to be connected "
                     "again: %s", describe(account), error)
         claude_code_accounts.retire_account(account.id, main_context)
-        return account
+        return Account(**{**account.__dict__, "refresh_expires_at": _now_ms()})
     except oauth.OAuthApiError as error:
         log.warning("Could not renew the token for %s: %s",
                     describe(account), error)

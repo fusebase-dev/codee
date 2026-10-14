@@ -234,6 +234,95 @@ class ClaudeKeyRotationTest(RotationTestCase):
 class ClaudeKeyRefreshTest(RotationTestCase):
     """Keeping an account's token usable across its turn out of rotation."""
 
+    def test_a_matching_local_token_is_renewed_before_expiry(self) -> None:
+        account_id = self._connect("one@example.com", expires_in_ms=1000)
+        account = self._account(account_id)
+        credentials.write_credentials(account.access_token, account.refresh_token,
+                                      account.expires_at)
+        renewed = oauth.Tokens("fresh-token", "fresh-refresh", _in(LONG_LIFE_MS))
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=renewed) as refresh, \
+                patch("codee.lib.claude_key_rotation.fetch_usage",
+                      return_value=FRESH) as usage:
+            self._rotation().tick()
+
+        refresh.assert_called_once_with(account.refresh_token)
+        usage.assert_called_once_with("fresh-token")
+        self.assertEqual(self._stored()["accessToken"], "fresh-token")
+        self.assertEqual(self._stored()["refreshToken"], "fresh-refresh")
+        self.assertEqual(self._account(account_id).access_token, "fresh-token")
+
+    def test_a_matching_expired_local_token_is_renewed(self) -> None:
+        account_id = self._connect("one@example.com", expires_in_ms=-1000)
+        account = self._account(account_id)
+        credentials.write_credentials(account.access_token, account.refresh_token,
+                                      account.expires_at)
+        renewed = oauth.Tokens("fresh-token", "fresh-refresh", _in(LONG_LIFE_MS))
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=renewed):
+            self._tick(FRESH)
+
+        self.assertEqual(self._stored()["accessToken"], "fresh-token")
+
+    def test_matching_token_with_missing_refresh_details_is_repaired(self) -> None:
+        account_id = self._connect("one@example.com")
+        account = self._account(account_id)
+        credentials.write_credentials(account.access_token)
+
+        self._tick(FRESH)
+
+        self.assertEqual(self._stored()["refreshToken"], account.refresh_token)
+        self.assertEqual(self._stored()["expiresAt"], account.expires_at)
+
+    def test_a_rejected_token_is_renewed_before_rotating(self) -> None:
+        account_id = self._connect("one@example.com")
+        self._connect("two@example.com")
+        renewed = oauth.Tokens("fresh-token", "fresh-refresh", _in(LONG_LIFE_MS))
+        rejected = Usage(limited=True, auth_rejected=True)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=renewed) as refresh, \
+                patch("codee.lib.claude_key_rotation.fetch_usage",
+                      side_effect=[rejected, FRESH]) as usage:
+            self._rotation().tick()
+
+        refresh.assert_called_once_with("refresh-for-one@example.com")
+        self.assertEqual([call.args[0] for call in usage.call_args_list],
+                         ["token-for-one@example.com", "fresh-token"])
+        self.assertEqual(self._stored()["accessToken"], "fresh-token")
+        self.assertEqual(self._stored()["refreshToken"], "fresh-refresh")
+        self.assertEqual(claude_code_accounts.current_account_id(self.context),
+                         account_id)
+
+    def test_a_rejected_token_with_refused_refresh_rotates_to_a_valid_account(self) -> None:
+        first = self._connect("one@example.com")
+        second = self._connect("two@example.com")
+        rejected = Usage(limited=True, auth_rejected=True)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   side_effect=oauth.OAuthRefused("invalid_grant")) as refresh:
+            self._tick(rejected, FRESH)
+
+        refresh.assert_called_once_with("refresh-for-one@example.com")
+        self.assertTrue(self._account(first).needs_reconnect(_in(0)))
+        self.assertEqual(claude_code_accounts.current_account_id(self.context),
+                         second)
+        self.assertEqual(self._stored()["accessToken"], "token-for-two@example.com")
+
+    def test_a_refused_refresh_is_not_retried_on_every_check(self) -> None:
+        self._connect("one@example.com", expires_in_ms=-1000)
+        rejected = Usage(limited=True, auth_rejected=True)
+        rotation = self._rotation()
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   side_effect=oauth.OAuthRefused("invalid_grant")) as refresh:
+            self._tick(rejected, rotation=rotation)
+            self._tick(rejected, rotation=rotation)
+
+        refresh.assert_called_once_with("refresh-for-one@example.com")
+
     def test_an_expired_token_is_renewed_before_it_is_used(self) -> None:
         # An account that sat out of rotation for hours is holding a token that
         # expired long ago; without this, switching back to it would sign the

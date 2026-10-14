@@ -168,13 +168,23 @@ class ClaudeCodeUsageTest(unittest.TestCase):
             {"five_hour": {"utilization": None}}).limited)
 
     def test_a_rejected_key_counts_as_spent(self) -> None:
-        # Expired or revoked. As unusable as an exhausted one, and the same
-        # answer is the right one: rotate off it.
-        with patch("requests.get", return_value=_response(401)):
-            usage = fetch_usage("dead-key")
+        # Rotation can attempt a renewal before giving up this subscription.
+        for status in (401, 403):
+            with self.subTest(status=status), \
+                    patch("requests.get", return_value=_response(status)):
+                usage = fetch_usage("dead-key")
+
+            self.assertTrue(usage.limited)
+            self.assertTrue(usage.auth_rejected)
+            self.assertIn(str(status), usage.reason)
+
+    def test_an_exhausted_allowance_is_not_an_authentication_failure(self) -> None:
+        with patch("requests.get", return_value=_response(
+                200, json_body={"five_hour": {"utilization": 100.0}})):
+            usage = fetch_usage("working-key")
 
         self.assertTrue(usage.limited)
-        self.assertIn("401", usage.reason)
+        self.assertFalse(usage.auth_rejected)
 
     def test_being_asked_too_often_is_its_own_kind_of_unanswered(self) -> None:
         # Callers that only want a number keep catching UsageUnavailable; the

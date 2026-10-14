@@ -70,6 +70,8 @@ class Usage:
     # decides anything on it, so a window that reports no reset is simply
     # absent rather than a problem.
     resets_at: dict[str, str] = None  # type: ignore[assignment]
+    # A rejected credential can be renewed before abandoning its subscription.
+    auth_rejected: bool = False
 
     def describe(self) -> str:
         """The windows as a log fragment, e.g. ``session 100%, weekly 70%``."""
@@ -97,7 +99,7 @@ def fetch_usage(access_token: str, timeout: int = TIMEOUT_SECONDS) -> Usage:
     if response.status_code in (401, 403):
         return Usage(limited=True, reason="the key was rejected "
                                           f"(HTTP {response.status_code})",
-                     windows={}, resets_at={})
+                     windows={}, resets_at={}, auth_rejected=True)
     if not response.ok:
         raise UsageUnavailable(
             f"HTTP {response.status_code}: {response.text[:200]}")
