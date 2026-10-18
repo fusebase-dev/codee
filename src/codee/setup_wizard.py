@@ -75,8 +75,10 @@ MIN_RULE = 4
 
 BOLD = "1"
 DIM = "2"
+UNDERLINE = "4"
 GREEN = "32"
 RED = "31"
+CYAN = "36"
 
 PASS_MARK = "\u2714"
 FAIL_MARK = "\u2718"
@@ -149,7 +151,7 @@ def describe_guides(provider: TasksProvider | None = None) -> None:
     heading("Continue with these guides")
     for title, url in guides:
         line(title)
-        wrapped(url)
+        wrapped(url, style=f"{BOLD};{CYAN};{UNDERLINE}")
         line()
 
 
@@ -446,7 +448,10 @@ def hand_off_to_admin_ui(service: "AdminService", provider: TasksProvider,
             "while the admin UI builds.")
     line()
     line(f"  Opening  {_style(BOLD, url)}")
-    line(f"  Stop it  Ctrl-C, then `uv run codee-start` from now on")
+    line("  Stop it  Ctrl-C; restart it later with:")
+    line()
+    wrapped("uv run codee-start", indent=INDENT + "  ",
+            style=f"{BOLD};{GREEN}")
     line()
 
     process = subprocess.Popen(
@@ -485,10 +490,13 @@ def run(destination: Path, port: int) -> int:
         configured = setup_in_terminal(service, provider, coding_agent)
         heading("Done")
         if configured:
-            wrapped("Codee is configured. Start it with `uv run codee-start`.")
+            wrapped("Codee is configured. Start it with:")
         else:
-            wrapped("Codee is set up but not connected yet. Run "
-                    "`uv run codee-start` and finish on the Settings page.")
+            wrapped("Codee is set up but not connected yet. Start it with the "
+                    "command below and finish on the Settings page:")
+        line()
+        wrapped("uv run codee-start", indent=INDENT + "  ",
+                style=f"{BOLD};{GREEN}")
         describe_guides(provider)
         return 0
 
@@ -498,8 +506,12 @@ def run(destination: Path, port: int) -> int:
 def describe_manual_setup(port: int) -> None:
     """What to do when there is no terminal to ask questions on."""
     heading("Next")
-    wrapped("Not running interactively, so nothing was configured. Run "
-            "`uv run codee-start` and open "
-            f"http://localhost:{port}{SETTINGS_ROUTE} to choose a coding "
+    wrapped("Not running interactively, so nothing was configured. "
+            "Start Codee with:")
+    line()
+    wrapped("uv run codee-start", indent=INDENT + "  ",
+            style=f"{BOLD};{GREEN}")
+    line()
+    wrapped(f"Then open http://localhost:{port}{SETTINGS_ROUTE} to choose a coding "
             "agent and a tasks provider.")
     describe_guides()

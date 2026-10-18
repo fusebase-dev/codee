@@ -8,6 +8,37 @@ from codee_main_context.context import CodingAgent, Settings, TasksProvider
 from codee import setup_wizard
 
 
+class OutputStyleTest(unittest.TestCase):
+    def test_command_and_guides_are_highlighted_only_when_styling_is_enabled(self) -> None:
+        urls = [
+            "https://fusebase-dev.github.io/codee/configuration",
+            "https://fusebase-dev.github.io/codee/tutorials/updating-skills-through-git",
+        ]
+        for interactive, no_color, styled in ((True, "", True),
+                                              (False, "", False),
+                                              (True, "1", False)):
+            with self.subTest(interactive=interactive, no_color=no_color):
+                output = io.StringIO()
+                with redirect_stdout(output), \
+                        patch("sys.stdout.isatty", return_value=interactive), \
+                        patch.dict("os.environ", {"NO_COLOR": no_color}), \
+                        patch.object(setup_wizard, "_width", return_value=40):
+                    setup_wizard.describe_manual_setup(8501)
+                text = output.getvalue()
+                self.assertIn("http://localhost:8501/settings", text)
+                self.assertNotIn("`uv run codee-start`", text)
+                if styled:
+                    self.assertIn(
+                        "    \033[1;32muv run codee-start\033[0m\n", text)
+                    for url in urls:
+                        self.assertIn(f"  \033[1;36;4m{url}\033[0m\n", text)
+                else:
+                    self.assertIn("    uv run codee-start\n", text)
+                    self.assertNotIn("\033[", text)
+                    for url in urls:
+                        self.assertIn(f"  {url}\n", text)
+
+
 class DescribeGuidesTest(unittest.TestCase):
     def test_shows_common_guides_and_only_the_selected_provider_tutorial(self) -> None:
         docs_url = "https://fusebase-dev.github.io/codee"
@@ -191,10 +222,15 @@ class HandOffToAdminUiTest(unittest.TestCase):
                 "https://fusebase-dev.github.io/codee/tutorials/working-on-tasks-in-azure-devops",
                 text)
             self.assertNotIn("working-on-tasks-in-jira", text)
+            self.assertIn("    \033[1;32muv run codee-start\033[0m\n", text)
+            self.assertIn(
+                "\033[1;36;4mhttps://fusebase-dev.github.io/codee/tutorials/"
+                "working-on-tasks-in-azure-devops\033[0m", text)
             return process
 
         output = io.StringIO()
         with redirect_stdout(output), \
+                patch.object(setup_wizard, "_color_enabled", return_value=True), \
                 patch("builtins.input", return_value=""), \
                 patch.object(setup_wizard.subprocess, "Popen",
                              side_effect=start_process) as popen, \
@@ -251,6 +287,8 @@ class RunTest(unittest.TestCase):
             with self.subTest(configured=configured):
                 output = io.StringIO()
                 with redirect_stdout(output), \
+                        patch.object(setup_wizard, "_color_enabled",
+                                     return_value=True), \
                         patch("codee.admin_service.AdminService",
                               return_value=_service()), \
                         patch.object(setup_wizard, "choose_coding_agent",
@@ -262,6 +300,10 @@ class RunTest(unittest.TestCase):
                     self.assertEqual(
                         setup_wizard.run(setup_wizard.Path("."), 8501), 0)
                 text = output.getvalue()
+                self.assertIn("    \033[1;32muv run codee-start\033[0m\n", text)
+                self.assertIn(
+                    "\033[1;36;4mhttps://fusebase-dev.github.io/codee/tutorials/"
+                    "working-on-tasks-in-jira\033[0m", text)
                 self.assertIn(
                     "https://fusebase-dev.github.io/codee/configuration", text)
                 self.assertIn(
