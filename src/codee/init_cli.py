@@ -38,9 +38,17 @@ dependencies = ["codee-agent"]
 FALLBACK_PROJECT_NAME = "codee-project"
 
 
+def unzip_missing() -> bool:
+    """Whether Reflex will fail to install Bun for want of `unzip`.
+
+    Native Windows installs Bun through PowerShell instead, so it never needs it.
+    """
+    return sys.platform != "win32" and shutil.which("unzip") is None
+
+
 def warn_missing_unzip() -> None:
     """Explain the missing Bun prerequisite without changing the system."""
-    if sys.platform == "win32" or shutil.which("unzip") is not None:
+    if not unzip_missing():
         return
 
     print(

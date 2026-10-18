@@ -22,6 +22,8 @@ class OutputStyleTest(unittest.TestCase):
                 with redirect_stdout(output), \
                         patch("sys.stdout.isatty", return_value=interactive), \
                         patch.dict("os.environ", {"NO_COLOR": no_color}), \
+                        patch.object(setup_wizard, "unzip_missing",
+                                     return_value=False), \
                         patch.object(setup_wizard, "_width", return_value=40):
                     setup_wizard.describe_manual_setup(8501)
                 text = output.getvalue()
@@ -231,6 +233,7 @@ class HandOffToAdminUiTest(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output), \
                 patch.object(setup_wizard, "_color_enabled", return_value=True), \
+                patch.object(setup_wizard, "unzip_missing", return_value=False), \
                 patch("builtins.input", return_value=""), \
                 patch.object(setup_wizard.subprocess, "Popen",
                              side_effect=start_process) as popen, \
@@ -255,6 +258,7 @@ class HandOffToAdminUiTest(unittest.TestCase):
         process.wait.return_value = 1
         process.poll.return_value = 1
         with patch("builtins.input", return_value=""), \
+                patch.object(setup_wizard, "unzip_missing", return_value=False), \
                 patch.object(setup_wizard.subprocess, "Popen",
                              return_value=process), \
                 patch.object(setup_wizard, "wait_for_admin_ui",
@@ -264,6 +268,44 @@ class HandOffToAdminUiTest(unittest.TestCase):
                 service, TasksProvider.AZURE_DEVOPS,
                 CodingAgent.CLAUDE_CODE, 8501), 1)
         browser.assert_not_called()
+
+    def test_stops_before_starting_the_ui_when_unzip_is_missing(self) -> None:
+        service = _service()
+        output = io.StringIO()
+        with redirect_stdout(output), \
+                patch("builtins.input", return_value=""), \
+                patch.object(setup_wizard, "unzip_missing", return_value=True), \
+                patch.object(setup_wizard.subprocess, "Popen") as popen, \
+                patch.object(setup_wizard.webbrowser, "open") as browser:
+            self.assertEqual(setup_wizard.hand_off_to_admin_ui(
+                service, TasksProvider.AZURE_DEVOPS,
+                CodingAgent.CLAUDE_CODE, 8501), 1)
+        # The choices are still saved, so the Settings page picks up from them.
+        service.save_settings.assert_called_once()
+        popen.assert_not_called()
+        browser.assert_not_called()
+        text = output.getvalue()
+        self.assertIn("unzip is not installed", text)
+        self.assertIn("sudo apt update && sudo apt install unzip", text)
+        self.assertIn("uv run codee-start", text)
+
+
+class DescribeMissingUnzipTest(unittest.TestCase):
+    def test_repeats_the_warning_next_to_the_start_command(self) -> None:
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                output = io.StringIO()
+                with redirect_stdout(output), \
+                        patch.object(setup_wizard, "unzip_missing",
+                                     return_value=missing):
+                    setup_wizard.describe_manual_setup(8501)
+                text = output.getvalue()
+                self.assertEqual("unzip is not installed" in text, missing)
+                self.assertEqual("sudo apt install unzip" in text, missing)
+                if missing:
+                    # Right above the start command, not lost at the top.
+                    self.assertLess(text.index("sudo apt install unzip"),
+                                    text.index("uv run codee-start"))
 
 
 class WaitForAdminUiTest(unittest.TestCase):
@@ -289,6 +331,8 @@ class RunTest(unittest.TestCase):
                 with redirect_stdout(output), \
                         patch.object(setup_wizard, "_color_enabled",
                                      return_value=True), \
+                        patch.object(setup_wizard, "unzip_missing",
+                                     return_value=False), \
                         patch("codee.admin_service.AdminService",
                               return_value=_service()), \
                         patch.object(setup_wizard, "choose_coding_agent",

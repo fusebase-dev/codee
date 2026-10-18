@@ -34,6 +34,7 @@ from codee_main_context.context import (
 )
 
 from codee.coding_agents import CODING_AGENTS, installed_coding_agents
+from codee.init_cli import unzip_missing
 from codee.tasks_providers import TASKS_PROVIDERS
 
 if TYPE_CHECKING:  # AdminService pulls in the whole admin stack; see `run`.
@@ -103,10 +104,10 @@ def _width() -> int:
     return min(shutil.get_terminal_size((80, 24)).columns, MAX_WIDTH)
 
 
-def heading(title: str) -> None:
+def heading(title: str, style: str = BOLD) -> None:
     """A section title, underscored by a rule running out to the margin."""
     fill = max(MIN_RULE, _width() - len(INDENT) - len(title) - 1)
-    print(f"\n{INDENT}{_style(BOLD, title)} {_style(DIM, '\u2500' * fill)}\n")
+    print(f"\n{INDENT}{_style(style, title)} {_style(DIM, '\u2500' * fill)}\n")
 
 
 def line(text: str = "") -> None:
@@ -408,6 +409,29 @@ def wait_for_admin_ui(port: int, process: subprocess.Popen) -> bool:
     return False
 
 
+def describe_missing_unzip() -> bool:
+    """Repeat the `unzip` warning right before the user is told to start Codee.
+
+    `codee-agent init` already warns before the first question, but by the end
+    of the wizard that has scrolled out of view, and the admin UI's first start
+    dies on it with a Reflex traceback. Returns whether it was missing.
+    """
+    if not unzip_missing():
+        return False
+    heading(f"{FAIL_MARK} Install unzip before starting Codee",
+            style=f"{BOLD};{RED}")
+    wrapped("unzip is not installed. The admin UI needs it to install Bun on "
+            "its first start, and fails without it. Install it with your "
+            "system package manager (not pip or uv):", style=RED)
+    line()
+    wrapped("sudo apt update && sudo apt install unzip", indent=INDENT + "  ",
+            style=f"{BOLD};{RED}")
+    line()
+    wrapped("That is for Ubuntu/Debian, including WSL. On Fedora/RHEL use "
+            "`sudo dnf install unzip`.", style=RED)
+    return True
+
+
 def hand_off_to_admin_ui(service: "AdminService", provider: TasksProvider,
                          coding_agent: CodingAgent, port: int) -> int:
     """Start Codee and open the browser on the page that finishes this provider.
@@ -441,6 +465,17 @@ def hand_off_to_admin_ui(service: "AdminService", provider: TasksProvider,
         line(f"  \u00b7 {field.label}")
 
     describe_guides(provider)
+
+    # Starting the UI now would only end in Reflex's traceback, so stop here:
+    # the choices are saved, and the Settings page picks up from them.
+    if describe_missing_unzip():
+        line()
+        wrapped("Then start Codee and finish on the Settings page:")
+        line()
+        wrapped("uv run codee-start", indent=INDENT + "  ",
+                style=f"{BOLD};{GREEN}")
+        line()
+        return 1
 
     url = f"http://localhost:{port}{SETTINGS_ROUTE}"
     line()
@@ -488,6 +523,7 @@ def run(destination: Path, port: int) -> int:
 
     if provider in TERMINAL_SETUP:
         configured = setup_in_terminal(service, provider, coding_agent)
+        describe_missing_unzip()
         heading("Done")
         if configured:
             wrapped("Codee is configured. Start it with:")
@@ -505,6 +541,7 @@ def run(destination: Path, port: int) -> int:
 
 def describe_manual_setup(port: int) -> None:
     """What to do when there is no terminal to ask questions on."""
+    describe_missing_unzip()
     heading("Next")
     wrapped("Not running interactively, so nothing was configured. "
             "Start Codee with:")

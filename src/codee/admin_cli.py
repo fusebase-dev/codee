@@ -37,11 +37,12 @@ config = rx.Config(
 def _api_url(port: int) -> str:
     """Origin the browser uses for the backend websocket and uploads.
 
-    Reflex bakes this into the compiled frontend, so behind a reverse proxy it
-    has to be the public origin rather than the loopback address the server
-    binds to -- otherwise the page loads and then fails to open its socket.
+    Reflex bakes this into the compiled frontend. The browser swaps the host
+    ``localhost`` for whatever host the page was opened on, so the default
+    works from any address on the same port. Behind a reverse proxy that
+    changes the port or path, set the public origin instead.
     """
-    return public_base_url() or f"http://127.0.0.1:{port}"
+    return public_base_url() or f"http://localhost:{port}"
 
 
 def _runtime_directory(root: Path) -> Path:

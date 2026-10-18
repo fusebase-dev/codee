@@ -67,6 +67,12 @@ codee-executor = "codee.executor:main"
 # 61 fewer tests than the repo has.
 python_files = ["test_*.py", "test.py"]
 
+[tool.uv]
+# uv rebuilds a local checkout only when these change, and by default that is
+# just pyproject.toml — so `uvx --from ~/codee codee-agent init` kept running a
+# stale build after source edits, `--reinstall` and `--refresh` notwithstanding.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*" }]
+
 [tool.uv.build-backend]
 module-name = [
     "codee",

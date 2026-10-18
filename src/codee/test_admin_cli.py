@@ -54,7 +54,7 @@ class AdminCliTest(unittest.TestCase):
                                  (root / ".codee" / "reflex").resolve())
                 self.assertEqual(
                     Path(project_root_value).resolve(), root.resolve())
-                self.assertEqual(api_url, "http://127.0.0.1:8502")
+                self.assertEqual(api_url, "http://localhost:8502")
             finally:
                 os.chdir(original_directory)
 
