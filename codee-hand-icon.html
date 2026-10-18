@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codee Hand Icon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: single column spec sheet; one large construction tile, then size ramp, comparison, surfaces, source. */
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --fg: #15171c;
+    --muted: #5d6370;
+    --line: #dfe2e8;
+    --grid: #c9d3e6;
+    --accent: #2f5bea;
+    --dark-tile: #16181d;
+    --dark-ink: #eef0f4;
+    --font-body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101216; --surface: #181b21; --fg: #eceef2; --muted: #9aa1ae;
+      --line: #2a2f38; --grid: #2f3a52; --accent: #7d9bff;
+      --dark-tile: #0a0b0e; --dark-ink: #eef0f4; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101216; --surface: #181b21; --fg: #eceef2; --muted: #9aa1ae;
+    --line: #2a2f38; --grid: #2f3a52; --accent: #7d9bff;
+    --dark-tile: #0a0b0e; --dark-ink: #eef0f4; color-scheme: dark;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding-block: 40px 64px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid;
+    gap: 40px;
+  }
+  header { display: grid; gap: 6px; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  h2 {
+    margin: 0 0 14px; font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  p { margin: 0; max-width: 62ch; color: var(--muted); }
+  code, .mono { font-family: var(--font-mono); font-size: 12.5px; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+
+  /* Construction tile */
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 0; overflow: hidden; }
+  .stage {
+    position: relative; aspect-ratio: 1; max-width: 100%;
+    display: grid; place-items: center; padding: 32px;
+    border-right: 1px solid var(--line);
+  }
+  .stage .icon { width: 100%; max-width: 360px; height: auto; color: var(--fg); position: relative; z-index: 1; }
+  .stage svg.gridlines {
+    position: absolute; inset: 32px; width: calc(100% - 64px); height: calc(100% - 64px);
+    margin: auto; max-width: 360px; max-height: 360px; z-index: 0;
+  }
+  .stage.nogrid svg.gridlines { display: none; }
+  .specs { padding: 22px; display: grid; align-content: start; gap: 16px; }
+  .specs dl { margin: 0; display: grid; gap: 12px; }
+  .specs dt { font-size: 12px; color: var(--muted); }
+  .specs dd { margin: 0; font-family: var(--font-mono); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .toggle {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    font-size: 13px; color: var(--fg); user-select: none;
+  }
+  .toggle input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+
+  /* Size ramp */
+  .ramp { display: flex; flex-wrap: wrap; gap: 0; }
+  .ramp figure {
+    flex: 1 1 110px; margin: 0; padding: 22px 12px 14px;
+    display: grid; justify-items: center; align-content: end; gap: 12px;
+    border-right: 1px solid var(--line);
+  }
+  .ramp figure:last-child { border-right: 0; }
+  .ramp .icon { color: var(--fg); }
+  figcaption { font-family: var(--font-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* Comparison */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; }
+  .compare figure { margin: 0; padding: 28px 16px 18px; display: grid; justify-items: center; gap: 14px; }
+  .compare figure + figure { border-left: 1px solid var(--line); }
+  .compare .icon { width: 96px; height: 96px; color: var(--fg); }
+
+  /* Surfaces */
+  .surfaces { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .tile {
+    border-radius: 10px; aspect-ratio: 1; max-width: 100%;
+    display: grid; place-items: center; position: relative; border: 1px solid var(--line);
+  }
+  .tile .icon { width: 48px; height: 48px; }
+  .tile span {
+    position: absolute; left: 10px; bottom: 8px;
+    font-family: var(--font-mono); font-size: 11px; opacity: 0.7;
+  }
+  .t-light { background: #ffffff; color: #15171c; }
+  .t-dark { background: var(--dark-tile); color: var(--dark-ink); border-color: transparent; }
+  .t-accent { background: var(--accent); color: #ffffff; border-color: transparent; }
+  .t-app { background: var(--surface); color: var(--fg); }
+  .t-app .icon { width: 20px; height: 20px; }
+  .t-app .row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    border-radius: 6px; background: var(--bg); font-size: 13px; font-weight: 500;
+  }
+
+  /* Source */
+  .source { overflow: hidden; }
+  .source-bar {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line);
+  }
+  .source pre {
+    margin: 0; padding: 16px; overflow-x: auto;
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.6; color: var(--fg);
+  }
+  button {
+    font: inherit; font-size: 13px; font-weight: 500;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    background: var(--fg); color: var(--bg); border: 0;
+  }
+  button:focus-visible, .toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Spark options */
+  .options { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .opt {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px 16px; display: grid; gap: 12px; align-content: start;
+  }
+  .opt-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .opt-key { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .opt .big { justify-self: center; color: var(--fg); }
+  .opt .smalls { display: flex; justify-content: center; align-items: center; gap: 14px; }
+  .opt .smalls .icon { color: var(--fg); }
+  .opt .chip { display: grid; place-items: center; padding: 6px; border-radius: 6px; background: var(--dark-tile); }
+  .opt .chip .icon { color: var(--dark-ink); }
+  .opt h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .opt p { font-size: 13px; line-height: 1.45; }
+  .opt button {
+    padding: 4px 10px; font-size: 12px;
+    background: transparent; color: var(--fg); border: 1px solid var(--line);
+  }
+  .opt button:hover { border-color: var(--muted); }
+
+  .shortlist { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .shortlist .big .icon { width: 180px; height: 180px; }
+
+  .note { margin: -4px 0 14px; font-size: 13px; }
+  .thumbs { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+  .thumbs .big .icon { width: 180px; height: 180px; }
+  .thumbs .mids { display: flex; justify-content: center; gap: 10px; }
+  .thumbs .mids .icon { color: var(--fg); }
+
+  @media (max-width: 680px) {
+    .hero { grid-template-columns: minmax(0, 1fr); }
+    .stage { border-right: 0; border-bottom: 1px solid var(--line); }
+    .surfaces { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ramp figure { flex-basis: 33%; border-bottom: 1px solid var(--line); }
+  }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>Codee hand icon</h1>
+    <p>Fusebase's corner brackets with an open palm in the middle in place of the brain. Every shape is filled with <code>currentColor</code>, and the viewBox is the same <code>6 6 36 36</code>, so it can replace the original directly. The spark options below add a small shine to the hand; each card shows the icon large, at 24px and 16px, and on a dark chip.</p>
+  </header>
+
+  <section>
+    <h2>Thumb options</h2>
+    <p class="note">Each thumb is drawn as one outline with the palm, so there is no dent where they meet. The large icon shows the plain hand; the row below shows it with the option D sparkle, with the option C rays, then the sparkle version at 24px, at 16px and on a dark chip.</p>
+    <div class="options thumbs" id="thumbs"></div>
+  </section>
+
+  <section>
+    <h2>Shortlist</h2>
+    <div class="options shortlist" id="shortlist"></div>
+  </section>
+
+  <section>
+    <h2>All spark options</h2>
+    <div class="options" id="options"></div>
+  </section>
+
+  <section>
+    <h2>Construction</h2>
+    <div class="panel hero">
+      <div class="stage" id="stage">
+        <svg class="gridlines" id="gridlines" viewBox="6 6 36 36" aria-hidden="true"></svg>
+        <span data-icon="hand" data-size="360"></span>
+      </div>
+      <div class="specs">
+        <label class="toggle"><input type="checkbox" id="grid-toggle" checked> Show grid</label>
+        <dl>
+          <div><dt>viewBox</dt><dd>6 6 36 36</dd></div>
+          <div><dt>Bracket stroke</dt><dd>3 units (2px at 24px)</dd></div>
+          <div><dt>Bracket arm</dt><dd>7.4 units</dd></div>
+          <div><dt>Hand bounds</dt><dd>x 14.8–32.95<br>y 14.75–33.25</dd></div>
+          <div><dt>Finger</dt><dd>2.85 wide, 0.55 gap</dd></div>
+          <div><dt>Thumb</dt><dd>40° lean, one outline with the palm</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sizes, at actual pixels</h2>
+    <div class="panel ramp">
+      <figure><span data-icon="hand" data-size="16"></span><figcaption>16</figcaption></figure>
+      <figure><span data-icon="hand" data-size="20"></span><figcaption>20</figcaption></figure>
+      <figure><span data-icon="hand" data-size="24"></span><figcaption>24</figcaption></figure>
+      <figure><span data-icon="hand" data-size="32"></span><figcaption>32</figcaption></figure>
+      <figure><span data-icon="hand" data-size="48"></span><figcaption>48</figcaption></figure>
+      <figure><span data-icon="hand" data-size="64"></span><figcaption>64</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Next to the original</h2>
+    <div class="panel compare">
+      <figure><span data-icon="brain" data-size="96"></span><figcaption>Fusebase</figcaption></figure>
+      <figure><span data-icon="hand" data-size="96"></span><figcaption>Codee</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>On different backgrounds</h2>
+    <div class="surfaces">
+      <div class="tile t-light"><span data-icon="hand" data-size="48"></span><span>light</span></div>
+      <div class="tile t-dark"><span data-icon="hand" data-size="48"></span><span>dark</span></div>
+      <div class="tile t-accent"><span data-icon="hand" data-size="48"></span><span>accent</span></div>
+      <div class="tile t-app"><div class="row"><span data-icon="hand" data-size="20"></span>Codee</div><span>sidebar</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>SVG source</h2>
+    <div class="panel source">
+      <div class="source-bar">
+        <span class="mono" style="color: var(--muted)">codee-hand.svg</span>
+        <button type="button" id="copy">Copy SVG</button>
+      </div>
+      <pre id="code"></pre>
+    </div>
+  </section>
+</div>
+
+<script>
+  const BRACKETS = '<path fill="currentColor" d="M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z"></path><path fill="currentColor" d="M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z"></path><path fill="currentColor" d="M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z"></path><path fill="currentColor" d="M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z"></path>';
+
+  const HAND = '<g fill="currentColor"><rect x="19.9" y="16.4" width="2.85" height="10" rx="1.425"></rect><rect x="23.3" y="14.75" width="2.85" height="11" rx="1.425"></rect><rect x="26.7" y="15.6" width="2.85" height="10.5" rx="1.425"></rect><rect x="30.1" y="17.9" width="2.85" height="9" rx="1.425"></rect><path d="M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z"></path></g>';
+
+  const BRAIN = '<path fill="currentColor" d="M16.5,18.5c0,-2.071 1.679,-3.75 3.75,-3.75c1.321,0 2.482,0.683 3.15,1.714v4.071c-0.039,0.06 -0.079,0.119 -0.122,0.176c0.041,0.029 0.082,0.058 0.122,0.088v6.401c-0.3,0.226 -0.634,0.41 -0.991,0.545c0.417,0.327 0.757,0.747 0.991,1.228l0,3.055c-0.567,1.168 -1.765,1.973 -3.15,1.973c-1.894,0 -3.437,-1.505 -3.498,-3.384c-1.587,-0.437 -2.752,-1.89 -2.752,-3.616c0,-0.844 0.279,-1.623 0.75,-2.25c-0.471,-0.627 -0.75,-1.406 -0.75,-2.25c0,-1.643 1.057,-3.039 2.527,-3.546c-0.018,-0.149 -0.027,-0.3 -0.027,-0.454zM15.758,21.746c0.116,0.232 0.486,0.185 0.738,0.246c0.034,0.008 0.062,-0.031 0.094,-0.045c0.063,-0.029 0.127,-0.057 0.191,-0.083c0.26,-0.105 0.531,-0.179 0.807,-0.229c0.943,-0.17 1.913,-0.056 2.855,-0.243c0.449,-0.089 0.883,-0.243 1.281,-0.472c0.08,-0.046 0.157,-0.094 0.234,-0.145c0.038,-0.025 0.1,-0.034 0.112,-0.078c0.071,-0.249 0.279,-0.556 0.128,-0.767c-0.151,-0.211 -0.509,-0.107 -0.767,-0.128c-0.034,-0.003 -0.055,0.039 -0.084,0.058c-0.084,0.056 -0.17,0.108 -0.259,0.155c-0.269,0.143 -0.559,0.239 -0.858,0.298c-0.934,0.184 -1.899,0.07 -2.837,0.239c-0.35,0.063 -0.693,0.158 -1.023,0.291c-0.083,0.033 -0.165,0.069 -0.246,0.107c-0.04,0.019 -0.482,0.564 -0.366,0.796zM15.758,26.246c0.116,0.232 0.486,0.185 0.738,0.246c0.033,0.008 0.061,-0.03 0.092,-0.044c0.092,-0.041 0.186,-0.077 0.282,-0.107c0.261,-0.081 0.534,-0.115 0.807,-0.115c0.955,0 1.876,0.333 2.835,0.291c0.485,-0.021 0.962,-0.133 1.401,-0.343c0.087,-0.041 0.172,-0.086 0.256,-0.134c0.041,-0.024 0.107,-0.029 0.123,-0.074c0.087,-0.244 0.312,-0.538 0.175,-0.758c-0.137,-0.22 -0.501,-0.138 -0.758,-0.175c-0.034,-0.005 -0.059,0.036 -0.088,0.053c-0.117,0.067 -0.239,0.126 -0.365,0.174c-0.286,0.109 -0.59,0.157 -0.895,0.16c-0.999,0.011 -1.96,-0.352 -2.965,-0.286c-0.338,0.022 -0.672,0.088 -0.991,0.202c-0.091,0.033 -0.181,0.069 -0.27,0.109c-0.044,0.02 -0.493,0.568 -0.377,0.8z"></path><path fill="currentColor" d="M27.75,14.75c2.071,0 3.75,1.679 3.75,3.75c0,0.154 -0.009,0.305 -0.027,0.454c1.471,0.507 2.527,1.903 2.527,3.546c0,0.844 -0.279,1.623 -0.75,2.25c0.471,0.627 0.75,1.406 0.75,2.25c0,1.725 -1.165,3.179 -2.752,3.616c-0.061,1.879 -1.604,3.384 -3.498,3.384c-1.385,0 -2.583,-0.805 -3.15,-1.973l0,-3.055c0.234,-0.481 0.574,-0.901 0.991,-1.228c-0.358,-0.135 -0.691,-0.319 -0.991,-0.545v-6.401c0.04,-0.03 0.08,-0.059 0.122,-0.088c-0.042,-0.058 -0.083,-0.116 -0.122,-0.176v-4.071c0.668,-1.032 1.829,-1.714 3.15,-1.714zM32.242,21.746c0.116,-0.232 -0.138,-0.502 -0.246,-0.738c-0.003,-0.007 -0.238,-0.111 -0.243,-0.113c-0.286,-0.124 -0.584,-0.221 -0.888,-0.29c-0.578,-0.132 -1.17,-0.16 -1.761,-0.18c-0.647,-0.021 -1.311,-0.038 -1.919,-0.284c-0.155,-0.062 -0.304,-0.139 -0.446,-0.227c-0.057,-0.036 -0.101,-0.118 -0.169,-0.112c-0.258,0.021 -0.617,-0.083 -0.767,0.128c-0.151,0.211 0.057,0.518 0.128,0.767c0.012,0.044 0.075,0.052 0.112,0.078c0.153,0.102 0.312,0.194 0.478,0.274c1.168,0.568 2.435,0.38 3.679,0.551c0.349,0.048 0.693,0.131 1.02,0.263c0.065,0.026 0.128,0.054 0.191,0.083c0.032,0.015 0.716,0.031 0.832,-0.201zM32.242,26.246c0.116,-0.232 -0.136,-0.503 -0.246,-0.738c-0.005,-0.01 -0.256,-0.116 -0.264,-0.119c-0.315,-0.127 -0.647,-0.208 -0.984,-0.242c-0.625,-0.064 -1.245,0.034 -1.86,0.137c-0.578,0.097 -1.175,0.202 -1.758,0.087c-0.197,-0.039 -0.388,-0.103 -0.569,-0.189c-0.061,-0.029 -0.121,-0.061 -0.18,-0.095c-0.03,-0.017 -0.054,-0.058 -0.088,-0.053c-0.257,0.037 -0.62,-0.045 -0.758,0.175c-0.137,0.22 0.088,0.514 0.175,0.758c0.004,0.01 0.242,0.14 0.249,0.143c0.172,0.09 0.351,0.167 0.535,0.228c0.631,0.21 1.296,0.213 1.949,0.128c0.591,-0.076 1.177,-0.222 1.774,-0.239c0.343,-0.01 0.686,0.03 1.01,0.146c0.063,0.023 0.126,0.048 0.187,0.076c0.031,0.014 0.714,0.03 0.83,-0.202z"></path>';
+
+  const svg = (body, size) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" fill="none" viewBox="6 6 36 36">${BRACKETS}${body}</svg>`;
+
+  document.querySelectorAll('[data-icon]').forEach(el => {
+    const size = el.dataset.size;
+    el.outerHTML = svg(el.dataset.icon === 'brain' ? BRAIN : HAND, size).replace('<svg ', '<svg class="icon" role="img" aria-label="' + (el.dataset.icon === 'brain' ? 'Fusebase icon' : 'Codee icon') + '" ');
+  });
+
+  // 1-unit grid with heavier lines every 6 units, plus the bracket inner edges.
+  const g = document.getElementById('gridlines');
+  let lines = '';
+  for (let v = 6; v <= 42; v += 1) {
+    const major = (v - 6) % 6 === 0;
+    const sw = major ? 0.08 : 0.03;
+    lines += `<line x1="${v}" y1="6" x2="${v}" y2="42" stroke="var(--grid)" stroke-width="${sw}"/>`;
+    lines += `<line x1="6" y1="${v}" x2="42" y2="${v}" stroke="var(--grid)" stroke-width="${sw}"/>`;
+  }
+  lines += '<rect x="14.75" y="14.75" width="18.5" height="18.5" fill="none" stroke="var(--accent)" stroke-width="0.08" stroke-dasharray="0.4 0.3"/>';
+  g.innerHTML = lines;
+
+  document.getElementById('grid-toggle').addEventListener('change', e => {
+    document.getElementById('stage').classList.toggle('nogrid', !e.target.checked);
+  });
+
+  const source = svg(HAND, 24);
+  const code = document.getElementById('code');
+  code.textContent = source.replace(/></g, '>\n<');
+  const btn = document.getElementById('copy');
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText(source).then(() => {
+      btn.textContent = 'Copied';
+      setTimeout(() => (btn.textContent = 'Copy SVG'), 1500);
+    }).catch(() => {
+      const r = document.createRange();
+      r.selectNodeContents(code);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      btn.textContent = 'Selected, press Cmd+C';
+    });
+  });
+  // Spark variants. MASKID is replaced per instance so inline masks don't collide.
+  const OPTIONS = [
+  {
+    "key": "A",
+    "name": "Sparkle, top right",
+    "desc": "One four-point sparkle in the free corner above the little finger.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M35 12Q35.78 13.82 37.6 14.6Q35.78 15.38 35 17.2Q34.22 15.38 32.4 14.6Q34.22 13.82 35 12Z\"></path></svg>"
+  },
+  {
+    "key": "B",
+    "name": "Sparkle pair, top right",
+    "desc": "A large and a small sparkle, the classic \"magic\" pairing.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M34.6 13Q35.32 14.68 37 15.4Q35.32 16.12 34.6 17.8Q33.88 16.12 32.2 15.4Q33.88 14.68 34.6 13ZM36.4 10.7Q36.76 11.54 37.6 11.9Q36.76 12.26 36.4 13.1Q36.04 12.26 35.2 11.9Q36.04 11.54 36.4 10.7Z\"></path></svg>"
+  },
+  {
+    "key": "C",
+    "name": "Shine rays, top right",
+    "desc": "Three short rays fanning out from the little finger, like a glint.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"30.9\" y=\"13.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(10 31.5 18.8)\"></rect><rect x=\"30.9\" y=\"13\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(48 31.5 18.8)\"></rect><rect x=\"30.9\" y=\"13.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(86 31.5 18.8)\"></rect></g></svg>"
+  },
+  {
+    "key": "D",
+    "name": "Sparkle, top left",
+    "desc": "Sparkle in the gap between the thumb and index finger.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>"
+  },
+  {
+    "key": "E",
+    "name": "Sparkle in the palm",
+    "desc": "Sparkle cut out of the palm, so it reads as light in the hand.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path fill-rule=\"evenodd\" d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6ZM26.4 26.6Q27.15 28.35 28.9 29.1Q27.15 29.85 26.4 31.6Q25.65 29.85 23.9 29.1Q25.65 28.35 26.4 26.6Z\"></path></g></svg>"
+  },
+  {
+    "key": "F",
+    "name": "Sparkle on the fingertip",
+    "desc": "Larger sparkle overlapping the little finger, with a thin gap cut around it.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><defs><mask id=\"MASKID\" maskUnits=\"userSpaceOnUse\" x=\"6\" y=\"6\" width=\"36\" height=\"36\"><rect x=\"6\" y=\"6\" width=\"36\" height=\"36\" fill=\"#fff\"></rect><path d=\"M33.6 12Q34.68 14.52 37.2 15.6Q34.68 16.68 33.6 19.2Q32.52 16.68 30 15.6Q32.52 14.52 33.6 12Z\" fill=\"#000\" stroke=\"#000\" stroke-width=\"1.8\" stroke-linejoin=\"round\"></path></mask></defs><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g mask=\"url(#MASKID)\"><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g></g><path fill=\"currentColor\" d=\"M33.6 12Q34.68 14.52 37.2 15.6Q34.68 16.68 33.6 19.2Q32.52 16.68 30 15.6Q32.52 14.52 33.6 12Z\"></path></svg>"
+  },
+  {
+    "key": "G",
+    "name": "Sparkle and dots",
+    "desc": "Sparkle top right with two small dots, a lighter \"twinkle\" feel.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M35.2 12.9Q35.89 14.51 37.5 15.2Q35.89 15.89 35.2 17.5Q34.51 15.89 32.9 15.2Q34.51 14.51 35.2 12.9Z\"></path><circle fill=\"currentColor\" cx=\"36.4\" cy=\"20.6\" r=\"0.75\"></circle><circle fill=\"currentColor\" cx=\"32.4\" cy=\"11.9\" r=\"0.6\"></circle></svg>"
+  },
+  {
+    "key": "H",
+    "name": "Halo rays",
+    "desc": "Short rays above the fingers, as if the whole hand is glowing.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"24.8\" y=\"11.3\" width=\"1.2\" height=\"2\" rx=\"0.6\" transform=\"rotate(-40 25.4 24.5)\"></rect><rect x=\"24.8\" y=\"10.9\" width=\"1.2\" height=\"2.2\" rx=\"0.6\" transform=\"rotate(0 25.4 24.5)\"></rect><rect x=\"24.8\" y=\"11.3\" width=\"1.2\" height=\"2\" rx=\"0.6\" transform=\"rotate(40 25.4 24.5)\"></rect></g></svg>"
+  }
+];
+
+  let maskSeq = 0;
+  const sized = (src, size, label) => src
+    .replace(/MASKID/g, 'spark-mask-' + (++maskSeq))
+    .replace('width="24" height="24"', `width="${size}" height="${size}"`)
+    .replace('<svg ', `<svg class="icon" role="img" aria-label="${label}" `);
+
+  const SHORTLIST = [
+  {
+    "key": "C-left",
+    "name": "Shine rays, index finger",
+    "desc": "Option C mirrored: three rays fanning out from the index fingertip.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+  },
+  {
+    "key": "D",
+    "name": "Sparkle, top left",
+    "desc": "Sparkle in the gap between the thumb and index finger.",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>"
+  }
+];
+
+  const addCard = (o, parent) => {
+    const card = document.createElement('article');
+    card.className = 'opt';
+    card.innerHTML = `
+      <div class="opt-head"><span class="opt-key">Option ${o.key}</span><button type="button">Copy SVG</button></div>
+      <div class="big">${sized(o.svg, 120, 'Option ' + o.key)}</div>
+      <div class="smalls">${sized(o.svg, 24, '')}${sized(o.svg, 16, '')}<span class="chip">${sized(o.svg, 24, '')}</span></div>
+      <div><h3>${o.name}</h3><p>${o.desc}</p></div>`;
+    const btn = card.querySelector('button');
+    const clean = o.svg.replace(/MASKID/g, 'spark-mask');
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(clean).then(() => {
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy SVG'), 1500);
+      }).catch(() => {
+        code.textContent = clean.replace(/></g, '>\n<');
+        code.scrollIntoView({ block: 'center' });
+        btn.textContent = 'Shown below';
+      });
+    });
+    parent.appendChild(card);
+  };
+  SHORTLIST.forEach(o => addCard(o, document.getElementById('shortlist')));
+  OPTIONS.forEach(o => addCard(o, document.getElementById('options')));
+  const THUMBS = [
+ {
+  "key": "T1",
+  "name": "Original angle, smooth joint",
+  "desc": "The first thumb (40° lean), joined to the palm with one smooth curve.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ },
+ {
+  "key": "T2",
+  "name": "Closer, 30°",
+  "desc": "Same straight thumb leaning less, so it sits nearer the palm.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q16.47 24.86 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.94 23.45 19.9 25.11V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q16.47 24.86 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.94 23.45 19.9 25.11V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q16.47 24.86 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.94 23.45 19.9 25.11V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ },
+ {
+  "key": "T3",
+  "name": "Tucked, 20°",
+  "desc": "Almost upright, close to the index finger with a narrow gap.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.41 29.07 17.52 26.62Q16.76 24.55 16.01 22.49A1.425 1.425 0 0 1 18.69 21.51Q19.29 23.18 19.9 24.84V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.41 29.07 17.52 26.62Q16.76 24.55 16.01 22.49A1.425 1.425 0 0 1 18.69 21.51Q19.29 23.18 19.9 24.84V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 14.87Q16.69 16.48 18.3 17.17Q16.69 17.86 16 19.47Q15.31 17.86 13.7 17.17Q15.31 16.48 16 14.87Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.41 29.07 17.52 26.62Q16.76 24.55 16.01 22.49A1.425 1.425 0 0 1 18.69 21.51Q19.29 23.18 19.9 24.84V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ },
+ {
+  "key": "T4",
+  "name": "Short, 50°",
+  "desc": "A shorter thumb that sits low on the palm.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.29 28.28 16.91 27.12Q16.3 26.61 15.68 26.09A1.425 1.425 0 0 1 17.52 23.91Q18.71 24.91 19.9 25.91V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.29 28.28 16.91 27.12Q16.3 26.61 15.68 26.09A1.425 1.425 0 0 1 17.52 23.91Q18.71 24.91 19.9 25.91V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.29 28.28 16.91 27.12Q16.3 26.61 15.68 26.09A1.425 1.425 0 0 1 17.52 23.91Q18.71 24.91 19.9 25.91V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ },
+ {
+  "key": "T5",
+  "name": "Curved",
+  "desc": "Leans out about 30° with both edges bowed, so the thumb curves gently.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q15.99 25.13 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.47 23.72 19.9 25.11V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q15.99 25.13 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.47 23.72 19.9 25.11V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.62 28.58 17.42 26.5Q15.99 25.13 15.52 23.21A1.425 1.425 0 0 1 17.98 21.79Q18.47 23.72 19.9 25.11V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ },
+ {
+  "key": "T6",
+  "name": "Wide, 58°",
+  "desc": "Spread further out than the original, for a more open, waving hand.",
+  "plain": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.41 28.73 16.88 27.78Q15.86 27.14 14.84 26.51A1.425 1.425 0 0 1 16.36 24.09Q18.13 25.2 19.9 26.31V24.6Z\"></path></g></svg>",
+  "d": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.41 28.73 16.88 27.78Q15.86 27.14 14.84 26.51A1.425 1.425 0 0 1 16.36 24.09Q18.13 25.2 19.9 26.31V24.6Z\"></path></g><path fill=\"currentColor\" d=\"M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z\"></path></svg>",
+  "rays": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" fill=\"none\" viewBox=\"6 6 36 36\"><path fill=\"currentColor\" d=\"M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z\"></path><path fill=\"currentColor\" d=\"M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z\"></path><path fill=\"currentColor\" d=\"M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z\"></path><g fill=\"currentColor\"><rect x=\"19.9\" y=\"16.4\" width=\"2.85\" height=\"10\" rx=\"1.425\"></rect><rect x=\"23.3\" y=\"14.75\" width=\"2.85\" height=\"11\" rx=\"1.425\"></rect><rect x=\"26.7\" y=\"15.6\" width=\"2.85\" height=\"10.5\" rx=\"1.425\"></rect><rect x=\"30.1\" y=\"17.9\" width=\"2.85\" height=\"9\" rx=\"1.425\"></rect><path d=\"M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23.2 33.25 18.41 28.73 16.88 27.78Q15.86 27.14 14.84 26.51A1.425 1.425 0 0 1 16.36 24.09Q18.13 25.2 19.9 26.31V24.6Z\"></path></g><g fill=\"currentColor\"><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-10 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12\" width=\"1.2\" height=\"3\" rx=\"0.6\" transform=\"rotate(-48 21.3 17.8)\"></rect><rect x=\"20.7\" y=\"12.4\" width=\"1.2\" height=\"2.6\" rx=\"0.6\" transform=\"rotate(-86 21.3 17.8)\"></rect></g></svg>"
+ }
+];
+  const thumbsEl = document.getElementById('thumbs');
+  THUMBS.forEach(o => {
+    const card = document.createElement('article');
+    card.className = 'opt';
+    card.innerHTML = `
+      <div class="opt-head"><span class="opt-key">Thumb ${o.key}</span><button type="button">Copy with sparkle</button></div>
+      <div class="big">${sized(o.plain, 180, 'Thumb ' + o.key)}</div>
+      <div class="mids">${sized(o.d, 64, '')}${sized(o.rays, 64, '')}</div>
+      <div class="smalls">${sized(o.d, 24, '')}${sized(o.d, 16, '')}<span class="chip">${sized(o.d, 24, '')}</span></div>
+      <div><h3>${o.name}</h3><p>${o.desc}</p></div>`;
+    const btn = card.querySelector('button');
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(o.d).then(() => {
+        btn.textContent = 'Copied';
+        setTimeout(() => (btn.textContent = 'Copy with sparkle'), 1500);
+      }).catch(() => {
+        code.textContent = o.d.replace(/></g, '>\n<');
+        code.scrollIntoView({ block: 'center' });
+        btn.textContent = 'Shown below';
+      });
+    });
+    thumbsEl.appendChild(card);
+  });
+</script>
+</body>
+</html>

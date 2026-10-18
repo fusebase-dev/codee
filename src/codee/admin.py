@@ -2069,13 +2069,34 @@ SUBTLE_ICON = "var(--codee-subtle-icon)"
 RUNNING_BACKGROUND = "var(--codee-running-background)"
 RUNNING_GLOW = "var(--codee-running-glow)"
 MONO = "IBM Plex Mono, monospace"
-LOGO = "👨🏻‍💻"
-# Inline SVG carrying the logo emoji, so the favicon needs no binary asset.
+# Corner brackets with an open palm and a spark; fills use currentColor so the
+# mark takes the colour of the badge it sits in.
+LOGO = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" style="display:block" aria-hidden="true" fill="none" viewBox="6 6 36 36"><path fill="currentColor" d="M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z"></path><path fill="currentColor" d="M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z"></path><path fill="currentColor" d="M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z"></path><path fill="currentColor" d="M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z"></path><g fill="currentColor"><rect x="19.9" y="16.4" width="2.85" height="10" rx="1.425"></rect><rect x="23.3" y="14.75" width="2.85" height="11" rx="1.425"></rect><rect x="26.7" y="15.6" width="2.85" height="10.5" rx="1.425"></rect><rect x="30.1" y="17.9" width="2.85" height="9" rx="1.425"></rect><path d="M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z"></path></g><path fill="currentColor" d="M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z"></path></svg>'
+)
+# The logo on the accent-blue badge, inline so the favicon needs no binary asset.
 FAVICON = (
     "data:image/svg+xml;base64,"
-    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMD"
-    "AgMTAwIj48dGV4dCB5PSIuOWVtIiBmb250LXNpemU9IjkwIj7wn5Go8J+Pu+KAjfCfkrs8L3Rl"
-    "eHQ+PC9zdmc+"
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAz"
+    "MiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzJmNmZk"
+    "NiIvPjxzdmcgeD0iMyIgeT0iMyIgd2lkdGg9IjI2IiBoZWlnaHQ9IjI2IiB2aWV3Qm94PSI2"
+    "IDYgMzYgMzYiPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik03LjUgMTQuOVY3LjVIMTQuOVYxMC41"
+    "SDEwLjVWMTQuOVoiPjwvcGF0aD48cGF0aCBmaWxsPSIjZmZmIiBkPSJNNDAuNSAxNC45Vjcu"
+    "NUgzMy4xVjEwLjVIMzcuNVYxNC45WiI+PC9wYXRoPjxwYXRoIGZpbGw9IiNmZmYiIGQ9Ik03"
+    "LjUgMzMuMVY0MC41SDE0LjlWMzcuNUgxMC41VjMzLjFaIj48L3BhdGg+PHBhdGggZmlsbD0i"
+    "I2ZmZiIgZD0iTTQwLjUgMzMuMVY0MC41SDMzLjFWMzcuNUgzNy41VjMzLjFaIj48L3BhdGg+"
+    "PGcgZmlsbD0iI2ZmZiI+PHJlY3QgeD0iMTkuOSIgeT0iMTYuNCIgd2lkdGg9IjIuODUiIGhl"
+    "aWdodD0iMTAiIHJ4PSIxLjQyNSI+PC9yZWN0PjxyZWN0IHg9IjIzLjMiIHk9IjE0Ljc1IiB3"
+    "aWR0aD0iMi44NSIgaGVpZ2h0PSIxMSIgcng9IjEuNDI1Ij48L3JlY3Q+PHJlY3QgeD0iMjYu"
+    "NyIgeT0iMTUuNiIgd2lkdGg9IjIuODUiIGhlaWdodD0iMTAuNSIgcng9IjEuNDI1Ij48L3Jl"
+    "Y3Q+PHJlY3QgeD0iMzAuMSIgeT0iMTcuOSIgd2lkdGg9IjIuODUiIGhlaWdodD0iOSIgcng9"
+    "IjEuNDI1Ij48L3JlY3Q+PHBhdGggZD0iTTMyLjk1IDI0LjZWMjhDMzIuOTUgMzEgMzAuNiAz"
+    "My4yNSAyNy42IDMzLjI1SDI1LjZDMjMgMzMuMjUgMTguNzEgMjguMjEgMTcuMjkgMjYuNTJR"
+    "MTYuMiAyNS4yMiAxNS4xMSAyMy45MkExLjQyNSAxLjQyNSAwIDAgMSAxNy4yOSAyMi4wOFEx"
+    "OC42IDIzLjY0IDE5LjkgMjUuMTlWMjQuNloiPjwvcGF0aD48L2c+PHBhdGggZmlsbD0iI2Zm"
+    "ZiIgZD0iTTE2IDE1LjNRMTYuNjkgMTYuOTEgMTguMyAxNy42UTE2LjY5IDE4LjI5IDE2IDE5"
+    "LjlRMTUuMzEgMTguMjkgMTMuNyAxNy42UTE1LjMxIDE2LjkxIDE2IDE1LjNaIj48L3BhdGg+"
+    "PC9zdmc+PC9zdmc+"
 )
 
 
@@ -2100,13 +2121,35 @@ def nav_link(label: str, icon: str, href: str) -> rx.Component:
     )
 
 
+def footer_link(label: str, href: str) -> rx.Component:
+    return rx.link(label, href=href, is_external=True, color=MUTED,
+                   text_decoration="underline", text_underline_offset="2px",
+                   _hover={"color": ACCENT})
+
+
+def footer() -> rx.Component:
+    return rx.flex(
+        rx.text("Codee is developed by ",
+                footer_link("FuseBase", "https://thefusebase.com")),
+        rx.text("·", aria_hidden="true"),
+        footer_link("Source code on GitHub", "https://github.com/fusebase-dev/codee"),
+        gap="0.5rem",
+        wrap="wrap",
+        align="center",
+        color=MUTED,
+        font_size="0.8rem",
+        padding_top="1rem",
+        border_top=BORDER,
+    )
+
+
 def shell(content: rx.Component) -> rx.Component:
     return rx.box(
         rx.grid(
             rx.box(
                 rx.vstack(
                     rx.hstack(
-                        rx.box(LOGO, color="white", background=ACCENT, width="2rem",
+                        rx.box(rx.html(LOGO), color="white", background=ACCENT, width="2rem",
                                height="2rem", display="grid", place_items="center",
                                border_radius="6px", font_weight="700",
                                font_size="1.1rem", line_height="1"),
@@ -2153,7 +2196,9 @@ def shell(content: rx.Component) -> rx.Component:
                 background=NAV_BACKGROUND,
                 min_height=rx.breakpoints(initial="auto", lg="100vh"),
             ),
-            rx.box(content, padding=rx.breakpoints(initial="1.25rem", md="2rem", xl="3rem"),
+            rx.box(rx.box(content, flex="1", width="100%"), footer(),
+                   padding=rx.breakpoints(initial="1.25rem", md="2rem", xl="3rem"),
+                   display="flex", flex_direction="column", gap="3rem",
                    min_width="0", max_width="1440px", width="100%"),
             columns=rx.breakpoints(initial="1fr", lg="230px minmax(0, 1fr)"),
             min_height="100vh",

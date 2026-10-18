@@ -94,7 +94,7 @@
     return (
       '<div class="shell">' +
       '<aside class="sidebar">' +
-      '<div class="brand"><div class="brand-mark">👨🏻‍💻</div><div class="brand-name">Codee</div>' +
+      '<div class="brand"><div class="brand-mark"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" style="display:block" aria-hidden="true" fill="none" viewBox="6 6 36 36"><path fill="currentColor" d="M7.5 14.9V7.5H14.9V10.5H10.5V14.9Z"></path><path fill="currentColor" d="M40.5 14.9V7.5H33.1V10.5H37.5V14.9Z"></path><path fill="currentColor" d="M7.5 33.1V40.5H14.9V37.5H10.5V33.1Z"></path><path fill="currentColor" d="M40.5 33.1V40.5H33.1V37.5H37.5V33.1Z"></path><g fill="currentColor"><rect x="19.9" y="16.4" width="2.85" height="10" rx="1.425"></rect><rect x="23.3" y="14.75" width="2.85" height="11" rx="1.425"></rect><rect x="26.7" y="15.6" width="2.85" height="10.5" rx="1.425"></rect><rect x="30.1" y="17.9" width="2.85" height="9" rx="1.425"></rect><path d="M32.95 24.6V28C32.95 31 30.6 33.25 27.6 33.25H25.6C23 33.25 18.71 28.21 17.29 26.52Q16.2 25.22 15.11 23.92A1.425 1.425 0 0 1 17.29 22.08Q18.6 23.64 19.9 25.19V24.6Z"></path></g><path fill="currentColor" d="M16 15.3Q16.69 16.91 18.3 17.6Q16.69 18.29 16 19.9Q15.31 18.29 13.7 17.6Q15.31 16.91 16 15.3Z"></path></svg></div><div class="brand-name">Codee</div>' +
       '<div class="spacer"></div>' +
       '<button class="btn btn-soft btn-icon" id="theme-toggle" aria-label="Toggle color mode">' +
       icon(theme === "dark" ? "sun" : "moon", 15) + "</button></div>" +
@@ -107,7 +107,12 @@
         );
       }).join("") +
       "</nav></aside>" +
-      '<main class="content">' + content + "</main></div>"
+      '<main class="content"><div class="content-body">' + content + "</div>" +
+      '<footer class="app-footer"><span>Codee is developed by ' +
+      '<a href="https://thefusebase.com" target="_blank" rel="noreferrer">FuseBase</a></span>' +
+      '<span aria-hidden="true">·</span>' +
+      '<a href="https://github.com/fusebase-dev/codee" target="_blank" rel="noreferrer">Source code on GitHub</a>' +
+      "</footer></main></div>"
     );
   }
 
