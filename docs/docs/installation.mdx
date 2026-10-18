@@ -65,6 +65,18 @@ starts Codee, and opens the browser on the Settings page where you paste the app
 registration details and click **Connect**. The first start compiles the admin UI, so give
 it a few minutes.
 
+### Continuing after setup
+
+`init` prints links to the [configuration guide](./configuration) and
+[updating skills through Git](./tutorials/updating-skills-through-git) for everyone.
+It also shows the tutorial for your selected tasks provider:
+[Jira](./tutorials/working-on-tasks-in-jira) or
+[Azure DevOps](./tutorials/working-on-tasks-in-azure-devops). For Azure DevOps, the
+links appear before Codee starts and hands setup over to the browser.
+
+With `--scaffold-only` or non-interactive input, no tasks provider is selected, so
+only the two common guides are shown.
+
 ## Manual setup
 
 If you would rather assemble the project yourself, or already have one:

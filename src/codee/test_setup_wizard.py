@@ -1,9 +1,36 @@
+import io
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from codee_main_context.context import CodingAgent, Settings, TasksProvider
 
 from codee import setup_wizard
+
+
+class DescribeGuidesTest(unittest.TestCase):
+    def test_shows_common_guides_and_only_the_selected_provider_tutorial(self) -> None:
+        docs_url = "https://fusebase-dev.github.io/codee"
+        provider_guides = {
+            TasksProvider.JIRA: f"{docs_url}/tutorials/working-on-tasks-in-jira",
+            TasksProvider.AZURE_DEVOPS:
+                f"{docs_url}/tutorials/working-on-tasks-in-azure-devops",
+        }
+        for provider in (None, *TasksProvider):
+            with self.subTest(provider=provider):
+                output = io.StringIO()
+                with redirect_stdout(output), \
+                        patch.object(setup_wizard, "_width", return_value=40):
+                    setup_wizard.describe_guides(provider)
+                text = output.getvalue()
+                self.assertIn(f"{docs_url}/configuration", text)
+                self.assertIn(
+                    f"{docs_url}/tutorials/updating-skills-through-git", text)
+                for source, url in provider_guides.items():
+                    if source == provider:
+                        self.assertIn(url, text)
+                    else:
+                        self.assertNotIn(url, text)
 
 
 class ChooseCodingAgentTest(unittest.TestCase):
@@ -153,9 +180,24 @@ class HandOffToAdminUiTest(unittest.TestCase):
         process = MagicMock()
         process.wait.return_value = 0
         process.poll.return_value = 0
-        with patch("builtins.input", return_value=""), \
+
+        def start_process(*args, **kwargs):
+            text = output.getvalue()
+            self.assertIn("https://fusebase-dev.github.io/codee/configuration", text)
+            self.assertIn(
+                "https://fusebase-dev.github.io/codee/tutorials/updating-skills-through-git",
+                text)
+            self.assertIn(
+                "https://fusebase-dev.github.io/codee/tutorials/working-on-tasks-in-azure-devops",
+                text)
+            self.assertNotIn("working-on-tasks-in-jira", text)
+            return process
+
+        output = io.StringIO()
+        with redirect_stdout(output), \
+                patch("builtins.input", return_value=""), \
                 patch.object(setup_wizard.subprocess, "Popen",
-                             return_value=process) as popen, \
+                             side_effect=start_process) as popen, \
                 patch.object(setup_wizard, "wait_for_admin_ui",
                              return_value=True), \
                 patch.object(setup_wizard.webbrowser, "open") as browser:
@@ -204,6 +246,32 @@ class WaitForAdminUiTest(unittest.TestCase):
 
 
 class RunTest(unittest.TestCase):
+    def test_terminal_setup_shows_guides_even_if_not_connected(self) -> None:
+        for configured in (True, False):
+            with self.subTest(configured=configured):
+                output = io.StringIO()
+                with redirect_stdout(output), \
+                        patch("codee.admin_service.AdminService",
+                              return_value=_service()), \
+                        patch.object(setup_wizard, "choose_coding_agent",
+                                     return_value=CodingAgent.CLAUDE_CODE), \
+                        patch.object(setup_wizard, "choose_tasks_provider",
+                                     return_value=TasksProvider.JIRA), \
+                        patch.object(setup_wizard, "setup_in_terminal",
+                                     return_value=configured):
+                    self.assertEqual(
+                        setup_wizard.run(setup_wizard.Path("."), 8501), 0)
+                text = output.getvalue()
+                self.assertIn(
+                    "https://fusebase-dev.github.io/codee/configuration", text)
+                self.assertIn(
+                    "https://fusebase-dev.github.io/codee/tutorials/updating-skills-through-git",
+                    text)
+                self.assertIn(
+                    "https://fusebase-dev.github.io/codee/tutorials/working-on-tasks-in-jira",
+                    text)
+                self.assertNotIn("working-on-tasks-in-azure-devops", text)
+
     def test_a_terminal_provider_never_starts_the_admin_ui(self) -> None:
         service = _service()
         service.verify_tasks_connection.return_value = iter([

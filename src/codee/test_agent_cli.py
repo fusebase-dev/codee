@@ -1,6 +1,8 @@
+import io
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,6 +42,26 @@ class AgentCliTest(unittest.TestCase):
                 wizard.assert_not_called()
             finally:
                 os.chdir(original_directory)
+
+    def test_manual_setup_shows_only_the_common_guides(self) -> None:
+        for argv, interactive in ((["init", "--scaffold-only"], True),
+                                  (["init"], False)):
+            with self.subTest(argv=argv, interactive=interactive):
+                output = io.StringIO()
+                with redirect_stdout(output), \
+                        patch.object(agent_cli, "scaffold", return_value=[]), \
+                        patch.object(agent_cli, "confirm_overwrite",
+                                     return_value=True), \
+                        patch("sys.stdin.isatty", return_value=interactive):
+                    self.assertEqual(self._init(argv), 0)
+                text = output.getvalue()
+                self.assertIn(
+                    "https://fusebase-dev.github.io/codee/configuration", text)
+                self.assertIn(
+                    "https://fusebase-dev.github.io/codee/tutorials/updating-skills-through-git",
+                    text)
+                self.assertNotIn("working-on-tasks-in-jira", text)
+                self.assertNotIn("working-on-tasks-in-azure-devops", text)
 
     def test_a_pipe_still_scaffolds_but_asks_nothing(self) -> None:
         original_directory = Path.cwd()

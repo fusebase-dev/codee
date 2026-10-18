@@ -132,6 +132,27 @@ def wrapped(text: str, indent: str = INDENT, style: str = "") -> None:
         print(f"{indent}{_style(style, row[len(indent):])}")
 
 
+def describe_guides(provider: TasksProvider | None = None) -> None:
+    docs_url = "https://fusebase-dev.github.io/codee"
+    guides = [
+        ("Configuration", f"{docs_url}/configuration"),
+        ("Updating skills through Git",
+         f"{docs_url}/tutorials/updating-skills-through-git"),
+    ]
+    if provider == TasksProvider.JIRA:
+        guides.append(("Working on tasks in Jira",
+                       f"{docs_url}/tutorials/working-on-tasks-in-jira"))
+    elif provider == TasksProvider.AZURE_DEVOPS:
+        guides.append(("Working on tasks in Azure DevOps",
+                       f"{docs_url}/tutorials/working-on-tasks-in-azure-devops"))
+
+    heading("Continue with these guides")
+    for title, url in guides:
+        line(title)
+        wrapped(url)
+        line()
+
+
 def ask(label: str, secret: bool = False) -> str:
     """Read one answer at the wizard's margin."""
     return (getpass if secret else input)(f"{INDENT}{label}").strip()
@@ -417,6 +438,8 @@ def hand_off_to_admin_ui(service: "AdminService", provider: TasksProvider,
     for field in TASKS_PROVIDER_FIELDS[provider]:
         line(f"  \u00b7 {field.label}")
 
+    describe_guides(provider)
+
     url = f"http://localhost:{port}{SETTINGS_ROUTE}"
     line()
     wrapped("Starting Codee. This can take a few minutes the first time, "
@@ -466,6 +489,7 @@ def run(destination: Path, port: int) -> int:
         else:
             wrapped("Codee is set up but not connected yet. Run "
                     "`uv run codee-start` and finish on the Settings page.")
+        describe_guides(provider)
         return 0
 
     return hand_off_to_admin_ui(service, provider, coding_agent, port)
@@ -478,3 +502,4 @@ def describe_manual_setup(port: int) -> None:
             "`uv run codee-start` and open "
             f"http://localhost:{port}{SETTINGS_ROUTE} to choose a coding "
             "agent and a tasks provider.")
+    describe_guides()
