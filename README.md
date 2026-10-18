@@ -13,6 +13,17 @@ installation, configuration and tutorials for working on tasks in Jira and Azure
 [click-through demo of the admin UI](https://fusebase-dev.github.io/codee/demo/) that runs without installing
 anything.
 
+## Prerequisites
+
+Codee is installed and run with [uv](https://docs.astral.sh/uv/). Install it first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                          # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
+```
+
+uv downloads Python 3.12+ for you if it isn't already on the machine.
+
 ## Run Codee
 
 Codee lives in its own directory, where it keeps skills, memory, temp files and config.
