@@ -244,6 +244,11 @@ review statuses also need a way back to `AI Ready for development`.
 The simplest option is to let any status reach any `AI` status. In the workflow editor
 that is the "Allow all statuses to transition to this one" checkbox on each `AI` status.
 
+<figure className="image-block">
+  <img src={require('./img/jira_workflow_statuses.png').default} alt="Jira workflow editor showing Codee statuses, each with an Any transition" />
+  <figcaption>Example layout with Any transitions into Codee statuses. This screenshot shows a subset with different names; use all eight statuses above and match their names to your skills exactly.</figcaption>
+</figure>
+
 ### Wire the statuses to skills
 
 The status name in Jira has to match the skill's `x-codee-issue-status` trigger **exactly**:
