@@ -38,6 +38,23 @@ dependencies = ["codee-agent"]
 FALLBACK_PROJECT_NAME = "codee-project"
 
 
+def warn_missing_unzip() -> None:
+    """Explain the missing Bun prerequisite without changing the system."""
+    if sys.platform == "win32" or shutil.which("unzip") is not None:
+        return
+
+    print(
+        "Warning: system command 'unzip' is missing. Reflex needs it to install "
+        "Bun for the admin UI.\n"
+        "Install it through your system package manager before starting Codee "
+        "(not pip or uv):\n"
+        "  Ubuntu/Debian (including WSL): sudo apt update && sudo apt install unzip\n"
+        "  Fedora/RHEL: sudo dnf install unzip\n"
+        "  Other systems: install the unzip package using your system package manager.",
+        file=sys.stderr,
+    )
+
+
 def _ignored_patterns(gitignore: Path) -> set[str]:
     """Patterns already listed, normalized so `/temp`, `temp/` and `temp` match."""
     if not gitignore.is_file():
@@ -162,6 +179,7 @@ def main() -> int:
         print("codee-init: cancelled")
         return 1
 
+    warn_missing_unzip()
     print("Created " + ", ".join(scaffold(destination)))
     return 0
 

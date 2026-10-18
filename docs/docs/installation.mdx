@@ -8,6 +8,25 @@ Codee is a pypi package which is installed as dependency for you custom-built vi
 
 We recommend using [uv](https://docs.astral.sh/uv/) for managing you python project.
 
+## System prerequisites
+
+On Linux (including WSL), install the system `unzip` command. Reflex needs it to
+install Bun for the admin UI; a Python package installed with pip or uv will not
+replace it. For Ubuntu/Debian:
+
+```bash
+sudo apt update && sudo apt install unzip
+```
+
+On Fedora/RHEL, use `sudo dnf install unzip`; on other distributions, use your
+system package manager. macOS normally includes `unzip`. Native Windows uses
+PowerShell to install Bun and does not require `unzip`.
+
+`uvx codee-agent init` checks for `unzip` on non-Windows systems and prints
+installation instructions if it is missing, including with `--scaffold-only`
+or non-interactive input. Setup continues without installing anything at the
+system level; install `unzip` before starting Codee.
+
 ## Quick start
 
 Make a directory for your Codee project and initialize it:

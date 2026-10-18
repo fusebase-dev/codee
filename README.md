@@ -24,6 +24,17 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 uv downloads Python 3.12+ for you if it isn't already on the machine.
 
+On Linux (including WSL), Reflex also needs the system `unzip` command to install Bun
+for the admin UI. On Ubuntu/Debian, run:
+
+```bash
+sudo apt update && sudo apt install unzip
+```
+
+`init` warns if `unzip` is missing, but continues setup without installing system
+packages. macOS normally includes `unzip`; native Windows uses PowerShell instead
+and does not need it.
+
 ## Run Codee
 
 Codee lives in its own directory, where it keeps skills, memory, temp files and config.

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from codee.admin_service import DEFAULT_ADMIN_PORT
-from codee.init_cli import confirm_overwrite, scaffold
+from codee.init_cli import confirm_overwrite, scaffold, warn_missing_unzip
 from codee import setup_wizard
 
 
@@ -41,6 +41,7 @@ def init(arguments: argparse.Namespace) -> int:
         print("codee-agent init: cancelled")
         return 1
 
+    warn_missing_unzip()
     setup_wizard.heading("Codee project")
     setup_wizard.wrapped(str(destination))
     setup_wizard.line()

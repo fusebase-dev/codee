@@ -1,7 +1,9 @@
+import io
 import os
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,46 @@ from codee.init_cli import ensure_git_repository, main, project_name
 
 
 class InitCliTest(unittest.TestCase):
+    def test_missing_unzip_warns_without_blocking_initialization(self) -> None:
+        for platform in ("linux", "darwin"):
+            with self.subTest(platform=platform):
+                output = io.StringIO()
+                with redirect_stderr(output), \
+                        patch("codee.init_cli.sys.platform", platform), \
+                        patch("codee.init_cli.shutil.which", return_value=None), \
+                        patch("codee.init_cli.confirm_overwrite", return_value=True), \
+                        patch("codee.init_cli.scaffold", return_value=[]) as scaffold, \
+                        patch("codee.init_cli.subprocess.run") as run:
+                    self.assertEqual(main(), 0)
+                scaffold.assert_called_once()
+                run.assert_not_called()
+                self.assertIn("system command 'unzip' is missing", output.getvalue())
+                self.assertIn("sudo apt update && sudo apt install unzip",
+                              output.getvalue())
+                self.assertIn("before starting Codee", output.getvalue())
+
+    def test_installed_unzip_produces_no_warning(self) -> None:
+        output = io.StringIO()
+        with redirect_stderr(output), \
+                patch("codee.init_cli.sys.platform", "linux"), \
+                patch("codee.init_cli.shutil.which",
+                      return_value="/usr/bin/unzip"), \
+                patch("codee.init_cli.confirm_overwrite", return_value=True), \
+                patch("codee.init_cli.scaffold", return_value=[]):
+            self.assertEqual(main(), 0)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_native_windows_does_not_check_for_unzip(self) -> None:
+        output = io.StringIO()
+        with redirect_stderr(output), \
+                patch("codee.init_cli.sys.platform", "win32"), \
+                patch("codee.init_cli.shutil.which") as which, \
+                patch("codee.init_cli.confirm_overwrite", return_value=True), \
+                patch("codee.init_cli.scaffold", return_value=[]):
+            self.assertEqual(main(), 0)
+        which.assert_not_called()
+        self.assertEqual(output.getvalue(), "")
+
     def test_copies_packaged_templates_to_current_directory(self) -> None:
         original_directory = Path.cwd()
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -2,7 +2,7 @@ import io
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +13,29 @@ class AgentCliTest(unittest.TestCase):
     def _init(self, argv: list[str]) -> int:
         with patch("sys.argv", ["codee-agent", *argv]):
             return agent_cli.main()
+
+    def test_missing_unzip_warns_in_all_setup_modes(self) -> None:
+        for argv, interactive in ((["init"], True),
+                                  (["init", "--scaffold-only"], True),
+                                  (["init"], False)):
+            with self.subTest(argv=argv, interactive=interactive):
+                output = io.StringIO()
+                with redirect_stderr(output), \
+                        patch("codee.init_cli.sys.platform", "linux"), \
+                        patch("codee.init_cli.shutil.which", return_value=None), \
+                        patch.object(agent_cli, "confirm_overwrite",
+                                     return_value=True), \
+                        patch.object(agent_cli, "scaffold", return_value=[]), \
+                        patch.object(agent_cli.setup_wizard, "run",
+                                     return_value=0) as wizard, \
+                        patch("sys.stdin.isatty", return_value=interactive):
+                    self.assertEqual(self._init(argv), 0)
+                self.assertIn("system command 'unzip' is missing",
+                              output.getvalue())
+                if "--scaffold-only" in argv or not interactive:
+                    wizard.assert_not_called()
+                else:
+                    wizard.assert_called_once()
 
     def test_init_scaffolds_then_runs_the_wizard(self) -> None:
         original_directory = Path.cwd()
