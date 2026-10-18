@@ -1,0 +1,134 @@
+---
+sidebar_position: 5
+---
+
+# Updating skills through Git
+
+You can update skills by editing the files and pushing them to your Codee project's Git
+repository. Codee pulls the changes automatically. You do not need to restart it.
+
+:::tip[Edit skills in the UI]
+
+You can also edit skills on the **Skills** page in the Codee UI.
+
+:::
+
+## How it works
+
+Before each check for new work in the task provider (ADO, Jira, ...), Codee:
+
+1. Checks which branch the project folder is on.
+2. Runs `git pull origin <branch>` if the branch is `main` or `master`. It skips the pull
+   on other branches.
+3. Reads the skill files in `.claude/skills/` when checking for work.
+
+Codee waits 60 seconds between checks. Changes are used after the next successful pull,
+but a check can take longer if Codee is busy. Updating a skill does not restart active
+runs, and their skill files are not kept as separate copies.
+
+The pull updates all tracked files in the project, including skills, `AGENTS.md`,
+`CLAUDE.md` and `memory/`. This is the Codee project repository, not the code repositories
+listed on the **Repositories** page.
+
+Settings are stored in `.codee/settings.json` and `.mcp.json`. These files can contain API
+tokens and are excluded from Git. Change them on the **Settings** page.
+
+:::warning[Codee updates]
+
+Pulling project files does not upgrade the installed Codee package.
+
+:::
+
+## 1. Add a Git remote
+
+`codee-agent init` creates a local Git repository unless the folder is already inside one.
+It does not add a remote.
+
+Create an empty private git repository (GitHub, GitLab, Azure DevOps, etc.). Then run these
+commands from your Codee project folder to use `main` and push the project:
+
+```bash
+git branch -M main
+git remote add origin git@github.com:yourcompany/my-codee.git
+git add -A
+git commit -m "Initial Codee project"
+git push -u origin main
+```
+
+Before committing, check that `.codee/` and `.mcp.json` are excluded by `.gitignore` and
+that you have not added any credentials to the tracked files.
+
+:::warning[Remote name]
+
+The remote must be called `origin`. Otherwise, Codee will not receive updates from your
+repository.
+
+:::
+
+Codee also supports `master` if you already use it;
+replace `main` with `master` in the remaining commands.
+
+## 2. Set up Git access on the Codee machine
+
+Git must work without asking for a password or other input. Set up an SSH key or a Git
+credential helper on the machine where Codee runs. Set Git's `user.name` and `user.email`
+too, so Codee can create commits.
+
+Test access from the project folder, using the same operating system account that runs
+Codee:
+
+```bash
+git pull origin main
+git push --dry-run
+```
+
+Both commands should finish without asking for input.
+
+Codee needs push access if you edit or delete skills in the UI. It saves the file changes,
+commits them and runs `git push`. Edits to `AGENTS.md` and memory in the UI work the same
+way. If the commit or push fails, the file changes remain on the Codee machine and the UI
+shows an error. Branch rules that require pull requests can also block these pushes.
+
+## 3. Edit a skill and push it
+
+On your own machine, clone the project repository:
+
+```bash
+git clone git@github.com:yourcompany/my-codee.git
+cd my-codee
+```
+
+Edit `.claude/skills/task-developer/SKILL.md`, then commit and push:
+
+```bash
+git add .claude/skills/task-developer/SKILL.md
+git commit -m "Run the linter before pushing"
+git push
+```
+
+If your repository requires pull requests, merge the change into `main` instead.
+
+After Codee pulls the change, new runs use the updated skill. Refresh the **Skills** page
+to check the file contents.
+
+## Troubleshooting
+
+If a pull fails, Codee logs the error and continues using the local files.
+
+| Error or symptom | Cause | What to do |
+| --- | --- | --- |
+| `Failed to pull from the repo, still continuing...` | The pull failed. | Read the preceding `git pull failed: ...` or timeout message in the log. |
+| `local changes ... would be overwritten` | Local edits conflict with incoming changes. | Review and commit or back up the edits on the Codee machine, then pull again. |
+| `divergent branches` | Both the local branch and the remote have new commits. | With a clean working tree, run `git pull --rebase origin main` on the Codee machine, resolve any conflicts, then run `git push`. |
+| `Saved ..., but Git push failed: ...` in the UI | The file was saved, but the commit or push failed. | Read the full error. Fix the Git identity, permissions or connection, then commit any uncommitted changes and push. |
+| Changes do not appear | The branch may not be `main` or `master`, or `origin` may point to the wrong repository. | Check `git branch --show-current`, `git remote -v` and the pull errors in Codee's log. |
+
+## Avoiding conflicts
+
+Pull the latest changes before editing skills on your own machine, especially after
+someone has used the Codee UI. Avoid leaving uncommitted edits on the Codee machine:
+they can block a pull if the remote changes the same files.
+
+To test locally without automatic pulls, run Codee on a branch other than `main` or
+`master`. Merge and push the changes to the branch used by your running Codee when they
+are ready.
