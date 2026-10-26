@@ -11,11 +11,12 @@ from codee_database.database import get_db_connection
 
 from codee_agent_claude_code import credentials, oauth
 from codee_agent_claude_code.account import AccountUnavailable
+from codee_agent_claude_code.greeting import GreetingFailed
 from codee_agent_claude_code.usage import Usage, UsageUnavailable
 from codee_main_context.context import (
     CodeeMainContext, Settings, save_settings)
 
-from codee.lib.claude_key_rotation import ClaudeKeyRotation
+from codee.lib.claude_key_rotation import GREETING_INTERVAL_MS, ClaudeKeyRotation
 from codee_database import claude_code_accounts
 
 SPENT = Usage(limited=True, reason="five_hour at 100%",
@@ -51,6 +52,11 @@ class RotationTestCase(unittest.TestCase):
         self.credentials_file = claude_home / credentials.CREDENTIALS_NAME
         self.context = CodeeMainContext(data_dir=self.data_dir)
         self._enable()
+        # Every check greets the accounts; none of these tests may reach the
+        # network for it.
+        greeting = patch("codee.lib.claude_key_rotation.send_greeting")
+        self.greeting = greeting.start()
+        self.addCleanup(greeting.stop)
 
     def _enable(self, enabled: bool = True) -> None:
         save_settings(self.data_dir, Settings(claude_code_rotate_keys=enabled))
@@ -449,6 +455,70 @@ class ClaudeKeyIdleRenewalTest(RotationTestCase):
             self._tick(FRESH)
 
         self.assertFalse(self._account(second).needs_reconnect(_in(0)))
+
+
+class ClaudeKeyGreetingTest(RotationTestCase):
+    """Sending every account real inference so an unused one does not expire."""
+
+    def _greeted(self) -> list[str]:
+        return [call.args[0] for call in self.greeting.call_args_list]
+
+    def test_every_account_is_greeted_including_the_one_in_use(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+
+        self._tick(FRESH)
+
+        self.assertEqual(self._greeted(), ["token-for-one@example.com",
+                                           "token-for-two@example.com"])
+
+    def test_an_account_is_not_greeted_again_within_half_an_hour(self) -> None:
+        self._connect("one@example.com")
+        rotation = self._rotation()
+
+        self._tick(FRESH, rotation=rotation)
+        self._tick(FRESH, rotation=rotation)
+
+        self.assertEqual(len(self._greeted()), 1)
+
+    def test_an_account_is_greeted_again_once_half_an_hour_has_passed(self) -> None:
+        first = self._connect("one@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+
+        rotation._greeted_at[first] -= GREETING_INTERVAL_MS
+        self._tick(FRESH, rotation=rotation)
+
+        self.assertEqual(len(self._greeted()), 2)
+
+    def test_a_waiting_account_with_an_expired_token_is_renewed_first(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com", expires_in_ms=-1000)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=oauth.Tokens("fresh-token", "fresh-refresh",
+                                             _in(LONG_LIFE_MS))):
+            self._tick(FRESH)
+
+        self.assertIn("fresh-token", self._greeted())
+
+    def test_a_retired_account_is_not_greeted(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com", refresh_expires_in_ms=-1000)
+
+        self._tick(FRESH)
+
+        self.assertEqual(self._greeted(), ["token-for-one@example.com"])
+
+    def test_a_failed_greeting_does_not_stop_the_check(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com")
+        self.greeting.side_effect = GreetingFailed("HTTP 429")
+
+        self._tick(SPENT, FRESH)
+
+        self.assertEqual(self._stored()["accessToken"],
+                         "token-for-two@example.com")
 
 
 class ClaudeKeyRetirementTest(RotationTestCase):

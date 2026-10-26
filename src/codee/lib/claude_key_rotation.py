@@ -24,6 +24,7 @@ import time
 
 from codee_agent_claude_code import credentials, oauth
 from codee_agent_claude_code.account import AccountUnavailable, fetch_account
+from codee_agent_claude_code.greeting import GreetingFailed, send_greeting
 from codee_agent_claude_code.usage import UsageUnavailable, fetch_usage
 from codee_main_context.context import CodeeMainContext, load_settings
 from codee_main_context.logging import get_logger
@@ -53,6 +54,12 @@ REFRESH_MARGIN_MS = 30 * 60 * 1000
 # failure mode.
 IDLE_REFRESH_MS = 5 * 24 * 60 * 60 * 1000
 
+# How often every connected account is sent a real, one-word Messages request.
+# Renewals and usage checks alone did not stop an unused subscription from
+# expiring; inference does, and half an hour keeps each account visibly in use
+# for the price of a few Haiku tokens.
+GREETING_INTERVAL_MS = 30 * 60 * 1000
+
 THREAD_NAME = "claude-key-rotation"
 
 
@@ -77,6 +84,9 @@ class ClaudeKeyRotation:
         # rather than every interval for the life of the process.
         self._reported_off = False
         self._reported_empty = False
+        # When this process last greeted each account, by id. Kept in memory
+        # only: a restart greeting everyone straight away costs nothing.
+        self._greeted_at: dict[int, int] = {}
 
     def tick(self) -> None:
         """One check: reconcile the account in use, then rotate if it is spent."""
@@ -100,6 +110,7 @@ class ClaudeKeyRotation:
         current = self._current_account(accounts)
         current = self._apply(current)
         self._renew_idle_accounts(accounts, current)
+        self._greet_accounts(current)
 
         try:
             usage = fetch_usage(current.access_token)
@@ -263,6 +274,39 @@ class ClaudeKeyRotation:
             log.debug("Renewing %s to keep it from expiring while it waits.",
                       describe(account))
             self._refreshed(account, force=True)
+
+    def _greet_accounts(self, current: Account) -> None:
+        """Send each account a greeting when its last one is half an hour old.
+
+        The accounts are read again rather than taken from the start of the
+        check: the idle pass may just have renewed some, and greeting with the
+        refresh token it replaced would get the account retired.
+
+        The account in use is greeted with the token the CLI holds, and never
+        renewed here: a renewal would hand Anthropic a new refresh token while
+        a running agent still holds the old one. If that token has expired the
+        greeting simply fails, and the next agent run renews it.
+        """
+        now = _now_ms()
+        for account in claude_code_accounts.accounts(self._context):
+            if now - self._greeted_at.get(account.id, 0) < GREETING_INTERVAL_MS:
+                continue
+            if account.needs_reconnect(now):
+                continue
+            if account.id == current.id:
+                account = current
+            else:
+                account = self._refreshed(account)
+            # Recorded before the attempt, so a failing account is retried on
+            # the same half-hour cadence rather than every check.
+            self._greeted_at[account.id] = now
+            try:
+                send_greeting(account.access_token)
+            except GreetingFailed as error:
+                log.warning("Could not greet Claude Code account %s: %s",
+                            describe(account), error)
+                continue
+            log.debug("Greeted Claude Code account %s.", describe(account))
 
     def _refreshed(self, account: Account, force: bool = False) -> Account:
         return ensure_fresh(account, self._context, force)
