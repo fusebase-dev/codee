@@ -3947,3 +3947,121 @@ class PeepJobTest(unittest.TestCase):
             service = self._service(Path(temporary_directory))
 
             self.assertIsNone(service.peep_job(42))
+
+
+class AdminServicePluginTest(unittest.TestCase):
+    """Skills a plugin installs, the triggers it adds, and issue conflicts."""
+
+    def setUp(self) -> None:
+        from codee_plugin_abstract.plugin import (
+            AbstractCodeePlugin, AbstractSkillTrigger, PluginField)
+        from codee.lib.plugins import build_plugins
+
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        root = Path(self._temporary.name)
+        source = root / "plugin" / "skills"
+        (source / "acme-develop").mkdir(parents=True)
+        (source / "acme-develop" / "SKILL.md").write_text(
+            "---\nname: acme-develop\ndisable-model-invocation: true\n"
+            "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
+            "x-codee-issue-type: story\n---\nBody\n")
+
+        class Webhook(AbstractSkillTrigger):
+            TYPE = "webhook"
+            SKILL_FIELDS = [PluginField("x-acme-path", "Path")]
+
+        class Acme(AbstractCodeePlugin):
+            NAME = "acme"
+            SETTINGS_FIELDS = [PluginField("token", "Token", secret=True)]
+
+            def skills_dir(self):
+                return source
+
+            def triggers(self):
+                return [Webhook()]
+
+        self.skills_dir = root / ".claude" / "skills"
+        (self.skills_dir / "develop").mkdir(parents=True)
+        (self.skills_dir / "develop" / "SKILL.md").write_text(
+            "---\nname: develop\ndisable-model-invocation: true\n"
+            "x-codee-trigger: issue\nx-codee-issue-status: [Ready, Review]\n"
+            "x-codee-issue-type: story\n---\nBody\n")
+        self.service = AdminService.__new__(AdminService)
+        self.service.skills_dir = self.skills_dir
+        self.service.data_dir = root
+        self.service.context = CodeeMainContext(data_dir=root)
+        self.service.plugins = build_plugins([lambda: Acme])
+
+    def test_plugin_skills_are_listed_with_their_plugin_and_conflicts(self) -> None:
+        skills = {skill["slug"]: skill for skill in self.service.list_skills()}
+
+        self.assertEqual(skills["acme-develop"]["plugin"], "acme")
+        self.assertEqual(skills["develop"]["plugin"], "")
+        self.assertIn("acme-develop", skills["develop"]["conflict"])
+        self.assertIn("develop", skills["acme-develop"]["conflict"])
+
+    def test_a_plugin_skill_cannot_be_saved_or_deleted(self) -> None:
+        skill = self.service.load_skill("acme-develop")
+        self.assertEqual(skill["plugin"], "acme")
+
+        saved, _, message, _ = self.service.save_skill({**skill, "body": "x"})
+        deleted, _, _ = self.service.delete_skill("acme-develop")
+
+        self.assertFalse(saved)
+        self.assertIn("acme", message)
+        self.assertFalse(deleted)
+        self.assertTrue((self.skills_dir / "acme-develop" / "SKILL.md").exists())
+
+    def test_a_plugin_trigger_writes_its_fields_into_the_frontmatter(self) -> None:
+        with patch.object(self.service, "_write_and_push",
+                          return_value=(True, True, "saved")) as write:
+            saved, _, _, _ = self.service.save_skill({
+                "slug": "develop", "name": "develop", "description": "",
+                "type": "webhook trigger", "body": "Body",
+                "plugin_fields": {"x-acme-path": " /deploy ", "x-other": "no"},
+            })
+
+        self.assertTrue(saved)
+        frontmatter, _ = parse_skill(write.call_args.args[1])
+        self.assertEqual(frontmatter["x-codee-trigger"], "webhook")
+        self.assertIs(frontmatter["disable-model-invocation"], True)
+        self.assertEqual(frontmatter["x-acme-path"], "/deploy")
+        self.assertNotIn("x-other", frontmatter)
+
+    def test_plugin_settings_are_saved_and_kept_by_the_settings_page(self) -> None:
+        self.service.context.settings = Settings(
+            plugin_settings={"gone": {"key": "kept"}})
+        self.service.save_plugin_settings("acme", {"token": " t "})
+        with patch.object(self.service, "_reconcile_claude_code_account"):
+            self.service.save_settings("jira", "claude_code", 3, {})
+
+        settings = load_settings(self.service.data_dir)
+        self.assertEqual(settings.plugin_settings,
+                         {"gone": {"key": "kept"}, "acme": {"token": "t"}})
+        section = self.service.plugin_sections()[0]
+        self.assertEqual(section["triggers"], "webhook")
+        self.assertEqual(section["skills"], "acme-develop")
+        self.assertEqual(section["fields"][0]["value"], "t")
+        self.assertTrue(section["enabled"])
+
+    def test_a_plugin_turned_off_loses_its_skills_and_conflicts(self) -> None:
+        self.service.list_skills()
+        self.assertTrue((self.skills_dir / "acme-develop").is_symlink())
+
+        self.service.set_plugin_enabled("acme", False)
+
+        self.assertFalse((self.skills_dir / "acme-develop").exists())
+        self.assertEqual(self.service.skill_conflicts(), {})
+        self.assertEqual(
+            load_settings(self.service.data_dir).disabled_plugins, ["acme"])
+        section = self.service.plugin_sections()[0]
+        self.assertFalse(section["enabled"])
+        # Still says what it would install once turned back on.
+        self.assertEqual(section["skills"], "acme-develop")
+
+        self.service.set_plugin_enabled("acme", True)
+
+        self.assertTrue((self.skills_dir / "acme-develop").is_symlink())
+        self.assertEqual(
+            load_settings(self.service.data_dir).disabled_plugins, [])

@@ -37,11 +37,15 @@ from codee.lib import runs_db
 from codee.lib.claude_key_rotation import ensure_fresh
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
+from codee.lib.plugins import (
+    LoadedPlugins, active_plugins, load_plugins, plugin_skill_sources,
+    sync_plugin_skills)
 from codee.lib.runtime_control import is_paused, set_paused
 from codee.lib.trigger_cron_skills import request_force_run
 from codee.lib.trigger_issue_skills import (
     IssueTriggeredSkill,
     find_issue_triggered_skills,
+    issue_skill_conflicts,
     issue_statuses,
 )
 from codee.tasks_providers import TASKS_PROVIDERS, build_tasks_provider
@@ -100,6 +104,11 @@ MANAGED = {
     "x-codee-email-address",
     "x-codee-aws-sqs-queue",
 }
+# Plugins are read once per process, so the skill types and the frontmatter
+# keys their triggers own are fixed for the life of the admin as well.
+PLUGINS = load_plugins()
+for _plugin, _trigger in PLUGINS.triggers.values():
+    MANAGED.update(item.key for item in _trigger.SKILL_FIELDS)
 AGENTS_FILE = "AGENTS.md"
 # Layout the coding agents are told to expect (see the AGENTS.md template):
 # `repositories/<repo>/.bare` holds the bare clone, `repositories/<repo>/.git`
@@ -122,6 +131,7 @@ SKILL_TYPES = [
     "cron trigger",
     "email trigger",
     "aws-sqs trigger",
+    *(f"{kind} trigger" for kind in PLUGINS.triggers),
 ]
 FM_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 INDEX_RE = re.compile(
@@ -396,6 +406,8 @@ def infer_skill_type(frontmatter: dict[str, Any]) -> str:
         return "email trigger"
     if trigger == "cron" or frontmatter.get("x-codee-cron") or frontmatter.get("cron"):
         return "cron trigger"
+    if isinstance(trigger, str) and trigger.strip().lower() in PLUGINS.triggers:
+        return f"{trigger.strip().lower()} trigger"
     if frontmatter.get("disable-model-invocation"):
         return "slash command"
     return "knowledge"
@@ -904,6 +916,9 @@ def issue_prompt_task(message: str) -> str:
 class AdminService:
     """Synchronous local operations used by Reflex event handlers."""
 
+    # The installed plugins; replaced per instance by tests.
+    plugins: LoadedPlugins = PLUGINS
+
     def __init__(self) -> None:
         self.root = project_root()
         self.skills_dir = skills_dir(self.root)
@@ -988,12 +1003,53 @@ class AdminService:
             return True, True, f"Saved and pushed {relative_path}"
         return True, False, f"Saved {relative_path}, but Git push failed: {output}"
 
+    def plugin_skills(self) -> tuple[dict[str, str], list[str]]:
+        """Install the plugins' skills; slug -> plugin name, plus what failed.
+
+        Done here as well as in the executor, so a freshly installed plugin's
+        skills are on the Skills page before the executor's next tick, and a
+        plugin turned off loses its skills the moment it is.
+        """
+        return sync_plugin_skills(self.skills_dir, self._active_plugins())
+
+    def _active_plugins(self) -> LoadedPlugins:
+        # With nothing installed there is nothing to filter, and no settings to
+        # read for it.
+        if not self.plugins.plugins:
+            return self.plugins
+        return active_plugins(self.plugins,
+                              self.context.settings.disabled_plugins)
+
+    def skill_conflicts(self) -> dict[str, list[str]]:
+        """slug -> why it conflicts, for the issue skills that share a status.
+
+        Judged on whatever work item types the skills declare rather than on
+        the ones Settings configures: two skills claiming one status clash
+        just the same, and adding the type in Settings is what would set both
+        off at once.
+        """
+        declared = set()
+        for path in self.skills_dir.glob("*/SKILL.md"):
+            try:
+                frontmatter, _ = parse_skill(path.read_text())
+            except (OSError, yaml.YAMLError):
+                continue
+            declared.add(str(frontmatter.get("x-codee-issue-type", "")
+                             ).strip().lower())
+        return issue_skill_conflicts(find_issue_triggered_skills(
+            self.skills_dir, issue_types=tuple(declared - {""})))
+
     def list_skills(self) -> list[dict[str, str]]:
+        owners, _ = self.plugin_skills()
+        conflicts = self.skill_conflicts()
         skills = []
         for path in sorted(self.skills_dir.glob("*/SKILL.md")):
             frontmatter, _ = parse_skill(path.read_text())
             skills.append({
                 "slug": path.parent.name,
+                # The plugin that installed it, empty for a skill of the project.
+                "plugin": owners.get(path.parent.name, ""),
+                "conflict": "; ".join(conflicts.get(path.parent.name, [])),
                 "name": str(frontmatter.get("name", path.parent.name)),
                 "description": str(frontmatter.get("description", "")),
                 "type": infer_skill_type(frontmatter),
@@ -1791,19 +1847,28 @@ class AdminService:
             return_index += 1
         return {"nodes": nodes, "edges": edges, "warnings": warnings}
 
-    def load_skill(self, slug: str) -> dict[str, str]:
+    def load_skill(self, slug: str) -> dict[str, Any]:
         """One skill's editable fields, as the admin UI's editor shows them.
 
         ``agent`` comes back as the canonical agent code, and empty when the
         skill names no agent Codee can run — the same reading the executor
         takes, which runs such a skill on the default agent from Settings.
         """
+        owners, _ = self.plugin_skills()
         path = self.skills_dir / slug / "SKILL.md"
         frontmatter, body = parse_skill(path.read_text())
         extra = {key: value for key, value in frontmatter.items()
                  if key not in MANAGED}
         return {
             "slug": slug,
+            "plugin": owners.get(slug, ""),
+            "conflict": "; ".join(self.skill_conflicts().get(slug, [])),
+            # Every plugin trigger's fields as this skill sets them, keyed by
+            # frontmatter key; the editor shows the selected trigger's.
+            "plugin_fields": {
+                item.key: str(frontmatter.get(item.key, "") or "")
+                for _, trigger in self.plugins.triggers.values()
+                for item in trigger.SKILL_FIELDS},
             "name": str(frontmatter.get("name", slug)),
             "description": str(frontmatter.get("description", "")),
             "model": str(frontmatter.get("model", "") or ""),
@@ -1835,11 +1900,17 @@ class AdminService:
         )
         return saved, pushed, message, slug
 
-    def save_skill(self, skill: dict[str, str]) -> tuple[bool, bool, str, str]:
+    def _plugin_owner(self, slug: str) -> str:
+        return self.plugin_skills()[0].get(slug, "")
+
+    def save_skill(self, skill: dict[str, Any]) -> tuple[bool, bool, str, str]:
         old_slug = skill["slug"]
         name = slugify(skill["name"])
         if not name:
             return False, False, "Enter a valid skill name", old_slug
+        if plugin := self._plugin_owner(old_slug):
+            return False, False, (f"{old_slug} is installed by the {plugin} "
+                                  "plugin and cannot be edited"), old_slug
 
         # A caller that leaves `extra` out is not editing the free-form fields,
         # so whatever the file already carries is kept below.
@@ -1906,6 +1977,18 @@ class AdminService:
                 "x-codee-trigger": "aws-sqs",
                 "x-codee-aws-sqs-queue": skill["sqs"],
             })
+        elif skill_type.removesuffix(" trigger") in self.plugins.triggers:
+            kind = skill_type.removesuffix(" trigger")
+            _, trigger = self.plugins.triggers[kind]
+            values = skill.get("plugin_fields") or {}
+            frontmatter.update({
+                "disable-model-invocation": True,
+                "x-codee-trigger": kind,
+            })
+            # Left out when empty, like the agent and model above.
+            frontmatter.update({
+                item.key: value for item in trigger.SKILL_FIELDS
+                if (value := str(values.get(item.key, "")).strip())})
 
         current_path = self.skills_dir / old_slug / "SKILL.md"
         destination = self.skills_dir / name
@@ -1931,6 +2014,9 @@ class AdminService:
         directory = self.skills_dir / slug
         if not slug or not directory.is_dir():
             return False, False, f"{slug or 'Skill'} does not exist"
+        if plugin := self._plugin_owner(slug):
+            return False, False, (f"{slug} is installed by the {plugin} "
+                                  "plugin; uninstall the plugin to remove it")
         shutil.rmtree(directory)
         pushed, output = self._git_push(f"skill: delete {slug}")
         if pushed:
@@ -2288,9 +2374,76 @@ class AdminService:
             task_filters=all_task_filters,
             claude_code_rotate_keys=claude_code_rotate_keys,
             max_parallel_agents=max(1, max_parallel_agents),
+            # Edited on the Plugins page, so carried over untouched.
+            plugin_settings=current.plugin_settings,
+            disabled_plugins=current.disabled_plugins,
         )
         save_settings(self.data_dir, self.context.settings)
         self._reconcile_claude_code_account()
+
+    def plugin_sections(self) -> list[dict[str, Any]]:
+        """One entry per installed plugin, as the Plugins page lists them.
+
+        A plugin that is turned off still lists the skills it would install,
+        read from the plugin rather than from what is linked right now.
+        """
+        stored = self.context.settings.plugin_settings
+        disabled = set(self.context.settings.disabled_plugins)
+        triggers: dict[str, list[str]] = {}
+        for kind, (plugin, _) in self.plugins.triggers.items():
+            triggers.setdefault(plugin.NAME, []).append(kind)
+        self.plugin_skills()
+        sources, _ = plugin_skill_sources(self.plugins)
+        return [{
+            "name": plugin.NAME,
+            "label": plugin.DISPLAY_NAME or plugin.NAME,
+            "package": self.plugins.packages.get(plugin.NAME, ("", ""))[0],
+            "version": self.plugins.packages.get(plugin.NAME, ("", ""))[1],
+            "enabled": plugin.NAME not in disabled,
+            "triggers": ", ".join(triggers.get(plugin.NAME, [])),
+            "skills": ", ".join(slug for slug, (owner, _) in sources.items()
+                                if owner == plugin.NAME),
+            "fields": [{
+                "key": item.key, "label": item.label, "hint": item.hint,
+                "placeholder": item.placeholder, "secret": item.secret,
+                "value": str(stored.get(plugin.NAME, {}).get(item.key, "")),
+            } for item in plugin.SETTINGS_FIELDS],
+        } for plugin in self.plugins.plugins]
+
+    def set_plugin_enabled(self, name: str, enabled: bool) -> str:
+        """Turn a plugin on or off; returns what happened, for a toast.
+
+        Its skills are linked or unlinked right away. The executor picks the
+        change up on its next tick, which is when its triggers start or stop.
+        """
+        current = self.context.settings
+        disabled = [plugin for plugin in current.disabled_plugins
+                    if plugin != name]
+        if not enabled:
+            disabled.append(name)
+        self.context.settings = replace(current, disabled_plugins=disabled)
+        save_settings(self.data_dir, self.context.settings)
+        self.plugin_skills()
+        return f"{name} turned {'on' if enabled else 'off'}"
+
+    def save_plugin_settings(self, name: str, values: dict[str, str]) -> None:
+        current = self.context.settings
+        self.context.settings = replace(current, plugin_settings={
+            **current.plugin_settings,
+            name: {key: value.strip() for key, value in values.items()}})
+        save_settings(self.data_dir, self.context.settings)
+
+    def plugin_errors(self) -> list[str]:
+        """Why a plugin, trigger or skill is missing, for the Plugins page."""
+        return [*self.plugins.errors, *self.plugin_skills()[1]]
+
+    def plugin_skill_fields(self) -> list[dict[str, str]]:
+        """Every plugin trigger's per-skill fields, tagged with its skill type."""
+        return [{"skill_type": f"{kind} trigger", "key": item.key,
+                 "label": item.label, "hint": item.hint,
+                 "placeholder": item.placeholder}
+                for kind, (_, trigger) in self.plugins.triggers.items()
+                for item in trigger.SKILL_FIELDS]
 
     def claude_code_available(self) -> bool:
         """Whether this machine has the Claude Code CLI at all.

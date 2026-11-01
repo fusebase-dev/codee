@@ -85,6 +85,7 @@ module-name = [
     "codee_agent_codex",
     "codee_agent_opencode",
     "codee_tasks_abstract",
+    "codee_plugin_abstract",
     "codee_tasks_jira",
     "codee_tasks_azure_devops",
 ]

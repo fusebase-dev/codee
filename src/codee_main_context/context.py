@@ -185,6 +185,13 @@ class Settings:
     # empty by default: nothing is added to the query until the user asks for
     # it. Read it through :func:`task_filter`, which normalizes what was typed.
     task_filters: dict[str, str] = field(default_factory=dict)
+    # What each plugin asks for on the Settings page, keyed by plugin name ->
+    # {field key: value}. Kept for plugins that are no longer installed, so
+    # removing one and adding it back doesn't lose its configuration.
+    plugin_settings: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Plugins turned off on the Plugins page, by name: installed, but their
+    # skills are not linked and their triggers are not ticked.
+    disabled_plugins: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -213,6 +220,9 @@ def load_settings(data_dir: Path) -> Settings:
                 work_item_types=data.get("work_item_types", {}),
                 work_item_queries=data.get("work_item_queries", {}),
                 task_filters=data.get("task_filters", {}),
+                plugin_settings=data.get("plugin_settings", {}),
+                disabled_plugins=[str(name) for name in
+                                  data.get("disabled_plugins", [])],
                 claude_code_rotate_keys=bool(
                     data.get("claude_code_rotate_keys", False)),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
@@ -237,6 +247,8 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "work_item_types": settings.work_item_types,
         "work_item_queries": settings.work_item_queries,
         "task_filters": settings.task_filters,
+        "plugin_settings": settings.plugin_settings,
+        "disabled_plugins": settings.disabled_plugins,
         "claude_code_rotate_keys": settings.claude_code_rotate_keys,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"

@@ -114,15 +114,54 @@ def issue_statuses(skills: list[IssueTriggeredSkill]) -> list[str]:
 def match_issue_skill(
     skills: list[IssueTriggeredSkill], status: str, issue_type: str
 ) -> IssueTriggeredSkill | None:
-    """Find a skill matching both status and issue type."""
+    """Find the skill matching both status and issue type.
+
+    None when two skills claim the same pair: which one runs would come down
+    to how their folders sort, so neither does until the conflict, which the
+    Skills page shows, is resolved.
+    """
     normalized_status = status.casefold()
     normalized_issue_type = issue_type.casefold()
 
-    return next((
+    matches = [
         skill for skill in skills
         if skill.issue_type.casefold() == normalized_issue_type
         and any(value.casefold() == normalized_status for value in skill.statuses)
-    ), None)
+    ]
+    if len(matches) > 1:
+        print(
+            f"[issue_skills] ERROR: {', '.join(skill.slug for skill in matches)} "
+            f"all trigger on {issue_type} in status {status}; running none."
+        )
+        return None
+    return matches[0] if matches else None
+
+
+def issue_skill_conflicts(
+    skills: list[IssueTriggeredSkill],
+) -> dict[str, list[str]]:
+    """slug -> one message per other skill it shares a work item status with.
+
+    Two skills conflict when they trigger on the same issue type in at least
+    one common status; only the slugs that do are in the result.
+    """
+    conflicts: dict[str, list[str]] = {}
+    for index, skill in enumerate(skills):
+        statuses = {status.casefold(): status for status in skill.statuses}
+        for other in skills[index + 1:]:
+            if other.issue_type.casefold() != skill.issue_type.casefold():
+                continue
+            shared = [statuses[key] for key in dict.fromkeys(
+                status.casefold() for status in other.statuses)
+                if key in statuses]
+            if not shared:
+                continue
+            where = f"{skill.issue_type} in {', '.join(shared)}"
+            conflicts.setdefault(skill.slug, []).append(
+                f"Conflicts with {other.slug} on {where}")
+            conflicts.setdefault(other.slug, []).append(
+                f"Conflicts with {skill.slug} on {where}")
+    return conflicts
 
 
 def _parse_frontmatter(contents: str) -> dict[str, Any]:

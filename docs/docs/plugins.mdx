@@ -1,0 +1,113 @@
+---
+sidebar_position: 4.5
+---
+
+# Plugins
+
+A plugin is a Python package that adds to Codee without changing it. It can:
+
+- **ship skills.** Codee links them into `.claude/skills`, keeps them out of Git, and
+  shows them read-only on the **Skills** page.
+- **add skill triggers.** A new trigger shows up in the **Skill type** picker with its own
+  fields, and the executor ticks it every 60 seconds alongside cron, email and SQS.
+- **ask for settings.** They are filled in on the plugin's card on the **Plugins** page.
+
+## The Plugins page
+
+**Plugins** in the sidebar lists every installed plugin with its package and version,
+the triggers and skills it adds, and its settings. Each one has an on/off switch:
+
+- **Off** removes its skills from `.claude/skills` straight away, and the executor stops
+  ticking its triggers from its next tick on. No restart is needed. Its settings are
+  kept, and so are your skills that use its triggers; they just don't run while it is off.
+- **On** brings both back.
+
+The switch is stored as `disabled_plugins` in `.codee/settings.json`. A plugin that failed
+to load is listed at the top of the page with the reason.
+
+## Installing one
+
+Codee finds plugins through the `codee.plugins` entry point, so installing one is
+`uv add` in your Codee project, then restarting `codee-start`:
+
+```bash
+uv add codee-acme
+```
+
+A plugin that lives in a folder of your project is added the same way, as a path
+dependency in the project's `pyproject.toml`:
+
+```toml
+[project]
+dependencies = ["codee-agent", "codee-acme"]
+
+[tool.uv.sources]
+codee-acme = { path = "plugins/acme", editable = true }
+```
+
+## Writing one
+
+```toml
+# plugins/acme/pyproject.toml
+[project]
+name = "codee-acme"
+version = "0.1.0"
+
+[project.entry-points."codee.plugins"]
+acme = "codee_acme.plugin:AcmePlugin"
+```
+
+```python
+# plugins/acme/src/codee_acme/plugin.py
+from pathlib import Path
+
+from codee_plugin_abstract.plugin import (
+    AbstractCodeePlugin, AbstractSkillTrigger, PluginField)
+
+
+class WebhookTrigger(AbstractSkillTrigger):
+    TYPE = "webhook"                       # x-codee-trigger: webhook
+    SKILL_FIELDS = [                       # shown in the skill editor
+        PluginField("x-acme-path", "Webhook path", placeholder="/deploy"),
+    ]
+
+    def tick(self, skills, run_skill, settings):
+        for skill in skills:
+            if called(settings["base_url"], skill.fields["x-acme-path"]):
+                run_skill(skill, skill.body)   # records the run on the Runs page
+
+
+class AcmePlugin(AbstractCodeePlugin):
+    NAME = "acme"
+    DISPLAY_NAME = "Acme"
+    SETTINGS_FIELDS = [                    # shown on the Plugins page
+        PluginField("base_url", "Acme URL"),
+        PluginField("api_token", "Acme API token", secret=True),
+    ]
+
+    def skills_dir(self):
+        return Path(__file__).parent / "skills"   # <slug>/SKILL.md inside
+
+    def triggers(self):
+        return [WebhookTrigger()]
+```
+
+Rules:
+
+- A skill field's `key` is the frontmatter key its value is written under. Prefix it with
+  your plugin's name (`x-acme-…`) so it can't clash with another plugin.
+- A trigger `TYPE` can't reuse `issue`, `cron`, `email`, `aws-sqs`, or another plugin's.
+  A clash, or a plugin that fails to import, is reported on the Plugins page and skipped.
+- `tick` runs in the executor's main loop, so keep it short; it is only called while
+  Codee isn't paused and at least one skill uses the trigger.
+- `run_skill` raises if the agent run failed or was killed (after recording it), so you
+  can decide whether the event that fired it is used up.
+- A plugin skill whose name matches a skill of your project is not installed: the
+  project's skill wins.
+
+## Conflicting issue triggers
+
+Two issue-triggered skills conflict when they trigger on the same work item type in a
+common status, whether they come from a plugin or from your project. The **Skills** page
+marks both skills and shows the number of conflicting skills next to **Skills** in the
+sidebar. Until the conflict is resolved, Codee runs neither of them for that status.

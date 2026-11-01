@@ -15,12 +15,14 @@ from codee_agent_github_copilot.provider import (
 from codee_agent_opencode.provider import OpenCodeAgent
 from codee_main_context.context import (
     CodeeMainContext, CodingAgent, Settings, codee_issue_types, data_dir,
-    load_settings, project_root)
+    load_settings, project_root, skills_dir)
 from codee_main_context.logging import DEBUG_ENV_VAR, configure_logging, get_logger
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
 from codee.coding_agents import resolve_agent_code
 from codee.lib import claude_key_rotation, runs_db
+from codee.lib.plugins import (
+    active_plugins, load_plugins, sync_plugin_skills, trigger_plugin_skills)
 from codee.lib.runtime_control import is_paused
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -443,6 +445,15 @@ def run_once() -> None:
     if not _pull_latest_code():
         log.warning("Failed to pull from the repo, still continuing...")
 
+    # After the pull, so the links match the skills this tick runs on.
+    # Turning a plugin off on the Plugins page takes effect here, on the next
+    # tick: its skills are unlinked and its triggers are skipped.
+    _, plugin_errors = sync_plugin_skills(
+        skills_dir(REPO_ROOT),
+        active_plugins(load_plugins(), context.settings.disabled_plugins))
+    for error in plugin_errors:
+        log.error("%s", error)
+
     if is_paused(context):
         log.info("New agent work is paused; active agents continue running.")
         return
@@ -450,6 +461,8 @@ def run_once() -> None:
     trigger_cron_skills(_run_agent, main_context=context)
     trigger_aws_sqs_skills(_run_agent, main_context=context)
     trigger_email_skills(_run_agent, main_context=context)
+    trigger_plugin_skills(_run_agent, skills_dir=skills_dir(REPO_ROOT),
+                          main_context=context)
 
     if not tasks_provider.is_configured():
         log.debug("Tasks provider is not configured; skipping poll.")

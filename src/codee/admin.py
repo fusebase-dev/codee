@@ -19,6 +19,8 @@ from codee_main_context.context import (
 SERVICE = AdminService()
 
 RUNS_PAGE_SIZE = 20
+# How many of the latest runs the dashboard lists before pointing at /runs.
+DASHBOARD_RUNS = 9
 # The agents a skill can be run by, as the editor's picker lists them. Built
 # once: which agents exist is decided by this build, not by the settings.
 DEFAULT_AGENT_OPTION = "Default agent"
@@ -71,6 +73,38 @@ def _effort_options(model: "ModelOption | None", effort: str) -> list[str]:
     return options
 
 
+def _run_record(run: dict[str, Any], query: str) -> "RunRecord":
+    """One run as the run cards draw it, its text marked for ``query``."""
+    message = (run.get("message") or "").strip()
+    user_message = (run.get("user_message") or message).strip()
+    response = (run.get("response") or "").strip()
+    preview = _run_preview(message, user_message,
+                           response, query)
+    return RunRecord(
+        skill_name=run["skill_name"],
+        trigger_type=run["trigger_type"],
+        status=run["status"],
+        error=run.get("error") or "",
+        started_at=run["started_at"],
+        ended_at=run["ended_at"],
+        duration_label=run["duration_label"],
+        relative_age_label=run["relative_age_label"],
+        session_id=run.get("session_id") or "",
+        message=message,
+        user_message=user_message,
+        response=response,
+        debug_logs=run.get("debug_logs") or "",
+        preview=preview,
+        viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
+                    if SERVICE.session_viewer and run.get("session_id") else ""),
+        preview_parts=_highlight_parts(preview, query),
+        message_parts=_highlight_parts(message, query),
+        user_message_parts=_highlight_parts(
+            user_message, query),
+        response_parts=_highlight_parts(response, query),
+    )
+
+
 def _usage_row(account: Any) -> "ClaudeAccount":
     """One account's dashboard row, with its percentages rounded to whole numbers.
 
@@ -120,6 +154,41 @@ class SkillSummary(BaseModel):
     context_tier: str = ""
     issue_status: str = ""
     issue_type: str = ""
+    # The plugin that installed the skill, empty for one of the project's own.
+    plugin: str = ""
+    # Why it clashes with another issue skill, empty when it doesn't.
+    conflict: str = ""
+
+
+class PluginSkillField(BaseModel):
+    """One field a plugin trigger asks for in the skill editor."""
+    skill_type: str
+    key: str
+    label: str
+    hint: str = ""
+    placeholder: str = ""
+    value: str = ""
+
+
+class PluginSettingField(BaseModel):
+    key: str
+    label: str
+    hint: str = ""
+    placeholder: str = ""
+    secret: bool = False
+    value: str = ""
+
+
+class PluginSection(BaseModel):
+    """One installed plugin on the Plugins page."""
+    name: str
+    label: str
+    package: str = ""
+    version: str = ""
+    enabled: bool = True
+    triggers: str = ""
+    skills: str = ""
+    fields: list[PluginSettingField] = []
 
 
 class ModelOption(BaseModel):
@@ -400,6 +469,10 @@ class RunRecord(BaseModel):
     response_parts: list[RunTextPart] = []
 
 
+EMPTY_RUN = RunRecord(**{name: "" for name, field in
+                          RunRecord.model_fields.items() if field.is_required()})
+
+
 class AdminState(rx.State):
     skills: list[SkillSummary] = []
     skill_query: str = ""
@@ -424,6 +497,16 @@ class AdminState(rx.State):
     skill_body: str = ""
     skill_extra: str = ""
     skill_extra_enabled: bool = False
+    # The plugin that installed the open skill; set, the editor is read-only.
+    skill_plugin: str = ""
+    skill_conflict: str = ""
+    # The plugin triggers' per-skill fields with the open skill's values.
+    skill_plugin_fields: list[PluginSkillField] = []
+    # How many skills clash as issue triggers, for the sidebar's Skills link.
+    skill_conflict_count: int = 0
+
+    plugin_sections: list[PluginSection] = []
+    plugin_errors: list[str] = []
 
     agent_models: list[ModelOption] = []
     model_query: str = ""
@@ -459,6 +542,11 @@ class AdminState(rx.State):
     total_runs: int = 0
     last_24h_runs: int = 0
     hourly_runs: list[dict[str, Any]] = []
+    dashboard_runs: list[RunRecord] = []
+    # A copy of the run whose details are open, so the dashboard's
+    # once-a-second refresh cannot swap another run in under the reader.
+    run_detail: RunRecord = EMPTY_RUN
+    run_detail_open: bool = False
     # Which visit is polling the dashboard. Every visit takes the poll over
     # from the one before it, so a poll no visit is watching any more cannot
     # leave the page frozen on the numbers it last wrote.
@@ -576,6 +664,12 @@ class AdminState(rx.State):
             if (not query or query in f"{skill.name} {skill.description}".lower())
             and (self.skill_filter == "All" or skill.type == self.skill_filter)
         ]
+
+    @rx.var
+    def active_plugin_fields(self) -> list[PluginSkillField]:
+        """The selected plugin trigger's fields, empty for any other type."""
+        return [item for item in self.skill_plugin_fields
+                if item.skill_type == self.skill_type]
 
     @rx.var
     def agents_card_visible(self) -> bool:
@@ -857,9 +951,23 @@ class AdminState(rx.State):
     def set_skill_extra_enabled(self, value: bool) -> None:
         self.skill_extra_enabled = value
 
+    def set_skill_plugin_field(self, key: str, value: str) -> None:
+        self.skill_plugin_fields = [
+            item.model_copy(update={"value": value}) if item.key == key
+            else item for item in self.skill_plugin_fields]
+
+    def load_skill_conflicts(self) -> None:
+        """Count the clashing skills, for the badge every page's sidebar shows."""
+        try:
+            self.skill_conflict_count = len(SERVICE.skill_conflicts())
+        except Exception:
+            self.skill_conflict_count = 0
+
     def load_skills(self) -> None:
         self.skills = [_skill_summary(skill)
                        for skill in SERVICE.list_skills()]
+        self.skill_conflict_count = sum(
+            1 for skill in self.skills if skill.conflict)
         # The editor's issue-type picker offers the work items Settings
         # configures, so a work item added there is selectable right away.
         self.skill_issue_types = list(SERVICE.issue_types())
@@ -895,6 +1003,12 @@ class AdminState(rx.State):
         self.skill_body = skill["body"]
         self.skill_extra = skill["extra"]
         self.skill_extra_enabled = bool(skill["extra"])
+        self.skill_plugin = skill["plugin"]
+        self.skill_conflict = skill["conflict"]
+        self.skill_plugin_fields = [
+            PluginSkillField(**item,
+                             value=skill["plugin_fields"].get(item["key"], ""))
+            for item in SERVICE.plugin_skill_fields()]
         # The catalog on screen belongs to whichever skill was open before this
         # one, and only this agent's models can be picked for this skill.
         return AdminState.load_agent_models
@@ -921,6 +1035,8 @@ class AdminState(rx.State):
             # Unchecking the box drops the fields from the frontmatter, while
             # the text stays around in case the box goes back on.
             "extra": self.skill_extra if self.skill_extra_enabled else "",
+            "plugin_fields": {item.key: item.value
+                              for item in self.active_plugin_fields},
         })
         if saved:
             self.selected_skill = slug
@@ -1037,6 +1153,15 @@ class AdminState(rx.State):
         self.total_runs = dashboard["counts"]["total"]
         self.last_24h_runs = dashboard["counts"]["last_24h"]
         self.hourly_runs = dashboard["hourly"]
+        self.dashboard_runs = [_run_record(run, "") for run in
+                               SERVICE.recent_runs(DASHBOARD_RUNS)]
+
+    def open_run_detail(self, run: dict[str, Any]) -> None:
+        self.run_detail = RunRecord(**run)
+        self.run_detail_open = True
+
+    def set_run_detail_open(self, is_open: bool) -> None:
+        self.run_detail_open = is_open
 
     def toggle_pause(self) -> Any:
         self.paused = SERVICE.set_paused(not self.paused)
@@ -1214,37 +1339,7 @@ class AdminState(rx.State):
         rows = SERVICE.recent_runs(
             limit + 1, offset, self.runs_query)
         self.runs_has_more = len(rows) > limit
-        records = []
-        for run in rows[:limit]:
-            message = (run.get("message") or "").strip()
-            user_message = (run.get("user_message") or message).strip()
-            response = (run.get("response") or "").strip()
-            preview = _run_preview(message, user_message,
-                                   response, self.runs_query)
-            records.append(RunRecord(
-                skill_name=run["skill_name"],
-                trigger_type=run["trigger_type"],
-                status=run["status"],
-                error=run.get("error") or "",
-                started_at=run["started_at"],
-                ended_at=run["ended_at"],
-                duration_label=run["duration_label"],
-                relative_age_label=run["relative_age_label"],
-                session_id=run.get("session_id") or "",
-                message=message,
-                user_message=user_message,
-                response=response,
-                debug_logs=run.get("debug_logs") or "",
-                preview=preview,
-                viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
-                            if SERVICE.session_viewer and run.get("session_id") else ""),
-                preview_parts=_highlight_parts(preview, self.runs_query),
-                message_parts=_highlight_parts(message, self.runs_query),
-                user_message_parts=_highlight_parts(
-                    user_message, self.runs_query),
-                response_parts=_highlight_parts(response, self.runs_query),
-            ))
-        return records
+        return [_run_record(run, self.runs_query) for run in rows[:limit]]
 
     def load_runs(self) -> None:
         """Load (or reload) the first page. Runs on every visit to /runs."""
@@ -1401,6 +1496,33 @@ class AdminState(rx.State):
         self.load_mcp_status()
         self.load_azure_connection()
         return self._azure_callback_toast()
+
+    def load_plugins_page(self) -> None:
+        self.plugin_sections = [PluginSection(**section)
+                                for section in SERVICE.plugin_sections()]
+        self.plugin_errors = SERVICE.plugin_errors()
+
+    def set_plugin_enabled(self, name: str, enabled: bool) -> Any:
+        message = SERVICE.set_plugin_enabled(name, enabled)
+        self.load_plugins_page()
+        # Its skills just came or went, and with them any conflicts.
+        self.load_skill_conflicts()
+        return rx.toast.success(message)
+
+    def save_plugin_settings(self, name: str) -> Any:
+        for section in self.plugin_sections:
+            if section.name == name:
+                SERVICE.save_plugin_settings(
+                    name, {item.key: item.value for item in section.fields})
+        return rx.toast.success(f"Saved {name} settings")
+
+    def set_plugin_setting(self, plugin: str, key: str, value: str) -> None:
+        self.plugin_sections = [
+            section.model_copy(update={"fields": [
+                item.model_copy(update={"value": value}) if item.key == key
+                else item for item in section.fields]})
+            if section.name == plugin else section
+            for section in self.plugin_sections]
 
     def _load_work_items(self) -> None:
         """Fill the mapping rows for the selected provider.
@@ -2100,11 +2222,13 @@ FAVICON = (
 )
 
 
-def nav_link(label: str, icon: str, href: str) -> rx.Component:
+def nav_link(label: str, icon: str, href: str,
+             alert: rx.Component | None = None) -> rx.Component:
     is_active = AdminState.active_route == href
     return rx.link(
         rx.hstack(rx.icon(icon, size=17), rx.text(
-            label), spacing="3", align="center"),
+            label), *([rx.spacer(), alert] if alert is not None else []),
+            spacing="3", align="center", width="100%"),
         href=href,
         aria_current=rx.cond(is_active, "page", ""),
         color=rx.cond(is_active, ACCENT, TEXT),
@@ -2150,12 +2274,40 @@ def shell(content: rx.Component) -> rx.Component:
                 rx.vstack(
                     rx.hstack(
                         rx.box(rx.html(LOGO), color="white", background=ACCENT, width="2rem",
-                               height="2rem", display="grid", place_items="center",
+                               height="2rem", flex_shrink="0",
+                               display="grid", place_items="center",
                                border_radius="6px", font_weight="700",
                                font_size="1.1rem", line_height="1"),
                         rx.text("Codee", font_size="1.1rem",
                                 font_weight="700"),
                         rx.spacer(),
+                        # Shown for whatever agent is configured: the viewer is
+                        # pointed at by CODEE_SESSION_VIEWER_URL, and every agent
+                        # now reports the session it actually ran under.
+                        rx.cond(
+                            AdminState.session_viewer != "",
+                            rx.tooltip(
+                                rx.link(
+                                    rx.icon_button(
+                                        rx.icon("message-square", size=18),
+                                        variant="ghost",
+                                        color=rx.cond(
+                                            AdminState.active_route == "/sessions",
+                                            ACCENT, TEXT),
+                                        # Ghost buttons carry negative margins
+                                        # in Radix; reset so it lines up with
+                                        # the theme toggle.
+                                        margin="0",
+                                        aria_label="Sessions",
+                                    ),
+                                    href="/sessions",
+                                    # An inline link sits on the text baseline,
+                                    # lifting the button above its neighbour.
+                                    display="flex",
+                                ),
+                                content="Sessions",
+                            ),
+                        ),
                         rx.color_mode.button(
                             position="static",
                             variant="soft",
@@ -2167,19 +2319,18 @@ def shell(content: rx.Component) -> rx.Component:
                     ),
                     rx.flex(
                         nav_link("Dashboard", "layout-dashboard", "/"),
-                        nav_link("Skills", "blocks", "/skills"),
+                        nav_link("Skills", "blocks", "/skills", rx.cond(
+                            AdminState.skill_conflict_count > 0,
+                            rx.badge(AdminState.skill_conflict_count,
+                                     color_scheme="red", variant="solid",
+                                     radius="full",
+                                     title="Skills that conflict as work item "
+                                           "triggers"))),
+                        nav_link("Plugins", "plug", "/plugins"),
                         nav_link("Workflow", "git-branch", "/workflow"),
                         nav_link("Memory", "notebook-text", "/memory"),
                         nav_link("Repositories", "folder-git-2",
                                  "/repositories"),
-                        nav_link("Runs", "history", "/runs"),
-                        # Shown for whatever agent is configured: the viewer is
-                        # pointed at by CODEE_SESSION_VIEWER_URL, and every agent
-                        # now reports the session it actually ran under.
-                        rx.cond(
-                            AdminState.session_viewer != "",
-                            nav_link("Sessions", "key-round", "/sessions"),
-                        ),
                         nav_link("Settings", "settings", "/settings"),
                         direction=rx.breakpoints(initial="row", lg="column"),
                         wrap="wrap",
@@ -2659,6 +2810,101 @@ def claude_accounts_panel() -> rx.Component:
         padding="1.25rem", background=SURFACE, border=BORDER, width="100%")
 
 
+def run_status_badge(run: RunRecord) -> rx.Component:
+    return rx.badge(run.status, color_scheme=rx.cond(
+        run.status == "succeeded", "green",
+        rx.cond(run.status == "killed", "gray", "red")))
+
+
+def run_tile(run: RunRecord) -> rx.Component:
+    """A run in brief for the dashboard grid; its details open in a dialog."""
+    has_details = ((run.user_message != "") | (run.response != "")
+                   | (run.debug_logs != ""))
+    clamp = {"display": "-webkit-box", "-webkit-box-orient": "vertical",
+             "overflow": "hidden"}
+    return rx.vstack(
+        rx.hstack(
+            rx.text(run.skill_name, font_weight="600", overflow="hidden",
+                    text_overflow="ellipsis", white_space="nowrap",
+                    min_width="0", flex="1"),
+            run_status_badge(run),
+            spacing="2", align="center", width="100%"),
+        rx.hstack(
+            rx.badge(run.trigger_type, variant="outline"),
+            rx.text(run.relative_age_label, " \u00b7 ", run.duration_label,
+                    color=MUTED, font_size="0.8rem", font_family=MONO),
+            spacing="2", align="center", wrap="wrap"),
+        rx.text(run.preview, color=MUTED, font_size="0.9rem",
+                style={**clamp, "-webkit-line-clamp": "3"}),
+        rx.cond(run.error != "", rx.text(
+            run.error, color="#b42318", font_size="0.85rem",
+            style={**clamp, "-webkit-line-clamp": "2"})),
+        rx.spacer(),
+        rx.hstack(
+            rx.cond(has_details, rx.button(
+                rx.icon("info", size=14), "Run info", variant="soft",
+                size="1", on_click=AdminState.open_run_detail(run))),
+            rx.spacer(),
+            rx.cond(run.viewer_url != "", rx.link(
+                rx.icon("external-link", size=16), href=run.viewer_url,
+                is_external=True, aria_label="View session", color=ACCENT)),
+            align="center", width="100%"),
+        spacing="2", align="start", height="100%", min_width="0",
+        padding="1rem", background=SURFACE, border=BORDER)
+
+
+def run_detail_dialog() -> rx.Component:
+    run = AdminState.run_detail
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(rx.hstack(rx.text(run.skill_name),
+                                      run_status_badge(run),
+                                      spacing="3", align="center")),
+            rx.dialog.description(
+                rx.text(local_datetime(run.ended_at), " \u00b7 ",
+                        run.duration_label, " \u00b7 Thread ID: ",
+                        run.session_id, font_family=MONO,
+                        font_size="0.8rem"),
+                color=MUTED),
+            rx.cond(run.error != "", rx.text(
+                run.error, color="#b42318", font_size="0.85rem",
+                margin_top="0.75rem")),
+            rx.box(run_details(run), max_height="65vh", overflow_y="auto",
+                   margin_top="1rem", padding_right="0.25rem", width="100%"),
+            rx.hstack(
+                rx.cond(run.viewer_url != "", rx.link(
+                    rx.button(rx.icon("external-link", size=14),
+                              "View session", variant="soft"),
+                    href=run.viewer_url, is_external=True)),
+                rx.dialog.close(rx.button("Close", variant="soft",
+                                          color_scheme="gray")),
+                spacing="3", justify="end", margin_top="1.25rem",
+                width="100%"),
+            max_width="56rem"),
+        open=AdminState.run_detail_open,
+        on_open_change=AdminState.set_run_detail_open,
+    )
+
+
+def recent_runs_panel() -> rx.Component:
+    """The latest runs; the full, searchable history stays on /runs."""
+    return rx.vstack(
+        rx.heading("Recent runs", size="4"),
+        rx.cond(
+            AdminState.dashboard_runs.length() > 0,
+            rx.vstack(
+                rx.grid(
+                    rx.foreach(AdminState.dashboard_runs, run_tile),
+                    columns=rx.breakpoints(initial="1", md="2", lg="3"),
+                    gap="1rem", width="100%"),
+                rx.link(rx.button("Show more", variant="soft", width="100%"),
+                        href="/runs", width="100%"),
+                spacing="3", width="100%"),
+            empty_state("history", "No runs recorded yet.")),
+        run_detail_dialog(),
+        spacing="3", align="start", width="100%")
+
+
 def dashboard_page() -> rx.Component:
     return shell(rx.vstack(
         page_header(
@@ -2668,6 +2914,7 @@ def dashboard_page() -> rx.Component:
         running_panel(),
         rx.cond(AdminState.claude_code_rotate_keys,
                 claude_accounts_panel(), rx.fragment()),
+        recent_runs_panel(),
         rx.grid(
             rx.box(rx.text("Total runs", color=MUTED), rx.heading(AdminState.total_runs, size="8"),
                    padding="1.25rem", background=SURFACE, border=BORDER),
@@ -2698,10 +2945,15 @@ def dashboard_page() -> rx.Component:
 def skill_card(skill: SkillSummary) -> rx.Component:
     return rx.vstack(
         rx.hstack(rx.heading(skill.name, size="4", class_name="skill-card-title"),
+                  rx.cond(skill.plugin != "",
+                          rx.badge(rx.icon("plug", size=12), skill.plugin,
+                                   color_scheme="gray", variant="soft",
+                                   title="Installed by a plugin; read-only")),
                   rx.badge(skill.type, color_scheme="blue", variant="soft"),
                   class_name="skill-card-head", width="100%"),
         rx.text(skill.description, color=MUTED, font_size="0.9rem",
                 title=skill.description, class_name="skill-card-description"),
+        rx.cond(skill.conflict != "", conflict_callout(skill.conflict)),
         rx.hstack(
             rx.icon("bot", size=14, color=SUBTLE_ICON),
             rx.text(skill.agent, color=MUTED, font_size="0.82rem"),
@@ -2729,7 +2981,9 @@ def skill_card(skill: SkillSummary) -> rx.Component:
                 border_radius="4px", class_name="skill-card-trigger",
             ),
         ),
-        rx.button(rx.icon("pencil", size=15), "Edit", variant="soft",
+        rx.button(rx.cond(skill.plugin != "", rx.icon("eye", size=15),
+                          rx.icon("pencil", size=15)),
+                  rx.cond(skill.plugin != "", "View", "Edit"), variant="soft",
                   on_click=AdminState.edit_skill(skill.slug), width="100%",
                   class_name="skill-card-action"),
         class_name="skill-card", spacing="3", align="start", width="100%")
@@ -2981,15 +3235,44 @@ def delete_skill_dialog() -> rx.Component:
     )
 
 
+def plugin_skill_field(item: PluginSkillField) -> rx.Component:
+    return field(item.label,
+                 rx.input(value=item.value, placeholder=item.placeholder,
+                          on_change=lambda value: AdminState.set_skill_plugin_field(
+                              item.key, value),
+                          width="100%"),
+                 rx.cond(item.hint != "",
+                         rx.text(item.hint, color=MUTED, font_size="0.82rem")))
+
+
+def conflict_callout(message: rx.Var) -> rx.Component:
+    return rx.callout(message, icon="triangle-alert", color_scheme="red",
+                      size="1", width="100%")
+
+
 def skill_editor() -> rx.Component:
+    read_only = AdminState.skill_plugin != ""
     return rx.vstack(
         rx.hstack(rx.button(rx.icon("arrow-left", size=16), "Back", variant="ghost",
                             on_click=AdminState.close_skill), rx.spacer(),
-                  delete_skill_dialog(),
-                  rx.button(rx.icon("save", size=16), "Save skill",
-                            on_click=AdminState.save_skill),
+                  rx.cond(read_only, rx.fragment(), rx.hstack(
+                      delete_skill_dialog(),
+                      rx.button(rx.icon("save", size=16), "Save skill",
+                                on_click=AdminState.save_skill),
+                      spacing="3")),
                   spacing="3",
                   width="100%"),
+        rx.cond(read_only,
+                rx.callout(
+                    rx.text("Installed by the ", rx.code(AdminState.skill_plugin),
+                            " plugin, so it is read-only here. Change it in the "
+                            "plugin, or copy it into a skill of your own."),
+                    icon="lock", size="1", width="100%")),
+        rx.cond(AdminState.skill_conflict != "",
+                conflict_callout(AdminState.skill_conflict)),
+        # A disabled fieldset disables every control inside it, the pickers
+        # included, which is all a plugin's skill needs to be read-only.
+        rx.el.fieldset(rx.vstack(
         rx.grid(
             field("Name", rx.input(value=AdminState.skill_name,
                   on_change=AdminState.set_skill_name, width="100%")),
@@ -3030,6 +3313,11 @@ def skill_editor() -> rx.Component:
                                                      on_change=AdminState.set_skill_issue_status,
                                                      placeholder="Ready, In progress", width="100%")),
                     columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%")),
+        rx.cond(AdminState.active_plugin_fields.length() > 0,
+                rx.grid(rx.foreach(AdminState.active_plugin_fields,
+                                   plugin_skill_field),
+                        columns=rx.breakpoints(initial="1", md="2"),
+                        gap="1rem", width="100%")),
         rx.vstack(
             rx.checkbox("Use other fields in frontmatter (for instance allowed-tools)",
                         checked=AdminState.skill_extra_enabled,
@@ -3049,6 +3337,10 @@ def skill_editor() -> rx.Component:
         field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
                                          width="100%", min_height="25rem",
                                          font_family="IBM Plex Mono, monospace")),
+            spacing="5", align="start", width="100%"),
+            disabled=read_only,
+            border="none", padding="0", margin="0", min_width="0",
+            width="100%"),
         rx.cond(AdminState.skill_type == "cron trigger",
                 rx.button(rx.icon("play", size=16), "Run on next tick", variant="outline",
                           on_click=AdminState.force_run_skill)),
@@ -3244,6 +3536,29 @@ def run_markdown(text: rx.Var, parts: rx.Var) -> rx.Component:
     )
 
 
+def run_details(run: RunRecord) -> rx.Component:
+    """What a run was asked, what it answered, and its logs."""
+    return rx.vstack(
+        rx.text("User message", font_weight="600"),
+        run_markdown(run.user_message, run.user_message_parts),
+        rx.cond((run.message != "") & (run.message != run.user_message),
+                rx.fragment(
+                rx.text("Original message", font_weight="600",
+                        margin_top="0.75rem"),
+                run_markdown(run.message, run.message_parts))),
+        rx.cond(run.response != "", rx.fragment(
+            rx.text("LLM response", font_weight="600",
+                    margin_top="0.75rem"),
+            run_markdown(run.response, run.response_parts))),
+        rx.cond(run.debug_logs != "", rx.fragment(
+                rx.text("Debug logs", font_weight="600",
+                        margin_top="0.75rem"),
+                rx.text(run.debug_logs, white_space="pre-wrap",
+                        font_family="IBM Plex Mono, monospace",
+                        font_size="0.8rem"))),
+        spacing="2", align="start", width="100%")
+
+
 def run_row(run: RunRecord) -> rx.Component:
     return rx.box(
         rx.flex(
@@ -3273,25 +3588,7 @@ def run_row(run: RunRecord) -> rx.Component:
                                                   is_external=True, aria_label="View session", color=ACCENT)),
             gap="1rem", align="start", width="100%"),
         rx.cond((run.user_message != "") | (run.response != "") | (run.debug_logs != ""), rx.accordion.root(rx.accordion.item(
-            header="Run info", content=rx.vstack(
-                rx.text("User message", font_weight="600"),
-                run_markdown(run.user_message, run.user_message_parts),
-                rx.cond((run.message != "") & (run.message != run.user_message),
-                        rx.fragment(
-                        rx.text("Original message", font_weight="600",
-                                margin_top="0.75rem"),
-                        run_markdown(run.message, run.message_parts))),
-                rx.cond(run.response != "", rx.fragment(
-                    rx.text("LLM response", font_weight="600",
-                            margin_top="0.75rem"),
-                    run_markdown(run.response, run.response_parts))),
-                rx.cond(run.debug_logs != "", rx.fragment(
-                        rx.text("Debug logs", font_weight="600",
-                                margin_top="0.75rem"),
-                        rx.text(run.debug_logs, white_space="pre-wrap",
-                                font_family="IBM Plex Mono, monospace",
-                                font_size="0.8rem"))),
-                spacing="2", align="start", width="100%"), value=run.ended_at),
+            header="Run info", content=run_details(run), value=run.ended_at),
             collapsible=True, width="100%")),
         padding="1rem", background=SURFACE, border=BORDER, width="100%")
 
@@ -4265,6 +4562,80 @@ def agent_test_dialog() -> rx.Component:
     )
 
 
+def plugin_setting_field(plugin: str, item: PluginSettingField) -> rx.Component:
+    return field(item.label,
+                 rx.input(value=item.value, placeholder=item.placeholder,
+                          type=rx.cond(item.secret, "password", "text"),
+                          on_change=lambda value: AdminState.set_plugin_setting(
+                              plugin, item.key, value),
+                          width="100%"),
+                 rx.cond(item.hint != "",
+                         rx.text(item.hint, color=MUTED, font_size="0.82rem")))
+
+
+def plugin_detail(label: str, value: rx.Var) -> rx.Component:
+    return rx.cond(value != "",
+                   rx.hstack(rx.text(label, color=MUTED, font_size="0.82rem",
+                                     min_width="4.5rem"),
+                             rx.text(value, font_size="0.82rem"),
+                             spacing="2", align="start"))
+
+
+def plugin_card(section: PluginSection) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.icon("plug", size=18, color=SUBTLE_ICON),
+            rx.heading(section.label, size="4"),
+            rx.code(section.name, font_size="0.75rem", color_scheme="gray"),
+            rx.spacer(),
+            rx.cond(section.enabled,
+                    rx.badge("on", color_scheme="green", variant="soft"),
+                    rx.badge("off", color_scheme="gray", variant="soft")),
+            rx.switch(checked=section.enabled,
+                      on_change=lambda value: AdminState.set_plugin_enabled(
+                          section.name, value),
+                      aria_label="Turn the plugin on or off"),
+            spacing="2", align="center", width="100%"),
+        plugin_detail("Package", rx.cond(
+            section.version != "", section.package + " " + section.version,
+            section.package)),
+        plugin_detail("Triggers", section.triggers),
+        plugin_detail("Skills", section.skills),
+        rx.cond(
+            section.fields.length() > 0,
+            rx.vstack(
+                rx.foreach(section.fields,
+                           lambda item: plugin_setting_field(section.name, item)),
+                rx.button(rx.icon("save", size=16), "Save settings",
+                          variant="outline",
+                          on_click=AdminState.save_plugin_settings(section.name)),
+                spacing="3", align="start", width="100%",
+                padding_top="0.75rem", border_top=BORDER)),
+        spacing="3", align="start", width="100%",
+        padding="1.25rem", background=SURFACE, border=BORDER,
+        opacity=rx.cond(section.enabled, "1", "0.75"))
+
+
+def plugins_page() -> rx.Component:
+    return shell(rx.vstack(
+        page_header("Plugins", ""),
+        rx.foreach(AdminState.plugin_errors,
+                   lambda error: rx.callout(error, icon="circle-alert",
+                                            color_scheme="red", size="1",
+                                            width="100%")),
+        rx.cond(AdminState.plugin_sections.length() > 0,
+                rx.vstack(rx.foreach(AdminState.plugin_sections, plugin_card),
+                          spacing="4", width="100%"),
+                rx.vstack(
+                    empty_state("plug", "No plugins installed."),
+                    rx.text("A plugin is a Python package: install it with ",
+                            rx.code("uv add <package>"),
+                            " in the Codee project and restart Codee.",
+                            color=MUTED, font_size="0.85rem"),
+                    spacing="3", width="100%")),
+        spacing="4", align="start", width="100%"))
+
+
 def settings_page() -> rx.Component:
     jira = TasksProvider.JIRA
     jira_fields = rx.vstack(
@@ -4578,20 +4949,31 @@ app = rx.App(
     api_transformer=api_app,
 )
 app.add_page(dashboard_page, route="/", title="Dashboard | Codee",
-             on_load=AdminState.load_dashboard_page)
+             on_load=[AdminState.load_dashboard_page,
+                      AdminState.load_skill_conflicts])
 app.add_page(skills_page, route="/skills", title="Skills | Codee",
              on_load=[AdminState.load_skills, AdminState.load_agent_models])
+app.add_page(plugins_page, route="/plugins", title="Plugins | Codee",
+             on_load=[AdminState.load_plugins_page,
+                      AdminState.load_skill_conflicts])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",
-             on_load=AdminState.load_workflow)
+             on_load=[AdminState.load_workflow,
+                      AdminState.load_skill_conflicts])
 app.add_page(memory_page, route="/memory", title="Memory | Codee",
-             on_load=AdminState.load_memories)
+             on_load=[AdminState.load_memories,
+                      AdminState.load_skill_conflicts])
 app.add_page(repositories_page, route="/repositories",
              title="Repositories | Codee",
-             on_load=AdminState.load_repositories)
+             on_load=[AdminState.load_repositories,
+                      AdminState.load_skill_conflicts])
 app.add_page(runs_page, route="/runs", title="Runs | Codee",
-             on_load=AdminState.poll_runs)
+             on_load=[AdminState.poll_runs,
+                      AdminState.load_skill_conflicts])
 app.add_page(sessions_page, route="/sessions",
-             title="Sessions | Codee", on_load=AdminState.load_settings)
+             title="Sessions | Codee",
+             on_load=[AdminState.load_settings,
+                      AdminState.load_skill_conflicts])
 app.add_page(settings_page, route="/settings",
              title="Settings | Codee",
-             on_load=AdminState.load_settings_page)
+             on_load=[AdminState.load_settings_page,
+                      AdminState.load_skill_conflicts])

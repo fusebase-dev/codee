@@ -7,6 +7,7 @@ from unittest.mock import patch
 from codee.lib.trigger_issue_skills import (
     configured_issue_types,
     find_issue_triggered_skills,
+    issue_skill_conflicts,
     issue_statuses,
     match_issue_skill,
 )
@@ -134,6 +135,37 @@ class IssueTriggeredSkillsTest(unittest.TestCase):
                 skills, "in progress", "Task").slug, "task")
             self.assertIsNone(match_issue_skill(
                 skills, "in progress", "Bug"))
+
+
+class IssueSkillConflictsTest(unittest.TestCase):
+    def _skill(self, root: Path, slug: str, issue_type: str,
+               statuses: str) -> None:
+        directory = root / slug
+        directory.mkdir()
+        (directory / "SKILL.md").write_text(
+            "---\ndisable-model-invocation: true\nx-codee-trigger: issue\n"
+            f"x-codee-issue-status: {statuses}\n"
+            f"x-codee-issue-type: {issue_type}\n---\nBody\n")
+
+    def test_two_skills_on_one_status_conflict_and_neither_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._skill(root, "develop", "story", "[Ready, 'In Progress']")
+            self._skill(root, "plugin-develop", "story", "[in progress]")
+            self._skill(root, "task-develop", "task", "['In Progress']")
+            skills = find_issue_triggered_skills(root)
+
+            conflicts = issue_skill_conflicts(skills)
+
+            self.assertEqual(set(conflicts), {"develop", "plugin-develop"})
+            self.assertEqual(conflicts["develop"],
+                             ["Conflicts with plugin-develop on story in In Progress"])
+            self.assertIsNone(match_issue_skill(skills, "In Progress", "story"))
+            # The status only one of them claims still runs.
+            self.assertEqual(
+                match_issue_skill(skills, "Ready", "story").slug, "develop")
+            self.assertEqual(match_issue_skill(
+                skills, "In Progress", "task").slug, "task-develop")
 
 
 class ConfiguredIssueTypesTest(unittest.TestCase):
