@@ -206,6 +206,23 @@ class TriggerPluginSkillsTest(unittest.TestCase):
                                       data_dir=skills_dir),
                                   plugins=loaded)
 
+    def test_a_picker_field_reaches_the_trigger_without_its_labels(self) -> None:
+        class Picker(AbstractSkillTrigger):
+            TYPE = "picker"
+            SKILL_FIELDS = [PluginField("x-acme-rooms", "Rooms",
+                                        searchable=True)]
+
+        with tempfile.TemporaryDirectory() as directory:
+            skills_dir = Path(directory)
+            _skill(skills_dir, "rooms",
+                   "disable-model-invocation: true\nx-codee-trigger: picker\n"
+                   "x-acme-rooms: |-\n  r1  # Lobby\n  https://x/r2#a\n")
+
+            skills = find_plugin_triggered_skills(skills_dir, Picker())
+
+            self.assertEqual(skills[0].fields, {"x-acme-rooms":
+                                                "r1\nhttps://x/r2#a"})
+
     def test_a_field_the_skill_leaves_out_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             skills_dir = Path(directory)
@@ -219,3 +236,44 @@ class TriggerPluginSkillsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PluginSchedulerTest(unittest.TestCase):
+    def _scheduler(self, *triggers, paused=False):
+        from codee.lib.plugins import PluginScheduler
+        self.now = 1000.0
+        loaded = build_plugins([lambda: _plugin(triggers=list(triggers))])
+        return PluginScheduler(Mock(), Path("."), CodeeMainContext(
+            data_dir=Path(".")), lambda: paused, plugins=loaded,
+            clock=lambda: self.now)
+
+    def test_each_trigger_is_due_at_its_own_interval(self) -> None:
+        class Fast(AbstractSkillTrigger):
+            TYPE = "fast"
+            POLL_SECONDS = 30
+
+        class Slow(AbstractSkillTrigger):
+            TYPE = "slow"
+
+        scheduler = self._scheduler(Fast(), Slow())
+        seen = []
+        for second in range(0, 121, 1):
+            self.now = 1000.0 + second
+            seen.extend(f"{kind}@{second}" for kind in sorted(scheduler.due()))
+
+        self.assertEqual(seen, ["fast@0", "slow@0", "fast@30", "fast@60",
+                                "slow@60", "fast@90", "fast@120", "slow@120"])
+
+    def test_nothing_is_ticked_while_paused_and_the_floor_holds(self) -> None:
+        from codee.lib.plugins import poll_seconds
+
+        class Eager(AbstractSkillTrigger):
+            TYPE = "eager"
+            POLL_SECONDS = 1
+
+        scheduler = self._scheduler(Eager(), paused=True)
+        with patch.object(plugins_module, "trigger_plugin_skills") as tick:
+            scheduler.tick()
+
+        tick.assert_not_called()
+        self.assertEqual(poll_seconds(Eager()), 10)

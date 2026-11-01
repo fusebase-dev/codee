@@ -66,6 +66,13 @@ codee-executor = "codee.executor:main"
 # default `test_*.py` pattern skips — without this, `pytest src` silently ran
 # 61 fewer tests than the repo has.
 python_files = ["test_*.py", "test.py"]
+testpaths = ["src", "plugins"]
+
+[tool.uv.workspace]
+# Plugins kept in this repo. Each is its own package, released on its own and
+# installed only by whoever adds it; none of it ships in codee-agent.
+# `uv sync --all-packages` installs them all for development and tests.
+members = ["plugins/*"]
 
 [tool.uv]
 # uv rebuilds a local checkout only when these change, and by default that is

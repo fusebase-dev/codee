@@ -22,7 +22,8 @@ from codee_tasks_abstract.provider import AbstractTasksProvider
 from codee.coding_agents import resolve_agent_code
 from codee.lib import claude_key_rotation, runs_db
 from codee.lib.plugins import (
-    active_plugins, load_plugins, sync_plugin_skills, trigger_plugin_skills)
+    PluginScheduler, active_plugins, load_plugins, poll_seconds,
+    sync_plugin_skills)
 from codee.lib.runtime_control import is_paused
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -461,8 +462,8 @@ def run_once() -> None:
     trigger_cron_skills(_run_agent, main_context=context)
     trigger_aws_sqs_skills(_run_agent, main_context=context)
     trigger_email_skills(_run_agent, main_context=context)
-    trigger_plugin_skills(_run_agent, skills_dir=skills_dir(REPO_ROOT),
-                          main_context=context)
+    # Plugin triggers are ticked by their own scheduler, each at its own
+    # interval (see main).
 
     if not tasks_provider.is_configured():
         log.debug("Tasks provider is not configured; skipping poll.")
@@ -564,6 +565,12 @@ def main() -> None:
     # key into Claude Code's credentials file, so an agent launched by that
     # tick already runs on the key Codee thinks it is running on.
     claude_key_rotation.start(context)
+
+    for kind, (_, trigger) in load_plugins().triggers.items():
+        log.info("Plugin trigger %s polls every %ss.", kind,
+                 poll_seconds(trigger))
+    PluginScheduler(_run_agent, skills_dir(REPO_ROOT), context,
+                    lambda: is_paused(context)).start()
 
     log.info("Starting the main loop (ticking every %ss)...", POLL_INTERVAL)
     log.info("Tasks provider: %s", tasks_provider.describe())

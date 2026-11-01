@@ -16,10 +16,11 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 from starlette.routing import Route
 
-from codee.admin_service import AdminService
+from codee.admin_service import PLUGIN_CALLBACK_PATH, AdminService
 from codee_tasks_azure_devops.oauth import CALLBACK_PATH
 
 SETTINGS_PATH = "/settings"
+PLUGINS_PATH = "/plugins"
 
 # Its own service instance: this route runs outside any Reflex session, and
 # every handler re-reads settings from disk anyway.
@@ -56,6 +57,28 @@ def azure_devops_callback(request: Request) -> RedirectResponse:
     return _back_to_settings(connected, message)
 
 
+def plugin_sign_in_callback(request: Request) -> RedirectResponse:
+    """A plugin's OAuth provider redirects here; back to /plugins after.
+
+    Sync for the same reason as the Azure DevOps callback: the plugin's code
+    exchange is a blocking call.
+    """
+    name = request.path_params["name"]
+    params = request.query_params
+    if params.get("error"):
+        description = params.get("error_description") or params["error"]
+        connected, message = False, description.splitlines()[0]
+    elif not params.get("code") or not params.get("state"):
+        connected, message = False, "No authorization code came back."
+    else:
+        connected, message = _service.complete_plugin_sign_in(
+            name, params["code"], params["state"])
+    query = urlencode({"sign_in": "ok" if connected else "error",
+                       "message": message})
+    return RedirectResponse(f"{PLUGINS_PATH}?{query}", status_code=303)
+
+
 api_app = Starlette(routes=[
     Route(CALLBACK_PATH, azure_devops_callback, methods=["GET"]),
+    Route(PLUGIN_CALLBACK_PATH, plugin_sign_in_callback, methods=["GET"]),
 ])

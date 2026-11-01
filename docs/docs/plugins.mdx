@@ -9,7 +9,8 @@ A plugin is a Python package that adds to Codee without changing it. It can:
 - **ship skills.** Codee links them into `.claude/skills`, keeps them out of Git, and
   shows them read-only on the **Skills** page.
 - **add skill triggers.** A new trigger shows up in the **Skill type** picker with its own
-  fields, and the executor ticks it every 60 seconds alongside cron, email and SQS.
+  fields, and the executor ticks it every 60 seconds, or at the trigger's own
+  `POLL_SECONDS`.
 - **ask for settings.** They are filled in on the plugin's card on the **Plugins** page.
 
 ## The Plugins page
@@ -92,13 +93,34 @@ class AcmePlugin(AbstractCodeePlugin):
         return [WebhookTrigger()]
 ```
 
+### More a plugin can declare
+
+| Member | On | What it does |
+| --- | --- | --- |
+| `DESCRIPTION` | trigger | Markdown shown above the skill body when the trigger is picked, in a panel the reader can collapse: what the skill receives, which placeholders it can use. |
+| `PluginField(..., multiline=True)` | field | A text area instead of a one-line input; saved to frontmatter as a YAML block. |
+| `PluginField(..., searchable=True)` + `search_field()`, `describe_field_values()` | field, plugin | A picker instead of an input: the user searches (`search_field` returns `FieldOption(value, label)`) and picks any number, shown as chips by label. Stored one per line as `<value>  # <label>`; the trigger gets only the values. `describe_field_values` names values stored without a label. |
+| `PluginField(..., choices=((value, label), ...), default=..., visible_when=(key, value))` | field | A select of fixed choices; a value to start from; a field shown only while another field of the same form holds a given value (a mode's options, a provider's credentials). |
+| `POLL_SECONDS` | trigger | How often `tick` is called; 60 by default, never below 10. |
+| `data_dir` | plugin | A folder of the plugin's own (`.codee/plugins/<NAME>`), set by Codee, for tokens and polling state. |
+| `SUPPORTS_SIGN_IN` + `sign_in_url()`, `complete_sign_in()`, `signed_in_as()`, `sign_out()` | plugin | Sign in to a service as a user (OAuth). Codee puts **Sign in** on the plugin's card, serves the callback at `/api/oauth/plugins/<NAME>/callback`, and checks the `state` it sent; the plugin exchanges the code and keeps the tokens in `data_dir`. Raise `SignInError` to show a message. |
+
+### Plugins kept in this repository
+
+Plugins that live in the Codee repository sit under `plugins/<name>/`, each its own package.
+The repository is a uv workspace, so `uv sync --all-packages` installs them next to Codee
+for development, and `pytest` runs their tests with Codee's. None of them is part of
+`codee-agent`: each is released and installed on its own.
+
 Rules:
 
 - A skill field's `key` is the frontmatter key its value is written under. Prefix it with
   your plugin's name (`x-acme-…`) so it can't clash with another plugin.
 - A trigger `TYPE` can't reuse `issue`, `cron`, `email`, `aws-sqs`, or another plugin's.
   A clash, or a plugin that fails to import, is reported on the Plugins page and skipped.
-- `tick` runs in the executor's main loop, so keep it short; it is only called while
+- `tick` runs on the executor's plugin scheduler, a thread shared by every plugin trigger,
+  so keep it short and start long work (an agent run) in a thread of its own; it is only
+  called while
   Codee isn't paused and at least one skill uses the trigger.
 - `run_skill` raises if the agent run failed or was killed (after recording it), so you
   can decide whether the event that fired it is used up.

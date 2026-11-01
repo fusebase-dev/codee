@@ -1,0 +1,44 @@
+---
+sidebar_position: 6
+---
+
+# Microsoft Teams trigger
+
+Runs a skill when a message is posted in the Microsoft Teams channels it watches. It comes
+from the `codee-teams` plugin, which lives in this repository under `plugins/teams`; install
+it with `uv add codee-teams` and restart Codee.
+
+```yaml
+---
+name: teams-support
+description: Answer questions posted in the support channel.
+disable-model-invocation: true
+x-codee-trigger: teams-message
+x-teams-channels: |-
+  0f3c...-team-id/19:a1b2...@thread.tacv2  # Support / General
+---
+
+Someone wrote in channel {TEAMS_CHANNEL_ID}:
+
+{TEAMS_MESSAGES}
+
+Answer the message marked "triggered this run".
+```
+
+- **A reply** brings the whole thread; **a top-level message** brings the 10 top-level
+  messages before it. Every message has its ID, date and the sender's name, email and ID.
+- **Placeholders:** `{TEAMS_MESSAGES}`, `{TEAMS_MESSAGES_JSON}`, `{TEAMS_CHANNEL_ID}`,
+  `{TEAMS_TEAM_ID}`, `{TEAMS_MESSAGE_ID}`, `{TEAMS_THREAD_ID}`, `{TEAMS_KIND}`, `{TEAMS_TOPIC}`. A body with
+  none of them gets the messages appended. The skill editor lists them beside the body.
+- **Specific topics:** set **Messages** to *Specific topics* and list the topics. A decision
+  model (OpenAI's Decisions API or TypeSafe Jev, chosen on the Plugins page) first judges whether the
+  triggering message is about one of them; only then does the skill run, with the topic
+  in `{TEAMS_TOPIC}`.
+- **Sign-in:** Codee reads Teams as a user you sign in with on the **Plugins** page, through
+  an Entra app with the delegated permissions `ChannelMessage.Read.All`,
+  `User.ReadBasic.All`, `User.Read`, `offline_access`, `Team.ReadBasic.All` and
+  `Channel.ReadBasic.All` (admin consent needed). It sees
+  only the teams that account belongs to, and never runs a skill for that account's own
+  messages.
+
+Setup, limits and how new messages are found: see `plugins/teams/README.md`.

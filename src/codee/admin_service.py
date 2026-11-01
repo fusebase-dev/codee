@@ -1,6 +1,7 @@
 """Framework-independent operations for the Codee admin UI."""
 import hashlib
 import json
+import secrets
 import re
 import os
 import shutil
@@ -29,6 +30,7 @@ from codee_agent_claude_code.usage import (
     SESSION_WINDOW, WEEKLY_WINDOW, UsageRateLimited, UsageUnavailable,
     fetch_usage)
 from codee_agent_github_copilot.provider import GitHubCopilotAgent
+from codee_plugin_abstract.plugin import AbstractCodeePlugin, SignInError
 from codee_tasks_abstract.provider import (
     AbstractTasksProvider, TasksProviderError)
 from codee.coding_agents import (
@@ -110,6 +112,8 @@ PLUGINS = load_plugins()
 for _plugin, _trigger in PLUGINS.triggers.values():
     MANAGED.update(item.key for item in _trigger.SKILL_FIELDS)
 AGENTS_FILE = "AGENTS.md"
+# Where a plugin's sign-in comes back to; register it on the OAuth app.
+PLUGIN_CALLBACK_PATH = "/api/oauth/plugins/{name}/callback"
 # Layout the coding agents are told to expect (see the AGENTS.md template):
 # `repositories/<repo>/.bare` holds the bare clone, `repositories/<repo>/.git`
 # points git at it, and every branch is checked out as its own worktree
@@ -413,9 +417,24 @@ def infer_skill_type(frontmatter: dict[str, Any]) -> str:
     return "knowledge"
 
 
+class _FrontmatterDumper(yaml.SafeDumper):
+    """Writes a multi-line value as a ``|`` block, one item per line in Git."""
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.Node:
+    style = "|" if "\n" in value.strip() else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str",
+                                   value.strip() if style else value,
+                                   style=style)
+
+
+_FrontmatterDumper.add_representer(str, _represent_str)
+
+
 def dump_frontmatter(frontmatter: dict[str, Any]) -> str:
-    return yaml.safe_dump(
+    return yaml.dump(
         frontmatter,
+        Dumper=_FrontmatterDumper,
         sort_keys=False,
         allow_unicode=True,
         default_flow_style=False,
@@ -442,6 +461,27 @@ def parse_extra_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 def build_skill(frontmatter: dict[str, Any], extra: dict[str, Any], body: str) -> str:
     return f"---\n{dump_frontmatter({**frontmatter, **extra})}---\n\n{body.lstrip()}\n"
+
+
+def _log_time(value: str) -> str:
+    """A log entry's time to the second, and how long ago that was."""
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    exact = moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return f"{exact} · {relative_age_label(value)}"
+
+
+def _field_layout(item: Any) -> dict[str, Any]:
+    """How a plugin field is drawn: its choices, and when it is shown."""
+    when_key, when_value = item.visible_when or ("", "")
+    return {"choices": [{"value": value, "label": label}
+                        for value, label in item.choices],
+            "visible_when_key": when_key,
+            "visible_when_value": when_value}
 
 
 def _agent_code(value: Any) -> str:
@@ -1866,7 +1906,7 @@ class AdminService:
             # Every plugin trigger's fields as this skill sets them, keyed by
             # frontmatter key; the editor shows the selected trigger's.
             "plugin_fields": {
-                item.key: str(frontmatter.get(item.key, "") or "")
+                item.key: str(frontmatter.get(item.key, "") or item.default)
                 for _, trigger in self.plugins.triggers.values()
                 for item in trigger.SKILL_FIELDS},
             "name": str(frontmatter.get("name", slug)),
@@ -2268,7 +2308,11 @@ class AdminService:
         rows = runs_db.recent_runs(
             limit, offset, search=search, main_context=self.context)
         now = datetime.now(timezone.utc)
+        task_url = self._task_url()
         for row in rows:
+            # Linked the way the live list links a running session's item.
+            row["task_key"] = issue_prompt_task(row.get("message"))
+            row["task_url"] = task_url(row["task_key"])
             try:
                 elapsed = (datetime.fromisoformat(row["ended_at"])
                            - datetime.fromisoformat(row["started_at"])).total_seconds()
@@ -2403,12 +2447,172 @@ class AdminService:
             "triggers": ", ".join(triggers.get(plugin.NAME, [])),
             "skills": ", ".join(slug for slug, (owner, _) in sources.items()
                                 if owner == plugin.NAME),
+            "actions": [{"value": action.key, "label": action.label}
+                        for action in plugin.ACTIONS],
+            "log_label": plugin.LOG_LABEL,
+            "description": plugin.DESCRIPTION.replace(
+                "{REDIRECT_URI}", self.plugin_redirect_uri(plugin.NAME)),
+            "supports_sign_in": plugin.SUPPORTS_SIGN_IN,
+            "signed_in_as": self._signed_in_as(plugin),
+            "redirect_uri": (self.plugin_redirect_uri(plugin.NAME)
+                             if plugin.SUPPORTS_SIGN_IN else ""),
             "fields": [{
                 "key": item.key, "label": item.label, "hint": item.hint,
                 "placeholder": item.placeholder, "secret": item.secret,
-                "value": str(stored.get(plugin.NAME, {}).get(item.key, "")),
+                "multiline": item.multiline,
+                **_field_layout(item),
+                "value": str(stored.get(plugin.NAME, {}).get(
+                    item.key, item.default)),
             } for item in plugin.SETTINGS_FIELDS],
         } for plugin in self.plugins.plugins]
+
+    @staticmethod
+    def _signed_in_as(plugin: AbstractCodeePlugin) -> str:
+        if not plugin.SUPPORTS_SIGN_IN:
+            return ""
+        try:
+            return plugin.signed_in_as()
+        except Exception:
+            return ""
+
+    def _plugin(self, name: str) -> AbstractCodeePlugin | None:
+        return next((plugin for plugin in self.plugins.plugins
+                     if plugin.NAME == name), None)
+
+    def plugin_redirect_uri(self, name: str) -> str:
+        """The redirect URI to register for a plugin's sign-in."""
+        return self.admin_base_url() + PLUGIN_CALLBACK_PATH.format(name=name)
+
+    def start_plugin_sign_in(self, name: str) -> tuple[bool, str]:
+        """Open a plugin's sign-in: (True, url) or (False, error message).
+
+        The state and PKCE verifier are kept in SQLite, like the Azure DevOps
+        ones, because the callback arrives outside the Reflex session.
+        """
+        plugin = self._plugin(name)
+        if plugin is None or not plugin.SUPPORTS_SIGN_IN:
+            return False, f"{name} has no sign-in"
+        state = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(64)
+        redirect_uri = self.plugin_redirect_uri(name)
+        settings = load_settings(self.data_dir).plugin_settings.get(name, {})
+        try:
+            url = plugin.sign_in_url(settings, redirect_uri, state,
+                                     code_verifier)
+        except SignInError as exc:
+            return False, str(exc)
+        oauth_tokens.create_pending(
+            f"plugin:{name}", state, code_verifier, redirect_uri,
+            main_context=self.context)
+        return True, url
+
+    def complete_plugin_sign_in(self, name: str, code: str,
+                                state: str) -> tuple[bool, str]:
+        """Check the callback's state, then let the plugin exchange the code."""
+        plugin = self._plugin(name)
+        if plugin is None or not plugin.SUPPORTS_SIGN_IN:
+            return False, f"{name} has no sign-in"
+        pending = oauth_tokens.consume_pending(
+            f"plugin:{name}", state, main_context=self.context)
+        if pending is None:
+            return False, ("That sign-in link was already used or expired. "
+                           "Sign in again.")
+        # Read from disk: this runs on the callback request, not on the
+        # session that started the sign-in.
+        settings = load_settings(self.data_dir).plugin_settings.get(name, {})
+        try:
+            account = plugin.complete_sign_in(
+                settings, pending["redirect_uri"], code,
+                pending["code_verifier"])
+        except SignInError as exc:
+            return False, str(exc)
+        return True, f"{name}: signed in as {account}" if account \
+            else f"{name}: signed in"
+
+    def run_plugin_action(self, name: str, key: str,
+                          values: dict[str, str]) -> tuple[bool, str]:
+        """Run a plugin's card action with the card's values: (ok, message).
+
+        ``values`` are the fields as shown, laid over what is saved, so an
+        action can try settings the user hasn't saved yet.
+        """
+        plugin = self._plugin(name)
+        if plugin is None or all(action.key != key
+                                 for action in plugin.ACTIONS):
+            return False, f"{name} has no action {key}"
+        settings = {**load_settings(self.data_dir).plugin_settings.get(name, {}),
+                    **{field: value.strip() for field, value in values.items()}}
+        try:
+            return True, plugin.run_action(key, settings)
+        except Exception as exc:
+            return False, str(exc) or type(exc).__name__
+
+    def plugin_log(self, name: str,
+                   limit: int = 200) -> tuple[list[dict[str, str]], str]:
+        """A plugin's latest log entries, newest first: (entries, error)."""
+        plugin = self._plugin(name)
+        if plugin is None or not plugin.LOG_LABEL:
+            return [], f"{name} has no log"
+        try:
+            entries = plugin.read_log(limit)
+        except Exception as exc:
+            return [], f"Could not read the log: {exc}"
+        return [{"time": _log_time(entry.time), "status": entry.status,
+                 "title": entry.title, "detail": entry.detail}
+                for entry in entries], ""
+
+    def sign_out_plugin(self, name: str) -> str:
+        plugin = self._plugin(name)
+        if plugin is not None and plugin.SUPPORTS_SIGN_IN:
+            plugin.sign_out()
+        return f"{name}: signed out"
+
+    def _field_owner(self, key: str) -> tuple[AbstractCodeePlugin | None,
+                                              dict[str, str]]:
+        """The plugin whose trigger has field ``key``, and its settings."""
+        owner = next((plugin for plugin, trigger in self.plugins.triggers.values()
+                      if any(item.key == key for item in trigger.SKILL_FIELDS)),
+                     None)
+        if owner is None:
+            return None, {}
+        return owner, load_settings(self.data_dir).plugin_settings.get(
+            owner.NAME, {})
+
+    def describe_plugin_field(self, key: str,
+                              values: list[str]) -> dict[str, str]:
+        """Labels for a picker's values stored without one; {} on any trouble.
+
+        A label is only a nicety: a plugin that can't name a value right now
+        (signed out, offline) leaves it shown as stored.
+        """
+        owner, settings = self._field_owner(key)
+        if owner is None or not values:
+            return {}
+        try:
+            return dict(owner.describe_field_values(key, values, settings))
+        except Exception:
+            return {}
+
+    def search_plugin_field(self, key: str,
+                            query: str) -> tuple[list[dict[str, str]], str]:
+        """Ask the plugin owning field ``key`` for options: (results, error)."""
+        owner, settings = self._field_owner(key)
+        if owner is None:
+            return [], f"No plugin field {key}"
+        try:
+            options = owner.search_field(key, query.strip(), settings)
+        except Exception as exc:
+            # A plugin's message is meant for the user; anything else still
+            # beats a dead search box.
+            return [], str(exc) or type(exc).__name__
+        return [{"value": option.value, "label": option.label}
+                for option in options], ""
+
+    def trigger_descriptions(self) -> dict[str, str]:
+        """Skill type -> the Markdown a plugin trigger explains itself with."""
+        return {f"{kind} trigger": trigger.DESCRIPTION
+                for kind, (_, trigger) in self.plugins.triggers.items()
+                if trigger.DESCRIPTION}
 
     def set_plugin_enabled(self, name: str, enabled: bool) -> str:
         """Turn a plugin on or off; returns what happened, for a toast.
@@ -2441,7 +2645,10 @@ class AdminService:
         """Every plugin trigger's per-skill fields, tagged with its skill type."""
         return [{"skill_type": f"{kind} trigger", "key": item.key,
                  "label": item.label, "hint": item.hint,
-                 "placeholder": item.placeholder}
+                 "placeholder": item.placeholder,
+                 "multiline": item.multiline,
+                 "searchable": item.searchable,
+                 **_field_layout(item)}
                 for kind, (_, trigger) in self.plugins.triggers.items()
                 for item in trigger.SKILL_FIELDS]
 

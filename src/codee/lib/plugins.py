@@ -1,5 +1,7 @@
 """Loading Codee plugins, installing their skills, and running their triggers."""
 import os
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -10,10 +12,11 @@ from typing import Callable
 
 import yaml
 
-from codee_main_context.context import CodeeMainContext
+from codee_main_context.context import CodeeMainContext, data_dir
 from codee_main_context.logging import get_logger
 from codee_plugin_abstract.plugin import (
-    AbstractCodeePlugin, AbstractSkillTrigger, TriggeredSkill)
+    AbstractCodeePlugin, AbstractSkillTrigger, RunKilled, TriggeredSkill,
+    parse_field_options)
 
 from codee.lib import runs_db
 
@@ -29,6 +32,8 @@ GITIGNORE_START = "# >>> codee plugin skills (managed by Codee, do not edit)"
 GITIGNORE_END = "# <<< codee plugin skills"
 
 RunAgent = Callable[..., str]
+# The shortest interval a trigger may ask to be ticked at.
+MIN_POLL_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -62,16 +67,19 @@ def load_plugins() -> LoadedPlugins:
         PluginSource(entry.load,
                      entry.dist.name if entry.dist else "",
                      entry.dist.version if entry.dist else "")
-        for entry in entry_points(group=ENTRY_POINT_GROUP)])
+        for entry in entry_points(group=ENTRY_POINT_GROUP)],
+        data_root=data_dir() / "plugins")
 
 
 def build_plugins(
     sources: list[PluginSource | Callable[[], type]],
+    data_root: Path | None = None,
 ) -> LoadedPlugins:
     """Instantiate plugins and check what they declare.
 
     Each source loads a plugin class; a bare callable is a source with no
-    package to name. One that fails to import or declares a name or trigger
+    package to name. Each plugin gets ``data_root/<NAME>`` as its
+    ``data_dir``. One that fails to import or declares a name or trigger
     already taken is reported and skipped: a broken plugin must not stop Codee
     or the plugins that work.
     """
@@ -96,6 +104,8 @@ def build_plugins(
                 f"{'empty' if not name else 'already taken'}")
             continue
         names.add(name)
+        if data_root is not None:
+            plugin.data_dir = data_root / name
         loaded.plugins.append(plugin)
         loaded.packages[name] = (source.package, source.version)
         try:
@@ -255,7 +265,7 @@ def find_plugin_triggered_skills(
             name=str(metadata.get("name") or path.parent.name).strip(),
             path=path,
             body=body.strip(),
-            fields={item.key: _text(metadata.get(item.key))
+            fields={item.key: _field_value(item, metadata.get(item.key))
                     for item in trigger.SKILL_FIELDS},
             model=_text(metadata.get("model")),
             agent=_text(metadata.get("x-codee-agent")),
@@ -265,14 +275,29 @@ def find_plugin_triggered_skills(
     return skills
 
 
+def poll_seconds(trigger: AbstractSkillTrigger) -> int:
+    try:
+        seconds = int(trigger.POLL_SECONDS)
+    except (TypeError, ValueError):
+        seconds = 60
+    return max(MIN_POLL_SECONDS, seconds)
+
+
 def trigger_plugin_skills(run_agent: RunAgent, *, skills_dir: Path,
                           main_context: CodeeMainContext,
-                          plugins: LoadedPlugins | None = None) -> None:
-    """One tick of every enabled plugin trigger that has a skill to drive."""
+                          plugins: LoadedPlugins | None = None,
+                          due: set[str] | None = None) -> None:
+    """One tick of every enabled plugin trigger that has a skill to drive.
+
+    ``due`` limits it to those trigger types, for the scheduler that ticks
+    each at its own interval; None ticks them all.
+    """
     plugins = active_plugins(
         plugins if plugins is not None else load_plugins(),
         main_context.settings.disabled_plugins)
     for kind, (plugin, trigger) in plugins.triggers.items():
+        if due is not None and kind not in due:
+            continue
         skills = find_plugin_triggered_skills(skills_dir, trigger)
         if not skills:
             continue
@@ -285,6 +310,60 @@ def trigger_plugin_skills(run_agent: RunAgent, *, skills_dir: Path,
             # One plugin's bug costs that plugin its tick, nothing more.
             log.exception("Plugin %s trigger %s failed: %s",
                           plugin.NAME, kind, exc)
+
+
+class PluginScheduler:
+    """Ticks each plugin trigger at its own POLL_SECONDS, off the main loop.
+
+    The executor's loop ticks every 60 seconds and does much more each time
+    (git pull, the tasks provider, cron, email, SQS); a trigger that wants to
+    poll faster can't wait on it. Skips while Codee is paused, like the loop.
+    """
+
+    def __init__(self, run_agent: RunAgent, skills_dir: Path,
+                 main_context: CodeeMainContext,
+                 paused: Callable[[], bool],
+                 plugins: LoadedPlugins | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.run_agent = run_agent
+        self.skills_dir = skills_dir
+        self.main_context = main_context
+        self.paused = paused
+        self.plugins = plugins
+        self.clock = clock
+        self._next: dict[str, float] = {}
+
+    def due(self) -> set[str]:
+        """The trigger types whose time has come, scheduling their next."""
+        plugins = self.plugins if self.plugins is not None else load_plugins()
+        now = self.clock()
+        due = set()
+        for kind, (_, trigger) in plugins.triggers.items():
+            if self._next.get(kind, 0.0) <= now:
+                due.add(kind)
+                self._next[kind] = now + poll_seconds(trigger)
+        return due
+
+    def tick(self) -> None:
+        if self.paused():
+            return
+        due = self.due()
+        if due:
+            trigger_plugin_skills(self.run_agent, skills_dir=self.skills_dir,
+                                  main_context=self.main_context,
+                                  plugins=self.plugins, due=due)
+
+    def run_forever(self) -> None:
+        while True:
+            try:
+                self.tick()
+            except Exception as exc:
+                log.exception("Plugin triggers failed: %s", exc)
+            time.sleep(1)
+
+    def start(self) -> None:
+        threading.Thread(target=self.run_forever, name="plugin-triggers",
+                         daemon=True).start()
 
 
 def _skill_runner(run_agent: RunAgent, kind: str,
@@ -302,7 +381,7 @@ def _skill_runner(run_agent: RunAgent, kind: str,
                                error=str(exc), started_at=started_at,
                                message=prompt, user_message=prompt,
                                main_context=main_context)
-            raise
+            raise RunKilled(str(exc)) from exc
         except Exception as exc:
             runs_db.record_run(skill.name, kind, session_id, "failed",
                                error=str(exc)[:500], started_at=started_at,
@@ -325,6 +404,14 @@ def _parse_skill(contents: str) -> tuple[dict, str]:
         return {}, contents
     parsed = yaml.safe_load(parts[1]) or {}
     return (parsed if isinstance(parsed, dict) else {}), parts[2]
+
+
+def _field_value(item, value: object) -> str:
+    """What the trigger gets for a field: a picker's values, one per line."""
+    if item.searchable:
+        return "\n".join(option.value
+                         for option in parse_field_options(_text(value)))
+    return _text(value)
 
 
 def _text(value: object) -> str:

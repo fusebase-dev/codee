@@ -15,6 +15,8 @@ from codee.admin_service import (
 from codee.workflow_graph import workflow_graph
 from codee_main_context.context import (
     DEFAULT_ISSUE_TYPES, TasksProvider, credential_field)
+from codee_plugin_abstract.plugin import (
+    FieldOption, format_field_options, parse_field_options)
 
 SERVICE = AdminService()
 
@@ -46,6 +48,9 @@ USAGE_POLL_INTERVAL = 60
 # page rather than anything the user can change on it.
 CLAUDE_CODE_AVAILABLE = SERVICE.claude_code_available()
 GITHUB_COPILOT_AVAILABLE = SERVICE.github_copilot_available()
+# What each plugin trigger explains about itself, by skill type. Plugins are
+# read once per process, so this is fixed for the life of the admin.
+TRIGGER_DESCRIPTIONS = SERVICE.trigger_descriptions()
 
 
 def _skill_summary(skill: dict[str, str]) -> SkillSummary:
@@ -80,6 +85,8 @@ def _run_record(run: dict[str, Any], query: str) -> "RunRecord":
     response = (run.get("response") or "").strip()
     preview = _run_preview(message, user_message,
                            response, query)
+    key, url = run.get("task_key") or "", run.get("task_url") or ""
+    linked = bool(key and url) and preview.rstrip().endswith(key)
     return RunRecord(
         skill_name=run["skill_name"],
         trigger_type=run["trigger_type"],
@@ -97,6 +104,10 @@ def _run_record(run: dict[str, Any], query: str) -> "RunRecord":
         preview=preview,
         viewer_url=(SERVICE.session_viewer.format(session_id=run["session_id"])
                     if SERVICE.session_viewer and run.get("session_id") else ""),
+        task_key=key,
+        task_url=url,
+        preview_prefix=preview.rstrip()[:-len(key)] if linked else preview,
+        preview_task_url=url if linked else "",
         preview_parts=_highlight_parts(preview, query),
         message_parts=_highlight_parts(message, query),
         user_message_parts=_highlight_parts(
@@ -160,6 +171,12 @@ class SkillSummary(BaseModel):
     conflict: str = ""
 
 
+class FieldOptionModel(BaseModel):
+    """One option of a searchable plugin field: stored value, shown label."""
+    value: str
+    label: str
+
+
 class PluginSkillField(BaseModel):
     """One field a plugin trigger asks for in the skill editor."""
     skill_type: str
@@ -167,7 +184,38 @@ class PluginSkillField(BaseModel):
     label: str
     hint: str = ""
     placeholder: str = ""
+    multiline: bool = False
+    searchable: bool = False
+    choices: list[FieldOptionModel] = []
+    # Shown only while the field ``visible_when_key`` holds this value.
+    visible_when_key: str = ""
+    visible_when_value: str = ""
     value: str = ""
+    # A searchable field's picks, which ``value`` is written from.
+    selected: list[FieldOptionModel] = []
+
+
+def _shown(fields: list, item: Any) -> bool:
+    """Whether a field's ``visible_when`` holds among ``fields``."""
+    if not item.visible_when_key:
+        return True
+    return any(other.key == item.visible_when_key
+               and other.value == item.visible_when_value for other in fields)
+
+
+def _with_visibility(section: "PluginSection") -> "PluginSection":
+    return section.model_copy(update={"fields": [
+        item.model_copy(update={"visible": _shown(section.fields, item)})
+        for item in section.fields]})
+
+
+def _with_selected(item: PluginSkillField,
+                   selected: list[FieldOptionModel]) -> PluginSkillField:
+    """A searchable field holding ``selected``, its stored lines to match."""
+    return item.model_copy(update={
+        "selected": selected,
+        "value": format_field_options(
+            [FieldOption(option.value, option.label) for option in selected])})
 
 
 class PluginSettingField(BaseModel):
@@ -176,7 +224,20 @@ class PluginSettingField(BaseModel):
     hint: str = ""
     placeholder: str = ""
     secret: bool = False
+    multiline: bool = False
+    choices: list[FieldOptionModel] = []
+    visible_when_key: str = ""
+    visible_when_value: str = ""
+    # Whether its visible_when condition holds right now.
+    visible: bool = True
     value: str = ""
+
+
+class PluginLogEntry(BaseModel):
+    time: str
+    status: str
+    title: str
+    detail: str = ""
 
 
 class PluginSection(BaseModel):
@@ -186,6 +247,14 @@ class PluginSection(BaseModel):
     package: str = ""
     version: str = ""
     enabled: bool = True
+    # Buttons the plugin puts on its card: value is the action's key.
+    actions: list[FieldOptionModel] = []
+    # The label of the card's log button, empty for a plugin without a log.
+    log_label: str = ""
+    description: str = ""
+    supports_sign_in: bool = False
+    signed_in_as: str = ""
+    redirect_uri: str = ""
     triggers: str = ""
     skills: str = ""
     fields: list[PluginSettingField] = []
@@ -463,6 +532,12 @@ class RunRecord(BaseModel):
     debug_logs: str
     preview: str
     viewer_url: str
+    task_key: str = ""
+    task_url: str = ""
+    # The preview split around the work item it ends with, so the tile can
+    # link that key in place. ``preview_task_url`` is empty when it can't.
+    preview_prefix: str = ""
+    preview_task_url: str = ""
     preview_parts: list[RunTextPart] = []
     message_parts: list[RunTextPart] = []
     user_message_parts: list[RunTextPart] = []
@@ -504,9 +579,29 @@ class AdminState(rx.State):
     skill_plugin_fields: list[PluginSkillField] = []
     # How many skills clash as issue triggers, for the sidebar's Skills link.
     skill_conflict_count: int = 0
+    # The search under a searchable plugin field: which field it is for,
+    # what was typed, and what the plugin found.
+    field_search_key: str = ""
+    field_search_query: str = ""
+    field_search_results: list[FieldOptionModel] = []
+    field_search_error: str = ""
+    field_searching: bool = False
 
     plugin_sections: list[PluginSection] = []
     plugin_errors: list[str] = []
+    # The card action running ("<plugin>:<action>"), and the last result,
+    # shown on the card of the plugin it ran for.
+    plugin_action_running: str = ""
+    plugin_action_plugin: str = ""
+    plugin_action_ok: bool = False
+    plugin_action_message: str = ""
+    # The log dialog: whose log, under what title, and what it holds.
+    plugin_log_open: bool = False
+    plugin_log_name: str = ""
+    plugin_log_title: str = ""
+    plugin_log_entries: list[PluginLogEntry] = []
+    plugin_log_loading: bool = False
+    plugin_log_error: str = ""
 
     agent_models: list[ModelOption] = []
     model_query: str = ""
@@ -667,9 +762,19 @@ class AdminState(rx.State):
 
     @rx.var
     def active_plugin_fields(self) -> list[PluginSkillField]:
-        """The selected plugin trigger's fields, empty for any other type."""
-        return [item for item in self.skill_plugin_fields
-                if item.skill_type == self.skill_type]
+        """The selected plugin trigger's fields that apply right now.
+
+        Empty for any other type; a field whose ``visible_when`` doesn't hold
+        (topics while the mode is "all messages") is left out.
+        """
+        fields = [item for item in self.skill_plugin_fields
+                  if item.skill_type == self.skill_type]
+        return [item for item in fields if _shown(fields, item)]
+
+    @rx.var
+    def active_trigger_description(self) -> str:
+        """The selected plugin trigger's description, empty for any other type."""
+        return TRIGGER_DESCRIPTIONS.get(self.skill_type, "")
 
     @rx.var
     def agents_card_visible(self) -> bool:
@@ -956,6 +1061,90 @@ class AdminState(rx.State):
             item.model_copy(update={"value": value}) if item.key == key
             else item for item in self.skill_plugin_fields]
 
+    def search_field(self, key: str, query: str) -> Any:
+        self.field_search_key = key
+        self.field_search_query = query
+        return AdminState.run_field_search
+
+    def open_field_search(self, key: str, opened: bool) -> Any:
+        """Opening a picker lists every option, before anything is typed."""
+        if not opened:
+            return None
+        self.field_search_results = []
+        return self.search_field(key, "")
+
+    @rx.event(background=True)
+    async def run_field_search(self) -> None:
+        """Ask the plugin off the event loop: it may call a remote API.
+
+        An answer for a query that has since been typed over is dropped; the
+        newer query has its own on the way.
+        """
+        async with self:
+            key, query = self.field_search_key, self.field_search_query
+            self.field_searching = True
+            self.field_search_error = ""
+        results, error = await asyncio.to_thread(
+            SERVICE.search_plugin_field, key, query)
+        async with self:
+            if (key, query) != (self.field_search_key, self.field_search_query):
+                return
+            # What is already picked isn't offered again.
+            picked = {option.value for item in self.skill_plugin_fields
+                      if item.key == key for option in item.selected}
+            self.field_search_results = [
+                FieldOptionModel(**option) for option in results
+                if option["value"] not in picked]
+            self.field_search_error = error
+            self.field_searching = False
+
+    def add_field_option(self, key: str, value: str, label: str) -> None:
+        """Pick an option; the picker stays open for the next one."""
+        self.skill_plugin_fields = [
+            _with_selected(item, [*item.selected,
+                                  FieldOptionModel(value=value, label=label)])
+            if item.key == key and all(option.value != value
+                                       for option in item.selected)
+            else item for item in self.skill_plugin_fields]
+        self.field_search_results = [option for option in
+                                     self.field_search_results
+                                     if option.value != value]
+
+    def remove_field_option(self, key: str, value: str) -> None:
+        self.skill_plugin_fields = [
+            _with_selected(item, [option for option in item.selected
+                                  if option.value != value])
+            if item.key == key else item for item in self.skill_plugin_fields]
+
+    @rx.event(background=True)
+    async def resolve_field_labels(self) -> None:
+        """Name the picks stored without a label (typed by hand, or older).
+
+        Asked of the plugin off the event loop, since it may call its service;
+        a pick it can't name stays shown as stored.
+        """
+        async with self:
+            slug = self.selected_skill
+            unnamed = {item.key: [option.value for option in item.selected
+                                  if not option.label]
+                       for item in self.skill_plugin_fields if item.searchable}
+        labels = {key: await asyncio.to_thread(
+                      SERVICE.describe_plugin_field, key, values)
+                  for key, values in unnamed.items() if values}
+        if not any(labels.values()):
+            return
+        async with self:
+            if self.selected_skill != slug:
+                return
+            self.skill_plugin_fields = [
+                _with_selected(item, [
+                    option.model_copy(update={"label": labels[item.key].get(
+                        option.value, option.label)})
+                    if not option.label else option
+                    for option in item.selected])
+                if labels.get(item.key) else item
+                for item in self.skill_plugin_fields]
+
     def load_skill_conflicts(self) -> None:
         """Count the clashing skills, for the badge every page's sidebar shows."""
         try:
@@ -1004,14 +1193,23 @@ class AdminState(rx.State):
         self.skill_extra = skill["extra"]
         self.skill_extra_enabled = bool(skill["extra"])
         self.skill_plugin = skill["plugin"]
+        self.field_search_key = ""
+        self.field_search_query = ""
+        self.field_search_results = []
+        self.field_search_error = ""
         self.skill_conflict = skill["conflict"]
         self.skill_plugin_fields = [
-            PluginSkillField(**item,
-                             value=skill["plugin_fields"].get(item["key"], ""))
+            PluginSkillField(
+                **item, value=skill["plugin_fields"].get(item["key"], ""),
+                selected=[FieldOptionModel(value=option.value,
+                                           label=option.label)
+                          for option in parse_field_options(
+                              skill["plugin_fields"].get(item["key"], ""))]
+                if item["searchable"] else [])
             for item in SERVICE.plugin_skill_fields()]
         # The catalog on screen belongs to whichever skill was open before this
         # one, and only this agent's models can be picked for this skill.
-        return AdminState.load_agent_models
+        return [AdminState.load_agent_models, AdminState.resolve_field_labels]
 
     def close_skill(self) -> None:
         self.selected_skill = ""
@@ -1497,10 +1695,81 @@ class AdminState(rx.State):
         self.load_azure_connection()
         return self._azure_callback_toast()
 
-    def load_plugins_page(self) -> None:
-        self.plugin_sections = [PluginSection(**section)
+    def load_plugins_page(self) -> Any:
+        self.plugin_sections = [_with_visibility(PluginSection(**section))
                                 for section in SERVICE.plugin_sections()]
         self.plugin_errors = SERVICE.plugin_errors()
+        # The outcome a plugin's sign-in callback passed back in the URL.
+        params = self.router.url.query_parameters
+        outcome, message = params.get("sign_in", ""), params.get("message", "")
+        if outcome == "ok":
+            return rx.toast.success(message or "Signed in")
+        if outcome == "error":
+            return rx.toast.error(message or "Could not sign in")
+        return None
+
+    def start_plugin_action(self, name: str, key: str) -> Any:
+        self.plugin_action_running = f"{name}:{key}"
+        self.plugin_action_plugin = ""
+        return AdminState.run_plugin_action
+
+    @rx.event(background=True)
+    async def run_plugin_action(self) -> None:
+        """Run a card action off the event loop: it may call a remote API."""
+        async with self:
+            running = self.plugin_action_running
+            name, _, key = running.partition(":")
+            values = {item.key: item.value for section in self.plugin_sections
+                      if section.name == name for item in section.fields}
+        ok, message = await asyncio.to_thread(
+            SERVICE.run_plugin_action, name, key, values)
+        async with self:
+            if self.plugin_action_running != running:
+                return
+            self.plugin_action_running = ""
+            self.plugin_action_plugin = name
+            self.plugin_action_ok = ok
+            self.plugin_action_message = message
+
+    def open_plugin_log(self, name: str, title: str) -> Any:
+        self.plugin_log_name = name
+        self.plugin_log_title = title
+        self.plugin_log_entries = []
+        self.plugin_log_open = True
+        return AdminState.load_plugin_log
+
+    def set_plugin_log_open(self, opened: bool) -> None:
+        self.plugin_log_open = opened
+
+    @rx.event(background=True)
+    async def load_plugin_log(self) -> None:
+        async with self:
+            name = self.plugin_log_name
+            self.plugin_log_loading = True
+            self.plugin_log_error = ""
+        entries, error = await asyncio.to_thread(SERVICE.plugin_log, name)
+        async with self:
+            if self.plugin_log_name != name:
+                return
+            self.plugin_log_entries = [PluginLogEntry(**entry)
+                                       for entry in entries]
+            self.plugin_log_error = error
+            self.plugin_log_loading = False
+
+    def start_plugin_sign_in(self, name: str) -> Any:
+        # Unsaved settings would be what the sign-in needs (tenant, client),
+        # so they are saved first.
+        self.save_plugin_settings(name)
+        started, result = SERVICE.start_plugin_sign_in(name)
+        if not started:
+            return rx.toast.error(result)
+        # Same tab, so the callback lands back on /plugins.
+        return rx.redirect(result)
+
+    def sign_out_plugin(self, name: str) -> Any:
+        message = SERVICE.sign_out_plugin(name)
+        self.load_plugins_page()
+        return rx.toast.success(message)
 
     def set_plugin_enabled(self, name: str, enabled: bool) -> Any:
         message = SERVICE.set_plugin_enabled(name, enabled)
@@ -1518,9 +1787,9 @@ class AdminState(rx.State):
 
     def set_plugin_setting(self, plugin: str, key: str, value: str) -> None:
         self.plugin_sections = [
-            section.model_copy(update={"fields": [
+            _with_visibility(section.model_copy(update={"fields": [
                 item.model_copy(update={"value": value}) if item.key == key
-                else item for item in section.fields]})
+                else item for item in section.fields]}))
             if section.name == plugin else section
             for section in self.plugin_sections]
 
@@ -2291,21 +2560,20 @@ def shell(content: rx.Component) -> rx.Component:
                                     rx.icon_button(
                                         rx.icon("message-square", size=18),
                                         variant="ghost",
-                                        color=rx.cond(
-                                            AdminState.active_route == "/sessions",
-                                            ACCENT, TEXT),
+                                        color=TEXT,
                                         # Ghost buttons carry negative margins
                                         # in Radix; reset so it lines up with
                                         # the theme toggle.
                                         margin="0",
-                                        aria_label="Sessions",
+                                        aria_label="Open session viewer",
                                     ),
-                                    href="/sessions",
+                                    href=AdminState.session_viewer,
+                                    is_external=True,
                                     # An inline link sits on the text baseline,
                                     # lifting the button above its neighbour.
                                     display="flex",
                                 ),
-                                content="Sessions",
+                                content="Open session viewer",
                             ),
                         ),
                         rx.color_mode.button(
@@ -2834,7 +3102,13 @@ def run_tile(run: RunRecord) -> rx.Component:
             rx.text(run.relative_age_label, " \u00b7 ", run.duration_label,
                     color=MUTED, font_size="0.8rem", font_family=MONO),
             spacing="2", align="center", wrap="wrap"),
-        rx.text(run.preview, color=MUTED, font_size="0.9rem",
+        # The work item the prompt names opens in the tasks provider's tab.
+        rx.text(run.preview_prefix,
+                rx.cond(run.preview_task_url != "", rx.link(
+                    run.task_key, href=run.preview_task_url,
+                    is_external=True, color=ACCENT,
+                    text_decoration="underline")),
+                color=MUTED, font_size="0.9rem",
                 style={**clamp, "-webkit-line-clamp": "3"}),
         rx.cond(run.error != "", rx.text(
             run.error, color="#b42318", font_size="0.85rem",
@@ -3235,14 +3509,149 @@ def delete_skill_dialog() -> rx.Component:
     )
 
 
+def field_chip(key: rx.Var, option: FieldOptionModel,
+               removable: bool = True) -> rx.Component:
+    """One pick, by its label; the stored value is in the tooltip."""
+    return rx.badge(
+        rx.cond(option.label != "", option.label, option.value),
+        *([rx.icon("x", size=13, cursor="pointer",
+                   aria_label="Remove",
+                   on_click=AdminState.remove_field_option(
+                       key, option.value).stop_propagation)]
+          if removable else []),
+        title=option.value, variant="soft", color_scheme="indigo", size="2",
+        radius="full", gap="0.35rem", max_width="100%")
+
+
+def field_search_results(item: PluginSkillField) -> rx.Component:
+    return rx.cond(
+        AdminState.field_searching,
+        rx.hstack(rx.spinner(size="1"),
+                  rx.text("Searching…", color=MUTED, font_size="0.82rem"),
+                  spacing="2", align="center", padding="0.5rem"),
+        rx.cond(
+            AdminState.field_search_error != "",
+            rx.callout(AdminState.field_search_error, icon="circle-alert",
+                       color_scheme="red", size="1", width="100%"),
+            rx.cond(
+                AdminState.field_search_results.length() > 0,
+                rx.scroll_area(
+                    rx.vstack(
+                        rx.foreach(
+                            AdminState.field_search_results,
+                            lambda option: rx.button(
+                                rx.hstack(rx.icon("plus", size=14),
+                                          rx.text(option.label,
+                                                  font_size="0.85rem"),
+                                          spacing="2", align="center"),
+                                variant="ghost", color_scheme="gray",
+                                width="100%", justify_content="start",
+                                padding="0.45rem 0.6rem",
+                                on_click=AdminState.add_field_option(
+                                    item.key, option.value, option.label))),
+                        spacing="1", width="100%"),
+                    type="auto", scrollbars="vertical", max_height="16rem",
+                    width="100%"),
+                rx.text("Nothing found.", color=MUTED, font_size="0.82rem",
+                        padding="0.5rem"))))
+
+
+def field_picker(item: PluginSkillField) -> rx.Component:
+    """A searchable field: the picks as chips, and a search to add more.
+
+    Clicking the box opens the search; picking keeps it open, so several can
+    be added in a row. A plugin's own read-only skill shows the chips only.
+    """
+    chips = rx.foreach(item.selected,
+                       lambda option: field_chip(item.key, option))
+    box = rx.flex(
+        chips,
+        rx.cond(item.selected.length() == 0,
+                rx.text(item.placeholder, color=MUTED, font_size="0.88rem")),
+        rx.spacer(),
+        rx.icon("search", size=15, color=SUBTLE_ICON),
+        gap="0.4rem", wrap="wrap", align="center", width="100%",
+        min_height="2.4rem", padding="0.35rem 0.6rem", border=BORDER,
+        border_radius="4px", background=SURFACE, cursor="pointer")
+    return rx.cond(
+        AdminState.skill_plugin != "",
+        rx.flex(rx.foreach(item.selected,
+                           lambda option: field_chip(item.key, option, False)),
+                gap="0.4rem", wrap="wrap", width="100%"),
+        rx.popover.root(
+            rx.popover.trigger(box),
+            rx.popover.content(
+                rx.vstack(
+                    rx.input(placeholder="Search…",
+                             value=AdminState.field_search_query,
+                             on_change=lambda query: AdminState.search_field(
+                                 item.key, query),
+                             debounce_timeout=350, auto_focus=True,
+                             width="100%"),
+                    field_search_results(item),
+                    spacing="2", width="100%"),
+                style={"width": "var(--radix-popover-trigger-width)"}),
+            on_open_change=lambda opened: AdminState.open_field_search(
+                item.key, opened)))
+
+
+def choice_select(choices: rx.Var, value: rx.Var, on_change: Any) -> rx.Component:
+    return rx.select.root(
+        rx.select.trigger(width="100%"),
+        rx.select.content(rx.foreach(
+            choices, lambda choice: rx.select.item(choice.label,
+                                                   value=choice.value))),
+        value=value, on_change=on_change, width="100%")
+
+
 def plugin_skill_field(item: PluginSkillField) -> rx.Component:
+    def on_change(value):
+        return AdminState.set_skill_plugin_field(item.key, value)
     return field(item.label,
-                 rx.input(value=item.value, placeholder=item.placeholder,
-                          on_change=lambda value: AdminState.set_skill_plugin_field(
-                              item.key, value),
-                          width="100%"),
+                 rx.cond(item.searchable, field_picker(item),
+                         rx.cond(item.choices.length() > 0,
+                                 choice_select(item.choices, item.value,
+                                               on_change),
+                         rx.cond(item.multiline,
+                                 rx.text_area(value=item.value,
+                                              placeholder=item.placeholder,
+                                              on_change=on_change, width="100%",
+                                              min_height="6rem"),
+                                 rx.input(value=item.value,
+                                          placeholder=item.placeholder,
+                                          on_change=on_change, width="100%")))),
                  rx.cond(item.hint != "",
                          rx.text(item.hint, color=MUTED, font_size="0.82rem")))
+
+
+def markdown_panel(title: str, content: rx.Var, icon: str = "info",
+                   open_: bool | rx.Var = True) -> rx.Component:
+    """Markdown a plugin supplies, in a panel the reader can collapse.
+
+    A native ``<details>``: its summary is not a form control, so it still
+    opens and closes inside the disabled fieldset of a read-only skill.
+    """
+    return rx.el.details(
+        # The browser's own marker sits on the text baseline, never quite level
+        # with an icon, so it is hidden (see the app style) and drawn here.
+        rx.el.summary(rx.hstack(rx.icon("chevron-right", size=15,
+                                        class_name="details-chevron"),
+                                rx.icon(icon, size=15),
+                                rx.text(title, font_weight="600",
+                                        font_size="0.85rem"),
+                                spacing="2", align="center"),
+                      cursor="pointer", class_name="markdown-panel-summary"),
+        rx.box(rx.markdown(content), font_size="0.85rem",
+               padding_top="0.5rem"),
+        open=open_,
+        padding="0.75rem 1rem", background=SURFACE, border=BORDER,
+        width="100%")
+
+
+def trigger_description_panel() -> rx.Component:
+    """What the selected plugin trigger passes to the skill."""
+    return markdown_panel("What this trigger passes to the skill",
+                          AdminState.active_trigger_description)
 
 
 def conflict_callout(message: rx.Var) -> rx.Component:
@@ -3314,10 +3723,9 @@ def skill_editor() -> rx.Component:
                                                      placeholder="Ready, In progress", width="100%")),
                     columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%")),
         rx.cond(AdminState.active_plugin_fields.length() > 0,
-                rx.grid(rx.foreach(AdminState.active_plugin_fields,
-                                   plugin_skill_field),
-                        columns=rx.breakpoints(initial="1", md="2"),
-                        gap="1rem", width="100%")),
+                rx.vstack(rx.foreach(AdminState.active_plugin_fields,
+                                     plugin_skill_field),
+                          spacing="4", width="100%")),
         rx.vstack(
             rx.checkbox("Use other fields in frontmatter (for instance allowed-tools)",
                         checked=AdminState.skill_extra_enabled,
@@ -3334,6 +3742,8 @@ def skill_editor() -> rx.Component:
                       rx.text("YAML lines written into the frontmatter as they are.",
                               color=MUTED, font_size="0.82rem"))),
             spacing="3", align="start", width="100%"),
+        rx.cond(AdminState.active_trigger_description != "",
+                trigger_description_panel()),
         field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
                                          width="100%", min_height="25rem",
                                          font_family="IBM Plex Mono, monospace")),
@@ -4563,14 +4973,22 @@ def agent_test_dialog() -> rx.Component:
 
 
 def plugin_setting_field(plugin: str, item: PluginSettingField) -> rx.Component:
-    return field(item.label,
-                 rx.input(value=item.value, placeholder=item.placeholder,
-                          type=rx.cond(item.secret, "password", "text"),
-                          on_change=lambda value: AdminState.set_plugin_setting(
-                              plugin, item.key, value),
-                          width="100%"),
-                 rx.cond(item.hint != "",
-                         rx.text(item.hint, color=MUTED, font_size="0.82rem")))
+    def on_change(value):
+        return AdminState.set_plugin_setting(plugin, item.key, value)
+    return rx.cond(item.visible, field(
+        item.label,
+        rx.cond(item.choices.length() > 0,
+                choice_select(item.choices, item.value, on_change),
+                rx.cond(item.multiline,
+                        rx.text_area(value=item.value,
+                                     placeholder=item.placeholder,
+                                     on_change=on_change, width="100%",
+                                     min_height="5rem"),
+                        rx.input(value=item.value, placeholder=item.placeholder,
+                                 type=rx.cond(item.secret, "password", "text"),
+                                 on_change=on_change, width="100%"))),
+        rx.cond(item.hint != "",
+                rx.text(item.hint, color=MUTED, font_size="0.82rem"))))
 
 
 def plugin_detail(label: str, value: rx.Var) -> rx.Component:
@@ -4581,6 +4999,58 @@ def plugin_detail(label: str, value: rx.Var) -> rx.Component:
                              spacing="2", align="start"))
 
 
+def plugin_sign_in(section: PluginSection) -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.cond(section.signed_in_as != "",
+                    rx.hstack(rx.icon("circle-check", size=16, color="var(--green-9)"),
+                              rx.text("Signed in as ", rx.text.strong(section.signed_in_as),
+                                      font_size="0.85rem"),
+                              spacing="2", align="center"),
+                    rx.hstack(rx.icon("circle-alert", size=16, color=SUBTLE_ICON),
+                              rx.text("Not signed in", font_size="0.85rem",
+                                      color=MUTED),
+                              spacing="2", align="center")),
+            rx.spacer(),
+            rx.cond(section.signed_in_as != "",
+                    rx.button(rx.icon("log-out", size=15), "Sign out",
+                              variant="soft", color_scheme="gray",
+                              on_click=AdminState.sign_out_plugin(section.name)),
+                    rx.button(rx.icon("log-in", size=15), "Sign in",
+                              on_click=AdminState.start_plugin_sign_in(section.name))),
+            align="center", width="100%"),
+        field("Redirect URI",
+              rx.input(value=section.redirect_uri, read_only=True, width="100%"),
+              rx.text("Register this as a Web redirect URI on the app you sign in with.",
+                      color=MUTED, font_size="0.82rem")),
+        spacing="3", width="100%", padding_top="0.75rem", border_top=BORDER)
+
+
+def plugin_actions(section: PluginSection) -> rx.Component:
+    """The plugin's own buttons, and what the last one pressed came back with."""
+    return rx.vstack(
+        rx.flex(
+            rx.foreach(section.actions, lambda action: rx.button(
+                rx.icon("flask-conical", size=15), action.label,
+                variant="outline",
+                loading=AdminState.plugin_action_running
+                == section.name + ":" + action.value,
+                on_click=AdminState.start_plugin_action(section.name,
+                                                        action.value))),
+            gap="0.75rem", wrap="wrap"),
+        rx.cond(
+            AdminState.plugin_action_plugin == section.name,
+            rx.cond(AdminState.plugin_action_ok,
+                    rx.callout(AdminState.plugin_action_message,
+                               icon="circle-check", color_scheme="green",
+                               size="1", width="100%", white_space="pre-wrap"),
+                    rx.callout(AdminState.plugin_action_message,
+                               icon="circle-alert", color_scheme="red",
+                               size="1", width="100%",
+                               white_space="pre-wrap"))),
+        spacing="3", width="100%")
+
+
 def plugin_card(section: PluginSection) -> rx.Component:
     return rx.vstack(
         rx.hstack(
@@ -4588,6 +5058,13 @@ def plugin_card(section: PluginSection) -> rx.Component:
             rx.heading(section.label, size="4"),
             rx.code(section.name, font_size="0.75rem", color_scheme="gray"),
             rx.spacer(),
+            rx.cond(section.log_label != "",
+                    rx.button(rx.icon("scroll-text", size=15),
+                              section.log_label, variant="soft",
+                              color_scheme="gray", size="1",
+                              margin_right="0.75rem",
+                              on_click=AdminState.open_plugin_log(
+                                  section.name, section.log_label))),
             rx.cond(section.enabled,
                     rx.badge("on", color_scheme="green", variant="soft"),
                     rx.badge("off", color_scheme="gray", variant="soft")),
@@ -4601,19 +5078,103 @@ def plugin_card(section: PluginSection) -> rx.Component:
             section.package)),
         plugin_detail("Triggers", section.triggers),
         plugin_detail("Skills", section.skills),
+        # Everything but the summary above is behind "Settings", collapsed
+        # until opened: a page of plugins reads as a list of cards.
         rx.cond(
-            section.fields.length() > 0,
-            rx.vstack(
-                rx.foreach(section.fields,
-                           lambda item: plugin_setting_field(section.name, item)),
-                rx.button(rx.icon("save", size=16), "Save settings",
-                          variant="outline",
-                          on_click=AdminState.save_plugin_settings(section.name)),
-                spacing="3", align="start", width="100%",
-                padding_top="0.75rem", border_top=BORDER)),
+            (section.description != "") | section.supports_sign_in
+            | (section.fields.length() > 0) | (section.actions.length() > 0),
+            rx.el.details(
+                rx.el.summary(
+                    rx.hstack(rx.icon("chevron-right", size=15,
+                                      class_name="details-chevron"),
+                              rx.icon("settings", size=15),
+                              rx.text("Settings", font_weight="600",
+                                      font_size="0.88rem"),
+                              spacing="2", align="center"),
+                    cursor="pointer", class_name="markdown-panel-summary"),
+                rx.vstack(
+                    # Open while a plugin that signs in has nobody signed in, which is
+                    # when its setup steps are still ahead; collapsed after that.
+                    rx.cond(section.description != "",
+                            markdown_panel("How to set it up", section.description,
+                                           icon="book-open",
+                                           open_=section.supports_sign_in
+                                           & (section.signed_in_as == ""))),
+                    rx.cond(section.supports_sign_in, plugin_sign_in(section)),
+                    rx.cond(
+                        section.fields.length() > 0,
+                        rx.vstack(
+                            rx.foreach(section.fields,
+                                       lambda item: plugin_setting_field(section.name, item)),
+                            # Before saving: an action tests what was just typed above.
+                            rx.cond(section.actions.length() > 0, plugin_actions(section)),
+                            rx.button(rx.icon("save", size=16), "Save settings",
+                                      variant="outline",
+                                      on_click=AdminState.save_plugin_settings(section.name)),
+                            spacing="3", align="start", width="100%",
+                            padding_top="0.75rem", border_top=BORDER)),
+                    # A plugin with actions but no settings still gets its buttons.
+                    rx.cond((section.actions.length() > 0) & (section.fields.length() == 0),
+                            plugin_actions(section)),
+                    spacing="3", align="start", width="100%",
+                    padding_top="0.75rem"),
+                width="100%", padding_top="0.75rem", border_top=BORDER)),
         spacing="3", align="start", width="100%",
         padding="1.25rem", background=SURFACE, border=BORDER,
         opacity=rx.cond(section.enabled, "1", "0.75"))
+
+
+def plugin_log_entry(entry: PluginLogEntry) -> rx.Component:
+    status = rx.match(entry.status,
+                      ("ok", rx.badge("match", color_scheme="green")),
+                      ("error", rx.badge("error", color_scheme="red")),
+                      rx.badge("no match", color_scheme="gray"))
+    return rx.vstack(
+        rx.hstack(status,
+                  rx.text(entry.time, color=MUTED, font_size="0.78rem"),
+                  spacing="2", align="center"),
+        rx.text(entry.title, font_weight="600", font_size="0.88rem"),
+        rx.cond(entry.detail != "",
+                rx.box(entry.detail, white_space="pre-wrap",
+                       font_family="IBM Plex Mono, monospace",
+                       font_size="0.78rem", color=MUTED, width="100%")),
+        spacing="1", align="start", width="100%",
+        padding="0.75rem 0", border_bottom=BORDER)
+
+
+def plugin_log_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.hstack(
+                rx.dialog.title(AdminState.plugin_log_title, margin="0"),
+                rx.spacer(),
+                rx.button(rx.icon("refresh-cw", size=14), "Refresh",
+                          variant="soft", size="1",
+                          loading=AdminState.plugin_log_loading,
+                          on_click=AdminState.load_plugin_log),
+                rx.dialog.close(rx.icon_button(rx.icon("x", size=16),
+                                               variant="ghost",
+                                               aria_label="Close")),
+                align="center", width="100%"),
+            rx.cond(AdminState.plugin_log_error != "",
+                    rx.callout(AdminState.plugin_log_error,
+                               icon="circle-alert", color_scheme="red",
+                               size="1", width="100%", margin_top="0.75rem")),
+            rx.scroll_area(
+                rx.cond(
+                    AdminState.plugin_log_entries.length() > 0,
+                    rx.vstack(rx.foreach(AdminState.plugin_log_entries,
+                                         plugin_log_entry),
+                              spacing="0", width="100%"),
+                    rx.cond(AdminState.plugin_log_loading,
+                            rx.text("Loading…", color=MUTED),
+                            rx.text("Nothing logged yet.", color=MUTED,
+                                    padding="1rem 0"))),
+                type="auto", scrollbars="vertical", max_height="70vh",
+                margin_top="0.75rem"),
+            max_width="56rem"),
+        open=AdminState.plugin_log_open,
+        on_open_change=AdminState.set_plugin_log_open)
 
 
 def plugins_page() -> rx.Component:
@@ -4623,6 +5184,7 @@ def plugins_page() -> rx.Component:
                    lambda error: rx.callout(error, icon="circle-alert",
                                             color_scheme="red", size="1",
                                             width="100%")),
+        plugin_log_dialog(),
         rx.cond(AdminState.plugin_sections.length() > 0,
                 rx.vstack(rx.foreach(AdminState.plugin_sections, plugin_card),
                           spacing="4", width="100%"),
@@ -4768,6 +5330,12 @@ def _workflow_edge_hover_styles() -> dict[str, dict[str, str]]:
 
 app = rx.App(
     style={
+        ".markdown-panel-summary": {"list_style": "none"},
+        ".markdown-panel-summary::-webkit-details-marker": {"display": "none"},
+        ".details-chevron": {"transition": "transform 0.15s ease"},
+        "details[open] > .markdown-panel-summary .details-chevron": {
+            "transform": "rotate(90deg)",
+        },
         "button:not(:disabled), [role='button']:not([aria-disabled='true'])": {
             "cursor": "pointer",
         },

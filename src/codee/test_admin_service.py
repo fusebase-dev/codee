@@ -3853,6 +3853,26 @@ class DashboardWorkItemLinkTest(unittest.TestCase):
             self.assertEqual(job["message"], "/story-planner NIM-44025")
             self.assertTrue(job["elapsed_label"])
 
+    def test_a_finished_run_links_its_issue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            service = self._service(Path(temporary_directory))
+            runs_db.record_run("story-planner", "issue", "sid-1", "succeeded",
+                               message="/story-planner NIM-44025",
+                               main_context=service.context)
+            runs_db.record_run("daily-report", "cron", "sid-2", "succeeded",
+                               message="/daily-report",
+                               main_context=service.context)
+
+            linked = {run["message"]: (run["task_key"], run["task_url"])
+                      for run in service.recent_runs()}
+
+            self.assertEqual(linked, {
+                "/story-planner NIM-44025": (
+                    "NIM-44025", "https://acme.atlassian.net/browse/NIM-44025"),
+                "/daily-report": ("", ""),
+            })
+
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -4065,3 +4085,223 @@ class AdminServicePluginTest(unittest.TestCase):
         self.assertTrue((self.skills_dir / "acme-develop").is_symlink())
         self.assertEqual(
             load_settings(self.service.data_dir).disabled_plugins, [])
+
+
+class AdminServicePluginSignInTest(unittest.TestCase):
+    """The sign-in Codee runs for a plugin, and the state it checks."""
+
+    def setUp(self) -> None:
+        from codee_plugin_abstract.plugin import (
+            AbstractCodeePlugin, AbstractSkillTrigger, SignInError)
+        from codee.lib.plugins import build_plugins
+
+        self._temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary.cleanup)
+        root = Path(self._temporary.name)
+        calls = self.calls = []
+
+        class Chat(AbstractSkillTrigger):
+            TYPE = "chat"
+            DESCRIPTION = "Gets **the chat**."
+
+        class Service(AbstractCodeePlugin):
+            NAME = "chat"
+            DESCRIPTION = "Register `{REDIRECT_URI}` first."
+            SUPPORTS_SIGN_IN = True
+            account = ""
+
+            def sign_in_url(self, settings, redirect_uri, state, verifier):
+                if not settings.get("client_id"):
+                    raise SignInError("Fill in the client ID")
+                calls.append(("url", redirect_uri, state, verifier))
+                return f"https://login.example/?state={state}"
+
+            def complete_sign_in(self, settings, redirect_uri, code, verifier):
+                calls.append(("complete", redirect_uri, code, verifier))
+                Service.account = "me@example.com"
+                return Service.account
+
+            def signed_in_as(self):
+                return Service.account
+
+            def sign_out(self):
+                Service.account = ""
+
+            def triggers(self):
+                return [Chat()]
+
+        self.service = AdminService.__new__(AdminService)
+        self.service.skills_dir = root / ".claude" / "skills"
+        self.service.data_dir = root
+        self.service.context = CodeeMainContext(data_dir=root)
+        self.service.plugins = build_plugins([lambda: Service])
+        save_settings(root, Settings(plugin_settings={"chat": {"client_id": "c"}}))
+
+    def test_signs_in_and_out_through_the_plugin(self) -> None:
+        with patch.dict(os.environ, {"CODEE_ADMIN_BASE_URL": "https://codee.test"}):
+            started, url = self.service.start_plugin_sign_in("chat")
+        self.assertTrue(started)
+        _, redirect_uri, state, verifier = self.calls[0]
+        self.assertEqual(redirect_uri,
+                         "https://codee.test/api/oauth/plugins/chat/callback")
+
+        done, message = self.service.complete_plugin_sign_in("chat", "code-1",
+                                                             state)
+
+        self.assertTrue(done, message)
+        self.assertEqual(self.calls[1], ("complete", redirect_uri, "code-1",
+                                         verifier))
+        self.assertEqual(self.service.plugin_sections()[0]["signed_in_as"],
+                         "me@example.com")
+        # The state is single-use.
+        again, _ = self.service.complete_plugin_sign_in("chat", "code-1", state)
+        self.assertFalse(again)
+
+        self.service.sign_out_plugin("chat")
+        self.assertEqual(self.service.plugin_sections()[0]["signed_in_as"], "")
+
+    def test_an_unknown_state_is_refused(self) -> None:
+        done, _ = self.service.complete_plugin_sign_in("chat", "code", "forged")
+
+        self.assertFalse(done)
+        self.assertEqual(self.calls, [])
+
+    def test_the_plugin_can_refuse_to_start(self) -> None:
+        save_settings(self.service.data_dir, Settings())
+
+        started, message = self.service.start_plugin_sign_in("chat")
+
+        self.assertFalse(started)
+        self.assertEqual(message, "Fill in the client ID")
+
+    def test_the_setup_guide_names_this_codee_s_redirect_uri(self) -> None:
+        with patch.dict(os.environ, {"CODEE_ADMIN_BASE_URL": "https://codee.test"}):
+            description = self.service.plugin_sections()[0]["description"]
+
+        self.assertEqual(description, "Register "
+                         "`https://codee.test/api/oauth/plugins/chat/callback` first.")
+
+    def test_trigger_descriptions_are_keyed_by_skill_type(self) -> None:
+        self.assertEqual(self.service.trigger_descriptions(),
+                         {"chat trigger": "Gets **the chat**."})
+
+
+class AdminServicePluginFieldLayoutTest(unittest.TestCase):
+    """Selects, defaults and conditional fields reach the editor."""
+
+    def test_choices_defaults_and_visibility(self) -> None:
+        from codee_plugin_abstract.plugin import (
+            AbstractCodeePlugin, AbstractSkillTrigger, PluginField)
+        from codee.lib.plugins import build_plugins
+
+        class Chat(AbstractSkillTrigger):
+            TYPE = "chat"
+            SKILL_FIELDS = [
+                PluginField("x-chat-mode", "Mode", default="all",
+                            choices=(("all", "All"), ("topics", "Topics"))),
+                PluginField("x-chat-topics", "Topics", multiline=True,
+                            visible_when=("x-chat-mode", "topics")),
+            ]
+
+        class Service(AbstractCodeePlugin):
+            NAME = "chat"
+            SETTINGS_FIELDS = [PluginField("model", "Model", default="m-1")]
+
+            def triggers(self):
+                return [Chat()]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skills_dir = root / ".claude" / "skills"
+            (skills_dir / "talk").mkdir(parents=True)
+            (skills_dir / "talk" / "SKILL.md").write_text(
+                "---\nname: talk\ndisable-model-invocation: true\n"
+                "x-codee-trigger: chat\n---\nBody\n")
+            service = AdminService.__new__(AdminService)
+            service.skills_dir = skills_dir
+            service.data_dir = root
+            service.context = CodeeMainContext(data_dir=root)
+            service.plugins = build_plugins([lambda: Service])
+
+            fields = {f["key"]: f for f in service.plugin_skill_fields()}
+            skill = service.load_skill("talk")
+            section = service.plugin_sections()[0]
+
+        self.assertEqual(fields["x-chat-mode"]["choices"],
+                         [{"value": "all", "label": "All"},
+                          {"value": "topics", "label": "Topics"}])
+        self.assertEqual((fields["x-chat-topics"]["visible_when_key"],
+                          fields["x-chat-topics"]["visible_when_value"]),
+                         ("x-chat-mode", "topics"))
+        # A skill that never set the mode shows (and would save) the default.
+        self.assertEqual(skill["plugin_fields"]["x-chat-mode"], "all")
+        self.assertEqual(section["fields"][0]["value"], "m-1")
+
+
+class AdminServicePluginActionTest(unittest.TestCase):
+    def test_runs_with_the_card_values_over_the_saved_ones(self) -> None:
+        from codee_plugin_abstract.plugin import AbstractCodeePlugin, PluginAction
+        from codee.lib.plugins import build_plugins
+        seen = []
+
+        class Service(AbstractCodeePlugin):
+            NAME = "svc"
+            ACTIONS = [PluginAction("ping", "Ping")]
+
+            def run_action(self, key, settings):
+                seen.append(settings)
+                if settings["key"] == "bad":
+                    raise RuntimeError("401: bad key")
+                return "pong"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save_settings(root, Settings(plugin_settings={
+                "svc": {"key": "saved", "url": "u"}}))
+            service = AdminService.__new__(AdminService)
+            service.data_dir = root
+            service.skills_dir = root / ".claude" / "skills"
+            service.context = CodeeMainContext(data_dir=root)
+            service.plugins = build_plugins([lambda: Service])
+
+            self.assertEqual(service.run_plugin_action("svc", "ping",
+                                                       {"key": " typed "}),
+                             (True, "pong"))
+            self.assertEqual(service.run_plugin_action("svc", "ping",
+                                                       {"key": "bad"}),
+                             (False, "401: bad key"))
+            self.assertFalse(service.run_plugin_action("svc", "nope", {})[0])
+            self.assertEqual(service.plugin_sections()[0]["actions"],
+                             [{"value": "ping", "label": "Ping"}])
+
+        self.assertEqual(seen[0], {"key": "typed", "url": "u"})
+
+
+class AdminServicePluginLogTest(unittest.TestCase):
+    def test_reads_the_plugin_log_with_exact_and_relative_time(self) -> None:
+        from codee_plugin_abstract.plugin import AbstractCodeePlugin, LogEntry
+        from codee.lib.plugins import build_plugins
+
+        class Service(AbstractCodeePlugin):
+            NAME = "svc"
+            LOG_LABEL = "Decision log"
+
+            def read_log(self, limit):
+                return [LogEntry("2026-11-01T13:30:04+00:00", "skip",
+                                 "a title", "a detail")]
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = AdminService.__new__(AdminService)
+            service.data_dir = Path(directory)
+            service.skills_dir = Path(directory) / ".claude" / "skills"
+            service.context = CodeeMainContext(data_dir=Path(directory))
+            service.plugins = build_plugins([lambda: Service])
+
+            entries, error = service.plugin_log("svc")
+            section = service.plugin_sections()[0]
+
+        self.assertEqual(error, "")
+        self.assertTrue(entries[0]["time"].startswith(
+            "2026-11-01 13:30:04 UTC · "))
+        self.assertEqual(entries[0]["title"], "a title")
+        self.assertEqual(section["log_label"], "Decision log")

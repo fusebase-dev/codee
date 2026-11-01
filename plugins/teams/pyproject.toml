@@ -1,0 +1,22 @@
+[project]
+name = "codee-teams"
+version = "0.1.0"
+description = "Codee plugin: run skills when a message is posted in Microsoft Teams channels."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    # The plugin API (codee_plugin_abstract) ships inside codee-agent.
+    "codee-agent >= 0.9.7",
+    "requests >= 2.31,<3",
+]
+
+[project.entry-points."codee.plugins"]
+teams = "codee_teams.plugin:TeamsPlugin"
+
+[tool.uv.sources]
+codee-agent = { workspace = true }
+
+[build-system]
+requires = ["uv_build >= 0.11.29,<0.12"]
+build-backend = "uv_build"
