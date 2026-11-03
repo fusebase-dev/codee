@@ -23,6 +23,7 @@ import threading
 import time
 
 from codee_agent_claude_code import credentials, oauth
+from codee_agent_claude_code import provider as claude_provider
 from codee_agent_claude_code.account import AccountUnavailable, fetch_account
 from codee_agent_claude_code.greeting import GreetingFailed, send_greeting
 from codee_agent_claude_code.usage import UsageUnavailable, fetch_usage
@@ -62,6 +63,11 @@ GREETING_INTERVAL_MS = 30 * 60 * 1000
 
 THREAD_NAME = "claude-key-rotation"
 
+# Parallel agents on one dead token all fail together, and each asks for a
+# recovery. Only the first needs one: a sign-in this recent is what the others
+# should simply retry on, rather than renew the account again from under it.
+RECOVERY_GRACE_MS = 60 * 1000
+
 
 class ClaudeKeyRotation:
     """One executor's rotation state: the account it signed in, and the checks.
@@ -87,6 +93,77 @@ class ClaudeKeyRotation:
         # When this process last greeted each account, by id. Kept in memory
         # only: a restart greeting everyone straight away costs nothing.
         self._greeted_at: dict[int, int] = {}
+        # When a recovery last signed the CLI in, in milliseconds.
+        self._recovered_at = 0
+        # Held by a check and by a recovery, which both write the credentials
+        # file and run on different threads.
+        self._lock = threading.Lock()
+
+    def recover_from_auth_failure(self) -> bool:
+        """Leave the CLI on an account that can authenticate, after a run could not.
+
+        Returns whether a run should be tried again. In order:
+
+        * A sign-in in the last minute is taken as the fix already — another
+          agent failed on the same token and recovered first.
+        * The credentials file not holding the current account's token means
+          something renewed the account without telling the CLI (the CLI is
+          then left with a refresh token Anthropic has replaced). The stored
+          token is the good one, so it is put back.
+        * Otherwise the current account is renewed outright. A renewal that is
+          refused, or cannot be made, means the account is no use right now,
+          and the next usable account is switched to instead.
+        """
+        with self._lock:
+            if not load_settings(self._context.data_dir).claude_code_rotate_keys:
+                log.warning("Claude Code could not authenticate and account "
+                            "rotation is off; sign the CLI in again with "
+                            "`claude /login`.")
+                return False
+            accounts = claude_code_accounts.accounts(self._context)
+            if not accounts:
+                return False
+            if _now_ms() - self._recovered_at < RECOVERY_GRACE_MS:
+                log.info("Claude Code was signed in again moments ago; "
+                         "retrying on that.")
+                return True
+
+            current = self._current_account(accounts)
+            stored = credentials.read_credentials()
+            if (not current.needs_reconnect(_now_ms())
+                    and stored.access_token != current.access_token):
+                account = self._refreshed(current)
+                self._sign_in(account)
+                log.warning("Claude Code was holding a stale token for %s; "
+                            "signed it back in.", describe(account))
+                self._recovered_at = _now_ms()
+                return True
+
+            renewed = self._refreshed(current, force=True)
+            retired = next((row for row in claude_code_accounts.accounts(
+                self._context) if row.id == current.id), None)
+            if (renewed.access_token != current.access_token
+                    and retired is not None
+                    and not retired.needs_reconnect(_now_ms())):
+                self._sign_in(renewed)
+                log.warning("Renewed %s after Claude Code could not "
+                            "authenticate.", describe(renewed))
+                self._recovered_at = _now_ms()
+                return True
+
+            replacement = self._next_usable(accounts, current)
+            if replacement is None:
+                log.error("Claude Code could not authenticate as %s and no "
+                          "other connected account is usable.",
+                          describe(current))
+                return False
+            claude_code_accounts.set_current_account(replacement.id,
+                                                     self._context)
+            self._sign_in(replacement)
+            log.warning("Claude Code could not authenticate as %s; switched "
+                        "to %s.", describe(current), describe(replacement))
+            self._recovered_at = _now_ms()
+            return True
 
     def tick(self) -> None:
         """One check: reconcile the account in use, then rotate if it is spent."""
@@ -137,7 +214,8 @@ class ClaudeKeyRotation:
                   self._interval)
         while True:
             try:
-                self.tick()
+                with self._lock:
+                    self.tick()
             except Exception as error:  # noqa: BLE001 - a dead thread rotates nothing
                 log.error("Claude Code account rotation check failed: %s", error,
                           exc_info=True)
@@ -431,8 +509,11 @@ def start(main_context: CodeeMainContext,
     and a tick can be busy for hours handing tasks to agents while a window
     quietly fills up. Daemon, so a stopped executor doesn't wait on it.
     """
+    rotation = ClaudeKeyRotation(main_context, interval)
+    # So a run that cannot authenticate is put on a working account and tried
+    # again straight away, instead of failing until the next check.
+    claude_provider.set_auth_recovery(rotation.recover_from_auth_failure)
     thread = threading.Thread(
-        target=ClaudeKeyRotation(main_context, interval).run_forever,
-        name=THREAD_NAME, daemon=True)
+        target=rotation.run_forever, name=THREAD_NAME, daemon=True)
     thread.start()
     return thread

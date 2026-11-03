@@ -335,12 +335,9 @@ class TeamsMessageTrigger(AbstractSkillTrigger):
                     hint="Specific topics: a decision model (Plugins page) "
                          "first checks that the message is about one of the "
                          "topics below; only then does the skill run."),
-        PluginField(TOPICS_FIELD, "Topics", multiline=True,
+        PluginField(TOPICS_FIELD, "Topics", tags=True,
                     visible_when=(MODE_FIELD, SPECIFIC_TOPICS),
-                    placeholder="Production incidents and outages\n"
-                                "Questions about the billing service",
-                    hint="One per line. Describe each the way you would to a "
-                         "colleague; the model matches meaning, not words."),
+                    placeholder="Type a topic and press Enter"),
     ]
     DESCRIPTION = DESCRIPTION
 

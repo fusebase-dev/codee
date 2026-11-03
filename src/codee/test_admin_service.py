@@ -675,6 +675,28 @@ class AdminServiceClaudeCodeAccountsTest(unittest.TestCase):
                          "2026-09-16T09:00:00+00:00")
         self.assertEqual(measured[0].usage_error, "")
 
+    def test_the_account_in_use_is_not_renewed_for_a_reading(self) -> None:
+        # A renewal replaces the refresh token, and the CLI, still holding the
+        # old one, then fails every run until rotation writes the new one.
+        far_future = int((time.time() + 30 * 24 * 3600) * 1000)
+        healthy = claude_oauth.Tokens("access-1", "refresh-1",
+                                      expires_at=far_future,
+                                      refresh_expires_at=far_future)
+        self._connect("one@example.com", tokens=healthy)
+        self._connect("two@example.com", tokens=healthy)
+        accounts = claude_code_accounts.accounts(self.service.context)
+        claude_code_accounts.set_current_account(accounts[0].id,
+                                                 self.service.context)
+        usage = Usage(limited=False, windows={"five_hour": 1.0}, resets_at={})
+
+        with patch("codee.admin_service.ensure_fresh",
+                   side_effect=lambda a, c: a) as renew, \
+                patch("codee.admin_service.fetch_usage", return_value=usage):
+            self.service.claude_code_account_usage()
+
+        self.assertEqual([call.args[0].id for call in renew.call_args_list],
+                         [accounts[1].id])
+
     def test_the_reading_is_cached_rather_than_taken_every_redraw(self) -> None:
         # The dashboard redraws every second; without this that would be a
         # request per account per second for a number that moves over hours.

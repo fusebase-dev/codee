@@ -43,6 +43,34 @@ MODELS = [
     AgentModel("haiku", "Latest Haiku (alias)"),
 ]
 
+# What the CLI says when the account it is signed in as cannot be used at all:
+# the token was refused, or it expired and the refresh token behind it is dead.
+# It gives no exit code of its own for that, so the message is what tells an
+# auth failure apart from every other way a run can fail.
+_AUTH_FAILURE = re.compile(
+    r"Failed to authenticate|OAuth (session|token) (has )?expired"
+    r"|could not be refreshed|authentication_error|Please run /login"
+    r"|Invalid API key", re.IGNORECASE)
+
+
+class ClaudeAuthFailed(RuntimeError):
+    """The CLI could not authenticate, so the run never reached the model."""
+
+
+# Called once when a run fails to authenticate. It should leave the CLI signed
+# in as something usable (the same account renewed, or the next one) and
+# return whether it did, in which case the run is tried once more. Installed by
+# whatever owns the accounts — the executor's key rotation — and absent in a
+# process that has no business rewriting credentials.
+AuthRecovery = Callable[[], bool]
+_auth_recovery: AuthRecovery | None = None
+
+
+def set_auth_recovery(recovery: AuthRecovery | None) -> None:
+    global _auth_recovery
+    _auth_recovery = recovery
+
+
 # The transcript doesn't say how big the context window is, so it is looked up
 # by model: 1M since the 4.6 generation, 200K before it and on Haiku 4.5.
 WIDE_WINDOW = 1_000_000
@@ -141,6 +169,35 @@ class ClaudeCodeAgent(AbstractCodingAgent):
 
     def _run(self, user_message: str, session_id: str, model: str,
              effort: str, resume: bool) -> str:
+        try:
+            return self._run_once(user_message, session_id, model, effort,
+                                  resume)
+        except ClaudeAuthFailed as error:
+            log.warning("Claude Code could not authenticate for session %s: %s",
+                        session_id, error)
+            recovery = _auth_recovery
+            if recovery is None:
+                raise
+            try:
+                recovered = recovery()
+            except Exception as recovery_error:  # noqa: BLE001 - the run's error is the one to report
+                log.error("Recovering from the auth failure failed: %s",
+                          recovery_error, exc_info=True)
+                raise error from None
+            if not recovered:
+                log.warning("No usable Claude account to retry session %s on.",
+                            session_id)
+                raise
+        # The failed attempt may already have written the session (the prompt,
+        # then the CLI's own error turn), and a second --session-id for it
+        # would be refused as taken — so it is resumed when it is there.
+        retry_resume = resume or _transcript(session_id, self._cwd) is not None
+        log.info("Retrying session %s after the auth failure.", session_id)
+        return self._run_once(user_message, session_id, model, effort,
+                              retry_resume)
+
+    def _run_once(self, user_message: str, session_id: str, model: str,
+                  effort: str, resume: bool) -> str:
         cmd = [
             self.CLI_COMMAND,
             "-p", user_message,
@@ -179,25 +236,44 @@ class ClaudeCodeAgent(AbstractCodingAgent):
         log.debug("claude exited %d (%d bytes stdout, %d bytes stderr)",
                   result.returncode, len(stdout), len(stderr))
 
+        try:
+            response = json.loads(stdout)
+        except json.JSONDecodeError:
+            response = None
+        if not isinstance(response, dict):
+            response = None
+        # The reason a run failed is in the JSON result, even when the CLI
+        # also exits non-zero; stderr then usually holds only incidental
+        # warnings, so it is the fallback rather than the message.
+        reason = str(response.get("result") or "") if response else ""
+
+        # Only a failed run is read for an auth failure: a successful one's
+        # answer may well talk about expired OAuth tokens.
+        failed = result.returncode != 0 or bool(
+            response and response.get("is_error"))
+        if failed and (_AUTH_FAILURE.search(reason)
+                       or _AUTH_FAILURE.search(stderr)
+                       or (response is None and _AUTH_FAILURE.search(stdout))):
+            raise ClaudeAuthFailed(
+                f"Claude CLI could not authenticate: "
+                f"{(reason or stderr).strip()[:500]}")
+
         # Raise on any non-success so callers retry. Over-limit exits non-zero;
         # a completed-but-errored run sets is_error in the JSON.
         if result.returncode != 0:
             raise RuntimeError(
-                f"Claude CLI exited {result.returncode}: {stderr.strip()[:500]}"
+                f"Claude CLI exited {result.returncode}: "
+                f"{(reason or stderr).strip()[:500]}"
             )
 
-        try:
-            response = json.loads(stdout)
-        except json.JSONDecodeError:
+        if response is None:
             return stdout
-        if isinstance(response, dict):
-            if response.get("is_error"):
-                raise RuntimeError(
-                    f"Claude run errored ({response.get('subtype', 'unknown')}): "
-                    f"{str(response.get('result', ''))[:500]}"
-                )
-            return response.get("result", stdout)
-        return stdout
+        if response.get("is_error"):
+            raise RuntimeError(
+                f"Claude run errored ({response.get('subtype', 'unknown')}): "
+                f"{reason[:500]}"
+            )
+        return response.get("result", stdout)
 
 
 # A session id names a file, so anything that could step out of the projects

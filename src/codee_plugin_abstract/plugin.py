@@ -41,6 +41,9 @@ class PluginField:
     # Codee stores them one per line as ``<value>  # <label>`` and hands the
     # trigger only the values, one per line.
     searchable: bool = False
+    # A list typed in as badges: Enter adds one, x removes it. Stored one
+    # per line, as a multiline field is.
+    tags: bool = False
     # A select of these (value, label) pairs instead of a text input.
     choices: tuple[tuple[str, str], ...] = ()
     # The value a field starts with when nothing is stored yet.

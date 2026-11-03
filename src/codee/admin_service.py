@@ -2648,6 +2648,7 @@ class AdminService:
                  "placeholder": item.placeholder,
                  "multiline": item.multiline,
                  "searchable": item.searchable,
+                 "tags": item.tags,
                  **_field_layout(item)}
                 for kind, (_, trigger) in self.plugins.triggers.items()
                 for item in trigger.SKILL_FIELDS]
@@ -2759,7 +2760,14 @@ class AdminService:
         except Exception as error:  # noqa: BLE001 - drawn as unreadable, not raised
             return replace(listed, usage_error=str(error)), False
         try:
-            account = ensure_fresh(stored, self.context)
+            # Never renew the account the CLI is running as: a renewal replaces
+            # its refresh token, and the CLI — still holding the old one in its
+            # credentials file — then fails every run with "OAuth session
+            # expired" until the rotation check writes the new one. Renewing
+            # that account is the rotation's job, which writes the file too.
+            in_use = (claude_code_accounts.current_account_id(self.context)
+                      == stored.id)
+            account = stored if in_use else ensure_fresh(stored, self.context)
             usage = fetch_usage(account.access_token)
         except UsageRateLimited as error:
             if previous is not None and not previous.usage_error:

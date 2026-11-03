@@ -687,3 +687,103 @@ class ClaudeKeyRestartTest(RotationTestCase):
                          "token-for-two@example.com")
         self.assertEqual(
             claude_code_accounts.current_account_id(self.context), second)
+
+
+class ClaudeAuthRecoveryTest(RotationTestCase):
+    """A run that could not authenticate, and what rotation does to unblock it."""
+
+    def _recover(self, rotation: ClaudeKeyRotation, *usage) -> bool:
+        with patch("codee.lib.claude_key_rotation.fetch_usage",
+                   side_effect=list(usage)):
+            return rotation.recover_from_auth_failure()
+
+    def test_a_stale_file_is_put_back_to_the_stored_token(self) -> None:
+        # What happened in production: the account was renewed in the database
+        # alone, leaving the CLI a refresh token Anthropic had replaced.
+        first = self._connect("one@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+        claude_code_accounts.update_tokens(
+            first, "renewed-token", "renewed-refresh", _in(LONG_LIFE_MS),
+            self.context)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens") as refresh:
+            self.assertTrue(self._recover(rotation))
+
+        refresh.assert_not_called()
+        self.assertEqual(self._stored()["accessToken"], "renewed-token")
+        self.assertEqual(self._stored()["refreshToken"], "renewed-refresh")
+
+    def test_a_good_file_gets_the_account_renewed(self) -> None:
+        first = self._connect("one@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+        renewed = oauth.Tokens("fresh-token", "fresh-refresh", _in(LONG_LIFE_MS))
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=renewed):
+            self.assertTrue(self._recover(rotation))
+
+        self.assertEqual(self._stored()["accessToken"], "fresh-token")
+        self.assertEqual(
+            claude_code_accounts.current_account_id(self.context), first)
+
+    def test_a_refused_renewal_switches_to_the_next_account(self) -> None:
+        first = self._connect("one@example.com")
+        second = self._connect("two@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   side_effect=oauth.OAuthRefused("invalid_grant")):
+            self.assertTrue(self._recover(rotation, FRESH))
+
+        self.assertEqual(
+            claude_code_accounts.current_account_id(self.context), second)
+        self.assertEqual(self._stored()["accessToken"],
+                         "token-for-two@example.com")
+        self.assertTrue(self._account(first).needs_reconnect(_in(0)))
+
+    def test_an_unreachable_token_endpoint_also_switches(self) -> None:
+        self._connect("one@example.com")
+        second = self._connect("two@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   side_effect=oauth.OAuthApiError("timeout")):
+            self.assertTrue(self._recover(rotation, FRESH))
+
+        self.assertEqual(
+            claude_code_accounts.current_account_id(self.context), second)
+
+    def test_nothing_usable_means_no_retry(self) -> None:
+        self._connect("one@example.com")
+        self._connect("two@example.com", refresh_expires_in_ms=-1000)
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   side_effect=oauth.OAuthRefused("invalid_grant")):
+            self.assertFalse(self._recover(rotation))
+
+    def test_rotation_off_means_no_retry(self) -> None:
+        self._connect("one@example.com")
+        self._enable(False)
+
+        self.assertFalse(self._recover(self._rotation()))
+
+    def test_parallel_failures_share_one_recovery(self) -> None:
+        # Ten agents on one dead token all fail together; only the first
+        # renews, and the rest retry on what it signed in.
+        self._connect("one@example.com")
+        rotation = self._rotation()
+        self._tick(FRESH, rotation=rotation)
+        renewed = oauth.Tokens("fresh-token", "fresh-refresh", _in(LONG_LIFE_MS))
+
+        with patch("codee_agent_claude_code.oauth.refresh_tokens",
+                   return_value=renewed) as refresh:
+            self.assertTrue(self._recover(rotation))
+            self.assertTrue(self._recover(rotation))
+
+        refresh.assert_called_once()

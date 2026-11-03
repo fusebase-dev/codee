@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
-from codee_agent_claude_code import credentials, oauth
+from codee_agent_claude_code import credentials, oauth, provider
 from codee_agent_claude_code.account import (
     AccountUnavailable, fetch_account, read_account)
 from codee_agent_claude_code.provider import ClaudeCodeAgent
@@ -93,6 +93,103 @@ class ClaudeCodeRunTest(unittest.TestCase):
 
         with patch("subprocess.run", return_value=completed):
             self.assertEqual(self.agent.run("/do-it CORE-1", SESSION), "")
+
+
+AUTH_ERROR = "Failed to authenticate: OAuth session expired and could not be refreshed"
+
+
+def _auth_failed():
+    """A run the CLI could not authenticate, as it actually reports one."""
+    return subprocess.CompletedProcess(
+        args=["claude"], returncode=1,
+        stderr="Warning: no stdin data received in 3s, proceeding without it.",
+        stdout=json.dumps({"is_error": True, "subtype": "success",
+                           "result": AUTH_ERROR}))
+
+
+class ClaudeCodeAuthFailureTest(unittest.TestCase):
+    """A run that cannot authenticate, and the one retry after a recovery."""
+
+    def setUp(self) -> None:
+        self.agent = ClaudeCodeAgent(Settings(), Path("/repo"))
+        self.addCleanup(provider.set_auth_recovery, None)
+
+    def test_the_reason_is_read_from_the_result_not_from_stderr(self) -> None:
+        # stderr held only an unrelated warning, which is all the log said.
+        with patch("subprocess.run", return_value=_auth_failed()):
+            with self.assertRaises(provider.ClaudeAuthFailed) as raised:
+                self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertIn("OAuth session expired", str(raised.exception))
+
+    def test_other_failures_also_report_the_result(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["claude"], returncode=1, stderr="Warning: noise",
+            stdout=json.dumps({"is_error": True, "result": "Over budget"}))
+
+        with patch("subprocess.run", return_value=completed):
+            with self.assertRaises(RuntimeError) as raised:
+                self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertNotIsInstance(raised.exception, provider.ClaudeAuthFailed)
+        self.assertIn("Over budget", str(raised.exception))
+
+    def test_a_successful_answer_about_oauth_is_not_an_auth_failure(self) -> None:
+        answer = _completed("Fixed the bug where an OAuth token has expired")
+
+        with patch("subprocess.run", return_value=answer):
+            self.assertIn("OAuth", self.agent.run("/do-it CORE-1", SESSION))
+
+    def test_a_recovered_run_is_tried_again_on_the_same_session(self) -> None:
+        recovery = Mock(return_value=True)
+        provider.set_auth_recovery(recovery)
+
+        with patch("subprocess.run",
+                   side_effect=[_auth_failed(), _completed("done")]) as run, \
+                patch("codee_agent_claude_code.provider._transcript",
+                      return_value=Path("/x.jsonl")):
+            self.assertEqual(self.agent.run("/do-it CORE-1", SESSION), "done")
+
+        recovery.assert_called_once()
+        retry = run.call_args_list[1].args[0]
+        # The failed attempt already wrote the session, so it is resumed.
+        self.assertEqual(retry[retry.index("--resume") + 1], SESSION)
+
+    def test_a_session_never_written_is_started_again_on_retry(self) -> None:
+        provider.set_auth_recovery(Mock(return_value=True))
+
+        with patch("subprocess.run",
+                   side_effect=[_auth_failed(), _completed("done")]) as run, \
+                patch("codee_agent_claude_code.provider._transcript",
+                      return_value=None):
+            self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertIn("--session-id", run.call_args_list[1].args[0])
+
+    def test_it_is_retried_once_only(self) -> None:
+        provider.set_auth_recovery(Mock(return_value=True))
+
+        with patch("subprocess.run", return_value=_auth_failed()) as run:
+            with self.assertRaises(provider.ClaudeAuthFailed):
+                self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertEqual(run.call_count, 2)
+
+    def test_no_usable_account_means_no_retry(self) -> None:
+        provider.set_auth_recovery(Mock(return_value=False))
+
+        with patch("subprocess.run", return_value=_auth_failed()) as run:
+            with self.assertRaises(provider.ClaudeAuthFailed):
+                self.agent.run("/do-it CORE-1", SESSION)
+
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_failing_recovery_reports_the_runs_own_error(self) -> None:
+        provider.set_auth_recovery(Mock(side_effect=OSError("disk full")))
+
+        with patch("subprocess.run", return_value=_auth_failed()):
+            with self.assertRaises(provider.ClaudeAuthFailed):
+                self.agent.run("/do-it CORE-1", SESSION)
 
     def test_the_best_model_is_a_version_free_alias(self) -> None:
         # The alias tracks the newest Opus, so no release needs an edit here.

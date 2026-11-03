@@ -186,6 +186,9 @@ class PluginSkillField(BaseModel):
     placeholder: str = ""
     multiline: bool = False
     searchable: bool = False
+    # Typed in as badges; ``tag_values`` are the badges, ``value`` their lines.
+    tags: bool = False
+    tag_values: list[str] = []
     choices: list[FieldOptionModel] = []
     # Shown only while the field ``visible_when_key`` holds this value.
     visible_when_key: str = ""
@@ -207,6 +210,12 @@ def _with_visibility(section: "PluginSection") -> "PluginSection":
     return section.model_copy(update={"fields": [
         item.model_copy(update={"visible": _shown(section.fields, item)})
         for item in section.fields]})
+
+
+def _with_tags(item: PluginSkillField, tags: list[str]) -> PluginSkillField:
+    """A badges field holding ``tags``, stored one per line."""
+    return item.model_copy(update={"tag_values": tags,
+                                   "value": "\n".join(tags)})
 
 
 def _with_selected(item: PluginSkillField,
@@ -586,6 +595,9 @@ class AdminState(rx.State):
     field_search_results: list[FieldOptionModel] = []
     field_search_error: str = ""
     field_searching: bool = False
+    # What is being typed into a badges field, and which field that is.
+    tag_draft_key: str = ""
+    tag_draft: str = ""
 
     plugin_sections: list[PluginSection] = []
     plugin_errors: list[str] = []
@@ -1110,6 +1122,33 @@ class AdminState(rx.State):
                                      self.field_search_results
                                      if option.value != value]
 
+    def set_tag_draft(self, key: str, value: str) -> None:
+        self.tag_draft_key = key
+        self.tag_draft = value
+
+    def tag_key_down(self, key: str, pressed: str) -> None:
+        """Enter turns the draft into a badge; Backspace on nothing drops one."""
+        draft = self.tag_draft if self.tag_draft_key == key else ""
+        if pressed == "Enter":
+            tag = draft.strip()
+            if tag:
+                self.skill_plugin_fields = [
+                    _with_tags(item, [*item.tag_values, tag])
+                    if item.key == key and tag not in item.tag_values
+                    else item for item in self.skill_plugin_fields]
+            self.tag_draft_key, self.tag_draft = key, ""
+        elif pressed == "Backspace" and not draft:
+            self.skill_plugin_fields = [
+                _with_tags(item, item.tag_values[:-1])
+                if item.key == key else item
+                for item in self.skill_plugin_fields]
+
+    def remove_tag(self, key: str, tag: str) -> None:
+        self.skill_plugin_fields = [
+            _with_tags(item, [value for value in item.tag_values
+                              if value != tag])
+            if item.key == key else item for item in self.skill_plugin_fields]
+
     def remove_field_option(self, key: str, value: str) -> None:
         self.skill_plugin_fields = [
             _with_selected(item, [option for option in item.selected
@@ -1197,6 +1236,8 @@ class AdminState(rx.State):
         self.field_search_query = ""
         self.field_search_results = []
         self.field_search_error = ""
+        self.tag_draft_key = ""
+        self.tag_draft = ""
         self.skill_conflict = skill["conflict"]
         self.skill_plugin_fields = [
             PluginSkillField(
@@ -1205,7 +1246,10 @@ class AdminState(rx.State):
                                            label=option.label)
                           for option in parse_field_options(
                               skill["plugin_fields"].get(item["key"], ""))]
-                if item["searchable"] else [])
+                if item["searchable"] else [],
+                tag_values=[line.strip() for line in skill["plugin_fields"].get(
+                    item["key"], "").splitlines() if line.strip()]
+                if item["tags"] else [])
             for item in SERVICE.plugin_skill_fields()]
         # The catalog on screen belongs to whichever skill was open before this
         # one, and only this agent's models can be picked for this skill.
@@ -3604,10 +3648,43 @@ def choice_select(choices: rx.Var, value: rx.Var, on_change: Any) -> rx.Componen
         value=value, on_change=on_change, width="100%")
 
 
+def tags_input(item: PluginSkillField) -> rx.Component:
+    """Badges with an input after them: Enter adds, x or Backspace removes."""
+    def badge(tag: rx.Var, removable: bool) -> rx.Component:
+        return rx.badge(
+            tag,
+            *([rx.icon("x", size=13, cursor="pointer", aria_label="Remove",
+                       on_click=AdminState.remove_tag(item.key, tag))]
+              if removable else []),
+            variant="soft", color_scheme="indigo", size="2", radius="full",
+            gap="0.35rem", max_width="100%")
+    return rx.cond(
+        AdminState.skill_plugin != "",
+        rx.flex(rx.foreach(item.tag_values, lambda tag: badge(tag, False)),
+                gap="0.4rem", wrap="wrap", width="100%"),
+        rx.flex(
+            rx.foreach(item.tag_values, lambda tag: badge(tag, True)),
+            rx.el.input(
+                value=rx.cond(AdminState.tag_draft_key == item.key,
+                              AdminState.tag_draft, ""),
+                placeholder=item.placeholder,
+                on_change=lambda value: AdminState.set_tag_draft(item.key,
+                                                                 value),
+                on_key_down=lambda pressed: AdminState.tag_key_down(
+                    item.key, pressed),
+                style={"flex": "1", "min_width": "12rem", "border": "none",
+                       "outline": "none", "background": "transparent",
+                       "font_size": "0.88rem", "padding": "0.2rem 0"}),
+            gap="0.4rem", wrap="wrap", align="center", width="100%",
+            min_height="2.4rem", padding="0.35rem 0.6rem", border=BORDER,
+            border_radius="4px", background=SURFACE))
+
+
 def plugin_skill_field(item: PluginSkillField) -> rx.Component:
     def on_change(value):
         return AdminState.set_skill_plugin_field(item.key, value)
     return field(item.label,
+                 rx.cond(item.tags, tags_input(item),
                  rx.cond(item.searchable, field_picker(item),
                          rx.cond(item.choices.length() > 0,
                                  choice_select(item.choices, item.value,
@@ -3619,7 +3696,7 @@ def plugin_skill_field(item: PluginSkillField) -> rx.Component:
                                               min_height="6rem"),
                                  rx.input(value=item.value,
                                           placeholder=item.placeholder,
-                                          on_change=on_change, width="100%")))),
+                                          on_change=on_change, width="100%"))))),
                  rx.cond(item.hint != "",
                          rx.text(item.hint, color=MUTED, font_size="0.82rem")))
 
@@ -3651,7 +3728,8 @@ def markdown_panel(title: str, content: rx.Var, icon: str = "info",
 def trigger_description_panel() -> rx.Component:
     """What the selected plugin trigger passes to the skill."""
     return markdown_panel("What this trigger passes to the skill",
-                          AdminState.active_trigger_description)
+                          AdminState.active_trigger_description,
+                          open_=False)
 
 
 def conflict_callout(message: rx.Var) -> rx.Component:
