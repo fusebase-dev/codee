@@ -3100,6 +3100,48 @@ class AdminServiceRepositoriesTest(unittest.TestCase):
             self.assertFalse((root / "repositories" / "missing-repository")
                              .exists())
 
+    def test_a_clone_past_the_timeout_gives_up_and_cleans_up(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            service = self._service(root)
+
+            with patch.object(service, "_run_git", side_effect=
+                              subprocess.TimeoutExpired("git", 300)):
+                added, message, _ = service.add_repository(
+                    "git@github.com:org/slow.git")
+
+            self.assertFalse(added)
+            self.assertIn("after 5 minutes", message)
+            self.assertFalse((root / "repositories" / "slow").exists())
+
+    def test_every_step_shares_one_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = self._source_repository(root / "source", "main")
+            service = self._service(root)
+            timeouts = []
+            run_git = service._run_git
+
+            def recording_run_git(arguments, cwd, timeout=60):
+                timeouts.append((arguments[0], timeout))
+                return run_git(arguments, cwd, timeout)
+
+            with patch.object(service, "_run_git",
+                              side_effect=recording_run_git):
+                added, message, _ = service.add_repository(str(source))
+
+            self.assertTrue(added, message)
+            budgeted = {step: timeout for step, timeout in timeouts
+                        if step in ("clone", "fetch", "worktree")}
+            self.assertEqual(set(budgeted), {"clone", "fetch", "worktree"})
+            self.assertTrue(all(0 < timeout <= 300
+                                for timeout in budgeted.values()))
+            self.assertGreaterEqual(budgeted["clone"], budgeted["worktree"])
+
+    def test_remaining_raises_once_the_deadline_has_passed(self) -> None:
+        with self.assertRaises(subprocess.TimeoutExpired):
+            AdminService._remaining(time.monotonic() - 1)
+
     def test_list_reports_the_clone_and_skips_everything_else(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -3112,6 +3154,24 @@ class AdminServiceRepositoriesTest(unittest.TestCase):
 
             self.assertEqual([repository["name"] for repository in repositories],
                              ["source"])
+            self.assertEqual(repositories[0]["url"], str(source))
+            self.assertEqual(repositories[0]["default_branch"], "main")
+
+    def test_list_reads_a_clone_in_progress_from_the_bare_repo(self) -> None:
+        # Mid-clone there is a `.bare` but no `.git` file yet; asking git from
+        # the directory above would report the enclosing project's remote.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            self._git(root, "init", "-b", "trunk")
+            self._git(root, "remote", "add", "origin",
+                      "git@example.com:org/codee-project.git")
+            source = self._source_repository(root / "source", "main")
+            service = self._service(root)
+            service.add_repository(str(source))
+            (root / "repositories" / "source" / ".git").unlink()
+
+            repositories = service.list_repositories()
+
             self.assertEqual(repositories[0]["url"], str(source))
             self.assertEqual(repositories[0]["default_branch"], "main")
 

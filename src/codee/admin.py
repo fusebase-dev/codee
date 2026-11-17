@@ -3977,7 +3977,8 @@ def repositories_page() -> rx.Component:
                 gap="0.75rem", width="100%"),
             rx.text("Clones a bare repository into repositories/<name>/.bare "
                     "and checks out its default branch as a worktree beside it. "
-                    "A first clone can take a few minutes.",
+                    "A first clone can take a few minutes and is given up "
+                    "after five.",
                     color=MUTED, font_size="0.82rem", margin_top="0.75rem"),
             padding="1.25rem", background=SURFACE, border=BORDER, width="100%"),
         rx.callout(

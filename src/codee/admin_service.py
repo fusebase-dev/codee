@@ -127,7 +127,9 @@ GIT_NON_INTERACTIVE_ENV = {
     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
 }
 GIT_TIMEOUT = 60
-GIT_NETWORK_TIMEOUT = 900
+# Budget for the whole add (clone, fetch and the first worktree checkout), so
+# a stalled remote frees the Repositories page instead of spinning for ages.
+ADD_REPOSITORY_TIMEOUT = 300
 SKILL_TYPES = [
     "knowledge",
     "slash command",
@@ -2110,7 +2112,7 @@ class AdminService:
         self,
         arguments: list[str],
         cwd: Path,
-        timeout: int = GIT_TIMEOUT,
+        timeout: float = GIT_TIMEOUT,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", *arguments],
@@ -2134,19 +2136,24 @@ class AdminService:
 
         Only directories carrying a bare clone are listed: `repositories/` is
         the agents' working area, so anything else in it is scratch.
+
+        Git is asked from inside `.bare`, not from the directory above it:
+        the `.git` file there is only written once the clone finishes, and
+        until then git walks up and reports the Codee project's own remote.
         """
         if not self.repositories_dir.is_dir():
             return []
         repositories = []
         for directory in sorted(self.repositories_dir.iterdir()):
-            if not (directory / BARE_DIR).is_dir():
+            bare = directory / BARE_DIR
+            if not bare.is_dir():
                 continue
             repositories.append({
                 "name": directory.name,
                 "url": self._git_output(
-                    ["remote", "get-url", "origin"], directory),
+                    ["remote", "get-url", "origin"], bare),
                 "default_branch": self._git_output(
-                    ["symbolic-ref", "--short", "HEAD"], directory),
+                    ["symbolic-ref", "--short", "HEAD"], bare),
             })
         return repositories
 
@@ -2155,7 +2162,8 @@ class AdminService:
 
         Leaves behind `repositories/<name>/.bare`, a `.git` file pointing at it,
         and a worktree for whichever branch the remote calls its default. A
-        failure anywhere removes the half-built directory so a retry is clean.
+        failure anywhere, including running past ADD_REPOSITORY_TIMEOUT,
+        removes the half-built directory so a retry is clean.
         """
         url = url.strip()
         if not url:
@@ -2167,28 +2175,36 @@ class AdminService:
         if directory.exists():
             return False, f"{REPOSITORIES_DIR}/{name} already exists", name
 
+        deadline = time.monotonic() + ADD_REPOSITORY_TIMEOUT
         directory.mkdir(parents=True)
         try:
-            self._clone_repository(url, directory)
+            self._clone_repository(url, directory, deadline)
             branch = self._git_output(
-                ["symbolic-ref", "--short", "HEAD"], directory)
+                ["symbolic-ref", "--short", "HEAD"], directory / BARE_DIR)
             if not branch:
                 raise RuntimeError(
                     "Cloned, but the remote names no default branch")
             self._check(
-                self._run_git(["worktree", "add", branch], directory),
+                self._run_git(["worktree", "add", branch], directory,
+                              timeout=self._remaining(deadline)),
                 f"Could not create the {branch} worktree",
             )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(directory, ignore_errors=True)
+            return (False, f"Gave up on {url} after "
+                    f"{ADD_REPOSITORY_TIMEOUT // 60} minutes", name)
         except Exception as error:
             shutil.rmtree(directory, ignore_errors=True)
             return False, str(error), name
         return True, f"Cloned {name} and checked out {branch}", name
 
-    def _clone_repository(self, url: str, directory: Path) -> None:
+    def _clone_repository(
+        self, url: str, directory: Path, deadline: float,
+    ) -> None:
         """Bare clone plus the wiring that makes the directory usable as a repo."""
         self._check(
             self._run_git(["clone", "--bare", url, BARE_DIR], directory,
-                          timeout=GIT_NETWORK_TIMEOUT),
+                          timeout=self._remaining(deadline)),
             f"Could not clone {url}",
         )
         # Makes git treat the repository directory itself as the repo, so the
@@ -2205,9 +2221,17 @@ class AdminService:
         )
         self._check(
             self._run_git(["fetch", "origin"], directory,
-                          timeout=GIT_NETWORK_TIMEOUT),
+                          timeout=self._remaining(deadline)),
             "Could not fetch from origin",
         )
+
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        """Seconds left before `deadline`, raising once it has passed."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("git", ADD_REPOSITORY_TIMEOUT)
+        return remaining
 
     @staticmethod
     def _check(result: subprocess.CompletedProcess[str], message: str) -> None:
