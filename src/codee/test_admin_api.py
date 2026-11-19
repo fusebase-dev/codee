@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 from starlette.testclient import TestClient
@@ -62,3 +63,39 @@ class AzureDevOpsCallbackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PluginHttpTest(unittest.TestCase):
+    """/p/<name>/<path>: handed to the plugin, 404 when it is off or absent."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(admin_api.api_app)
+        self.plugin = unittest.mock.Mock(NAME="files")
+
+    def _target(self, value):
+        return patch.object(admin_api._service, "plugin_http_target",
+                            return_value=value)
+
+    def test_the_plugin_gets_the_path_and_its_settings(self) -> None:
+        from starlette.responses import PlainTextResponse
+        self.plugin.serve_http.return_value = PlainTextResponse("hi")
+        with self._target((self.plugin, {"container": "c"})) as target:
+            response = self.client.get("/p/files/a/b.html")
+        target.assert_called_once_with("files")
+        self.assertEqual(response.text, "hi")
+        _, path, settings = self.plugin.serve_http.call_args.args
+        self.assertEqual((path, settings), ("a/b.html", {"container": "c"}))
+
+    def test_a_missing_or_disabled_plugin_is_a_404(self) -> None:
+        with self._target(None):
+            self.assertEqual(self.client.get("/p/nope/x").status_code, 404)
+
+    def test_a_plugin_returning_none_is_a_404(self) -> None:
+        self.plugin.serve_http.return_value = None
+        with self._target((self.plugin, {})):
+            self.assertEqual(self.client.get("/p/files/x").status_code, 404)
+
+    def test_a_plugin_error_is_a_502_not_a_crash(self) -> None:
+        self.plugin.serve_http.side_effect = RuntimeError("boom")
+        with self._target((self.plugin, {})):
+            self.assertEqual(self.client.get("/p/files/x").status_code, 502)

@@ -4147,6 +4147,16 @@ class AdminServicePluginTest(unittest.TestCase):
         self.assertEqual(section["fields"][0]["value"], "t")
         self.assertTrue(section["enabled"])
 
+    def test_plugin_http_follows_settings_on_disk(self) -> None:
+        self.service.save_plugin_settings("acme", {"token": "t"})
+        plugin, settings = self.service.plugin_http_target("acme")
+        self.assertEqual((plugin.NAME, settings), ("acme", {"token": "t"}))
+        self.assertIsNone(self.service.plugin_http_target("nope"))
+
+        self.service.set_plugin_enabled("acme", False)
+
+        self.assertIsNone(self.service.plugin_http_target("acme"))
+
     def test_a_plugin_turned_off_loses_its_skills_and_conflicts(self) -> None:
         self.service.list_skills()
         self.assertTrue((self.skills_dir / "acme-develop").is_symlink())

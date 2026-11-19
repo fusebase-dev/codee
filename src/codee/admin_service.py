@@ -2553,6 +2553,19 @@ class AdminService:
         return True, f"{name}: signed in as {account}" if account \
             else f"{name}: signed in"
 
+    def plugin_http_target(
+            self, name: str) -> tuple[AbstractCodeePlugin, dict[str, str]] | None:
+        """The plugin to answer ``/p/<name>/...`` and its settings, or None.
+
+        Read from disk on every request: turning the plugin off or changing
+        its settings applies to the next request, with no restart.
+        """
+        plugin = self._plugin(name)
+        settings = load_settings(self.data_dir)
+        if plugin is None or name in settings.disabled_plugins:
+            return None
+        return plugin, dict(settings.plugin_settings.get(name, {}))
+
     def run_plugin_action(self, name: str, key: str,
                           values: dict[str, str]) -> tuple[bool, str]:
         """Run a plugin's card action with the card's values: (ok, message).
