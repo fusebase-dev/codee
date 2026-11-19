@@ -44,6 +44,13 @@ open `<admin URL>/p/files/report/`. A folder URL serves its `index.html`.
 
 Anyone who can open the admin UI can open the files, so keep the UI behind a
 sign-in proxy. Nothing is cached, so a changed file shows at once.
+
+**Tell the agents about it.** They do not read this card. Add a line to
+`AGENTS.md` (or to the skill that makes reports or mockups) with the folder
+and the URL, for example:
+
+> To share a page with the team, write it to `<folder>/<name>/index.html`
+> and give the link `<admin URL>/p/files/<name>/`.
 """
 
     def folder(self, settings: dict[str, str]) -> Path:
