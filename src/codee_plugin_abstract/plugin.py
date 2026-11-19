@@ -188,6 +188,9 @@ class AbstractCodeePlugin(ABC):
     # redirect URI of this Codee.
     DESCRIPTION: str = ""
     SUPPORTS_SIGN_IN: bool = False
+    # False: installed but off until someone turns it on on the Plugins page.
+    # For a plugin that exposes something (files, an endpoint) by being on.
+    ENABLED_BY_DEFAULT: bool = True
     # Buttons on the plugin's card; pressing one calls ``run_action``.
     ACTIONS: list[PluginAction] = []
     # Set to put a button by this name on the card that opens ``read_log``.

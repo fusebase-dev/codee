@@ -40,8 +40,8 @@ from codee.lib.claude_key_rotation import ensure_fresh
 from codee.lib.cron_describe import describe_cron
 from codee.lib.mcp_config import find_mcp_server, write_mcp_server
 from codee.lib.plugins import (
-    LoadedPlugins, active_plugins, load_plugins, plugin_skill_sources,
-    sync_plugin_skills)
+    LoadedPlugins, active_plugins, disabled_plugin_names, load_plugins,
+    plugin_skill_sources, sync_plugin_skills)
 from codee.lib.runtime_control import is_paused, set_paused
 from codee.lib.trigger_cron_skills import request_force_run
 from codee.lib.trigger_issue_skills import (
@@ -1059,8 +1059,8 @@ class AdminService:
         # read for it.
         if not self.plugins.plugins:
             return self.plugins
-        return active_plugins(self.plugins,
-                              self.context.settings.disabled_plugins)
+        return active_plugins(self.plugins, disabled_plugin_names(
+            self.plugins, self.context.settings))
 
     def skill_conflicts(self) -> dict[str, list[str]]:
         """slug -> why it conflicts, for the issue skills that share a status.
@@ -2445,6 +2445,7 @@ class AdminService:
             # Edited on the Plugins page, so carried over untouched.
             plugin_settings=current.plugin_settings,
             disabled_plugins=current.disabled_plugins,
+            enabled_plugins=current.enabled_plugins,
         )
         save_settings(self.data_dir, self.context.settings)
         self._reconcile_claude_code_account()
@@ -2456,7 +2457,8 @@ class AdminService:
         read from the plugin rather than from what is linked right now.
         """
         stored = self.context.settings.plugin_settings
-        disabled = set(self.context.settings.disabled_plugins)
+        disabled = set(disabled_plugin_names(
+            self.plugins, self.context.settings))
         triggers: dict[str, list[str]] = {}
         for kind, (plugin, _) in self.plugins.triggers.items():
             triggers.setdefault(plugin.NAME, []).append(kind)
@@ -2562,7 +2564,8 @@ class AdminService:
         """
         plugin = self._plugin(name)
         settings = load_settings(self.data_dir)
-        if plugin is None or name in settings.disabled_plugins:
+        if plugin is None or name in disabled_plugin_names(
+                self.plugins, settings):
             return None
         return plugin, dict(settings.plugin_settings.get(name, {}))
 
@@ -2658,11 +2661,14 @@ class AdminService:
         change up on its next tick, which is when its triggers start or stop.
         """
         current = self.context.settings
+        # Both lists record the choice, so it holds whatever the plugin's
+        # default is.
         disabled = [plugin for plugin in current.disabled_plugins
                     if plugin != name]
-        if not enabled:
-            disabled.append(name)
-        self.context.settings = replace(current, disabled_plugins=disabled)
+        on = [plugin for plugin in current.enabled_plugins if plugin != name]
+        (on if enabled else disabled).append(name)
+        self.context.settings = replace(
+            current, disabled_plugins=disabled, enabled_plugins=on)
         save_settings(self.data_dir, self.context.settings)
         self.plugin_skills()
         return f"{name} turned {'on' if enabled else 'off'}"

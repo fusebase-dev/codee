@@ -18,7 +18,8 @@ In your Codee project:
 uv add codee-azure-blob-files
 ```
 
-Restart Codee. **Azure Blob files** appears on the **Plugins** page.
+Restart Codee. **Azure Blob files** appears on the **Plugins** page, turned **off**.
+Fill in its settings, then turn it on.
 
 ## Set up
 

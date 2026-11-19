@@ -22,8 +22,8 @@ from codee_tasks_abstract.provider import AbstractTasksProvider
 from codee.coding_agents import resolve_agent_code
 from codee.lib import claude_key_rotation, runs_db
 from codee.lib.plugins import (
-    PluginScheduler, active_plugins, load_plugins, poll_seconds,
-    sync_plugin_skills)
+    PluginScheduler, active_plugins, disabled_plugin_names, load_plugins,
+    poll_seconds, sync_plugin_skills)
 from codee.lib.runtime_control import is_paused
 from codee.lib.trigger_aws_sqs_skills import trigger_aws_sqs_skills
 from codee.lib.trigger_cron_skills import trigger_cron_skills
@@ -449,9 +449,10 @@ def run_once() -> None:
     # After the pull, so the links match the skills this tick runs on.
     # Turning a plugin off on the Plugins page takes effect here, on the next
     # tick: its skills are unlinked and its triggers are skipped.
+    plugins = load_plugins()
     _, plugin_errors = sync_plugin_skills(
         skills_dir(REPO_ROOT),
-        active_plugins(load_plugins(), context.settings.disabled_plugins))
+        active_plugins(plugins, disabled_plugin_names(plugins, context.settings)))
     for error in plugin_errors:
         log.error("%s", error)
 

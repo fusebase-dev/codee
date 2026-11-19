@@ -192,6 +192,9 @@ class Settings:
     # Plugins turned off on the Plugins page, by name: installed, but their
     # skills are not linked and their triggers are not ticked.
     disabled_plugins: list[str] = field(default_factory=list)
+    # Plugins turned on by hand. Matters only for a plugin that is off until
+    # someone turns it on (``ENABLED_BY_DEFAULT = False``).
+    enabled_plugins: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -223,6 +226,8 @@ def load_settings(data_dir: Path) -> Settings:
                 plugin_settings=data.get("plugin_settings", {}),
                 disabled_plugins=[str(name) for name in
                                   data.get("disabled_plugins", [])],
+                enabled_plugins=[str(name) for name in
+                                 data.get("enabled_plugins", [])],
                 claude_code_rotate_keys=bool(
                     data.get("claude_code_rotate_keys", False)),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
@@ -249,6 +254,7 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "task_filters": settings.task_filters,
         "plugin_settings": settings.plugin_settings,
         "disabled_plugins": settings.disabled_plugins,
+        "enabled_plugins": settings.enabled_plugins,
         "claude_code_rotate_keys": settings.claude_code_rotate_keys,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"

@@ -4157,6 +4157,33 @@ class AdminServicePluginTest(unittest.TestCase):
 
         self.assertIsNone(self.service.plugin_http_target("acme"))
 
+    def test_an_off_by_default_plugin_waits_to_be_turned_on(self) -> None:
+        from codee.lib.plugins import build_plugins
+        from codee_plugin_abstract.plugin import AbstractCodeePlugin
+
+        class Quiet(AbstractCodeePlugin):
+            NAME = "quiet"
+            ENABLED_BY_DEFAULT = False
+
+        self.service.plugins = build_plugins([lambda: Quiet])
+        self.assertFalse(self.service.plugin_sections()[0]["enabled"])
+        self.assertIsNone(self.service.plugin_http_target("quiet"))
+
+        self.service.set_plugin_enabled("quiet", True)
+
+        self.assertTrue(self.service.plugin_sections()[0]["enabled"])
+        self.assertIsNotNone(self.service.plugin_http_target("quiet"))
+        # The Settings page saves everything else; the choice survives it.
+        with patch.object(self.service, "_reconcile_claude_code_account"):
+            self.service.save_settings("jira", "claude_code", 3, {})
+        self.assertEqual(
+            load_settings(self.service.data_dir).enabled_plugins, ["quiet"])
+
+        self.service.set_plugin_enabled("quiet", False)
+
+        self.assertFalse(self.service.plugin_sections()[0]["enabled"])
+        self.assertIsNone(self.service.plugin_http_target("quiet"))
+
     def test_a_plugin_turned_off_loses_its_skills_and_conflicts(self) -> None:
         self.service.list_skills()
         self.assertTrue((self.skills_dir / "acme-develop").is_symlink())

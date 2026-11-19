@@ -126,6 +126,17 @@ def build_plugins(
     return loaded
 
 
+def disabled_plugin_names(plugins: LoadedPlugins, settings) -> list[str]:
+    """Plugins that are off: turned off by hand, or off by default and never
+    turned on. ``settings`` is a :class:`Settings`."""
+    off_by_default = [
+        plugin.NAME for plugin in plugins.plugins
+        if not plugin.ENABLED_BY_DEFAULT
+        and plugin.NAME not in settings.enabled_plugins
+        and plugin.NAME not in settings.disabled_plugins]
+    return settings.disabled_plugins + off_by_default
+
+
 def active_plugins(plugins: LoadedPlugins,
                    disabled: list[str]) -> LoadedPlugins:
     """The plugins that are not turned off, with only their triggers.
@@ -292,9 +303,9 @@ def trigger_plugin_skills(run_agent: RunAgent, *, skills_dir: Path,
     ``due`` limits it to those trigger types, for the scheduler that ticks
     each at its own interval; None ticks them all.
     """
+    plugins = plugins if plugins is not None else load_plugins()
     plugins = active_plugins(
-        plugins if plugins is not None else load_plugins(),
-        main_context.settings.disabled_plugins)
+        plugins, disabled_plugin_names(plugins, main_context.settings))
     for kind, (plugin, trigger) in plugins.triggers.items():
         if due is not None and kind not in due:
             continue

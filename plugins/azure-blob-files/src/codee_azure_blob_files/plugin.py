@@ -52,6 +52,9 @@ def _content_type(name: str, stored: str | None) -> str:
 class AzureBlobFilesPlugin(AbstractCodeePlugin):
     NAME = "files"
     DISPLAY_NAME = "Azure Blob files"
+    # Being on publishes a container to everyone who can open the admin UI,
+    # so that is a choice someone makes on the Plugins page.
+    ENABLED_BY_DEFAULT = False
     SETTINGS_FIELDS = [
         PluginField("account_url", "Storage account URL",
                     placeholder="https://<account>.blob.core.windows.net"),
@@ -62,7 +65,7 @@ class AzureBlobFilesPlugin(AbstractCodeePlugin):
                     secret=True),
     ]
     DESCRIPTION = """\
-Serves the files of a private Azure Blob container at `/p/files/<path>` on
+Off until you turn it on. Serves the files of a private Azure Blob container at `/p/files/<path>` on
 this admin UI. A folder URL serves its `index.html`. Anyone who can open the
 admin UI can open the files, so put the UI behind a sign-in proxy.
 
