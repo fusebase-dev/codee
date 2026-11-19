@@ -38,9 +38,9 @@ class FilesPlugin(AbstractCodeePlugin):
                     placeholder="/home/me/codee-files"),
     ]
     DESCRIPTION = """\
-Off until you turn it on. Serves the files of a folder on this host at
+Off until you turn it on. Serves the files of `{FOLDER}` on this host at
 `/p/files/<path>` on the admin UI: put `report/index.html` in the folder and
-open `<admin URL>/p/files/report/`. A folder URL serves its `index.html`.
+open `{ADMIN_URL}/p/files/report/`. A folder URL serves its `index.html`.
 
 Anyone who can open the admin UI can open the files, so keep the UI behind a
 sign-in proxy. Nothing is cached, so a changed file shows at once.
@@ -49,13 +49,17 @@ sign-in proxy. Nothing is cached, so a changed file shows at once.
 `AGENTS.md` (or to the skill that makes reports or mockups) with the folder
 and the URL, for example:
 
-> To share a page with the team, write it to `<folder>/<name>/index.html`
-> and give the link `<admin URL>/p/files/<name>/`.
+> To share a page with the team, write it to `{FOLDER}/<name>/index.html`
+> and give the link `{ADMIN_URL}/p/files/<name>/`.
 """
 
     def folder(self, settings: dict[str, str]) -> Path:
         configured = settings.get("folder", "").strip()
         return Path(configured) if configured else self.data_dir
+
+    def describe(self, settings):
+        return self.DESCRIPTION.replace(
+            "{FOLDER}", str(self.folder(settings).resolve()))
 
     def serve_http(self, request, path, settings):
         root = self.folder(settings)

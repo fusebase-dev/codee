@@ -62,3 +62,11 @@ class FilesPluginTest(unittest.TestCase):
         self.settings["folder"] = str(other)
         self.assertEqual(self.client.get("/p/files/a.txt").text, "other")
         self.assertEqual(self.client.get("/p/files/site/").status_code, 404)
+
+    def test_the_card_shows_the_folder_it_serves(self) -> None:
+        plugin = FilesPlugin()
+        plugin.data_dir = self.root
+        self.assertIn(f"`{self.root.resolve()}/<name>/index.html`",
+                      plugin.describe({}))
+        self.assertIn("`/srv/x`", plugin.describe({"folder": "/srv/x"}))
+        self.assertNotIn("{FOLDER}", plugin.describe({}))
