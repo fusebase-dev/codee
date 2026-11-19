@@ -554,7 +554,7 @@ class RunRecord(BaseModel):
 
 
 EMPTY_RUN = RunRecord(**{name: "" for name, field in
-                          RunRecord.model_fields.items() if field.is_required()})
+                         RunRecord.model_fields.items() if field.is_required()})
 
 
 class AdminState(rx.State):
@@ -1168,8 +1168,8 @@ class AdminState(rx.State):
                                   if not option.label]
                        for item in self.skill_plugin_fields if item.searchable}
         labels = {key: await asyncio.to_thread(
-                      SERVICE.describe_plugin_field, key, values)
-                  for key, values in unnamed.items() if values}
+            SERVICE.describe_plugin_field, key, values)
+            for key, values in unnamed.items() if values}
         if not any(labels.values()):
             return
         async with self:
@@ -2569,7 +2569,8 @@ def footer() -> rx.Component:
         rx.text("Codee is developed by ",
                 footer_link("FuseBase", "https://thefusebase.com")),
         rx.text("·", aria_hidden="true"),
-        footer_link("Source code on GitHub", "https://github.com/fusebase-dev/codee"),
+        footer_link("Source code on GitHub",
+                    "https://github.com/fusebase-dev/codee"),
         gap="0.5rem",
         wrap="wrap",
         align="center",
@@ -2660,7 +2661,8 @@ def shell(content: rx.Component) -> rx.Component:
                 min_height=rx.breakpoints(initial="auto", lg="100vh"),
             ),
             rx.box(rx.box(content, flex="1", width="100%"), footer(),
-                   padding=rx.breakpoints(initial="1.25rem", md="2rem", xl="3rem"),
+                   padding=rx.breakpoints(
+                       initial="1.25rem", md="2rem", xl="3rem"),
                    display="flex", flex_direction="column", gap="3rem",
                    min_width="0", max_width="1440px", width="100%"),
             columns=rx.breakpoints(initial="1fr", lg="230px minmax(0, 1fr)"),
@@ -3226,7 +3228,7 @@ def recent_runs_panel() -> rx.Component:
 def dashboard_page() -> rx.Component:
     return shell(rx.vstack(
         page_header(
-            "Dashboard", "Run activity and live coding-agent sessions."),
+            "Dashboard", "Run activity and live agent sessions."),
         # First, because it is the only part of this page that answers "what is
         # happening right now"; the counts and the chart are history.
         running_panel(),
@@ -3685,11 +3687,11 @@ def plugin_skill_field(item: PluginSkillField) -> rx.Component:
         return AdminState.set_skill_plugin_field(item.key, value)
     return field(item.label,
                  rx.cond(item.tags, tags_input(item),
-                 rx.cond(item.searchable, field_picker(item),
+                         rx.cond(item.searchable, field_picker(item),
                          rx.cond(item.choices.length() > 0,
                                  choice_select(item.choices, item.value,
                                                on_change),
-                         rx.cond(item.multiline,
+                                 rx.cond(item.multiline,
                                  rx.text_area(value=item.value,
                                               placeholder=item.placeholder,
                                               on_change=on_change, width="100%",
@@ -3760,71 +3762,72 @@ def skill_editor() -> rx.Component:
         # A disabled fieldset disables every control inside it, the pickers
         # included, which is all a plugin's skill needs to be read-only.
         rx.el.fieldset(rx.vstack(
-        rx.grid(
-            field("Name", rx.input(value=AdminState.skill_name,
-                  on_change=AdminState.set_skill_name, width="100%")),
-            field("Skill type", rx.select(SKILL_TYPES, value=AdminState.skill_type,
-                                          on_change=AdminState.set_skill_type, width="100%")),
-            columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%"),
-        field("Description", rx.text_area(value=AdminState.skill_description,
-                                          on_change=AdminState.set_skill_description,
-                                          width="100%", min_height="5rem")),
-        rx.grid(agent_picker(),
-                # Effort and context window share the model's column; the
-                # model takes all of it when the picked model has neither.
-                rx.flex(rx.box(model_picker(), flex="1", min_width="0"),
-                        effort_picker(),
-                        context_picker(),
-                        direction=rx.breakpoints(initial="column", sm="row"),
-                        gap="1rem", align="start", width="100%"),
-                columns=rx.breakpoints(initial="1", md="2"), gap="1rem",
-                align="start", width="100%"),
-        rx.cond(AdminState.skill_type == "cron trigger",
-                field("Cron expression", rx.input(value=AdminState.skill_cron,
-                                                  on_change=AdminState.set_skill_cron, width="100%"),
-                      rx.hstack(rx.icon("clock-3", size=14), rx.text(AdminState.cron_description),
-                                color=MUTED, font_size="0.82rem"))),
-        rx.cond(AdminState.skill_type == "email trigger",
-                field("Email address", rx.input(value=AdminState.skill_email,
-                                                on_change=AdminState.set_skill_email, width="100%"))),
-        rx.cond(AdminState.skill_type == "aws-sqs trigger",
-                field("AWS SQS queue", rx.input(value=AdminState.skill_sqs,
-                                                on_change=AdminState.set_skill_sqs, width="100%"))),
-        rx.cond(AdminState.skill_type == "issue trigger",
-                rx.grid(
-                    field("Issue type", rx.select(
-                        AdminState.skill_issue_types,
-                        value=AdminState.skill_issue_type,
-                        on_change=AdminState.set_skill_issue_type, width="100%")),
-                    field("Issue statuses", rx.input(value=AdminState.skill_issue_status,
-                                                     on_change=AdminState.set_skill_issue_status,
-                                                     placeholder="Ready, In progress", width="100%")),
-                    columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%")),
-        rx.cond(AdminState.active_plugin_fields.length() > 0,
-                rx.vstack(rx.foreach(AdminState.active_plugin_fields,
-                                     plugin_skill_field),
-                          spacing="4", width="100%")),
-        rx.vstack(
-            rx.checkbox("Use other fields in frontmatter (for instance allowed-tools)",
-                        checked=AdminState.skill_extra_enabled,
-                        on_change=AdminState.set_skill_extra_enabled,
-                        size="2"),
-            rx.cond(
-                AdminState.skill_extra_enabled,
-                field("Other frontmatter fields",
-                      rx.text_area(value=AdminState.skill_extra,
-                                   on_change=AdminState.set_skill_extra,
-                                   placeholder="allowed-tools: Bash",
-                                   width="100%", min_height="7rem",
-                                   font_family="IBM Plex Mono, monospace"),
-                      rx.text("YAML lines written into the frontmatter as they are.",
-                              color=MUTED, font_size="0.82rem"))),
-            spacing="3", align="start", width="100%"),
-        rx.cond(AdminState.active_trigger_description != "",
-                trigger_description_panel()),
-        field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
-                                         width="100%", min_height="25rem",
-                                         font_family="IBM Plex Mono, monospace")),
+            rx.grid(
+                field("Name", rx.input(value=AdminState.skill_name,
+                                       on_change=AdminState.set_skill_name, width="100%")),
+                field("Skill type", rx.select(SKILL_TYPES, value=AdminState.skill_type,
+                                              on_change=AdminState.set_skill_type, width="100%")),
+                columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%"),
+            field("Description", rx.text_area(value=AdminState.skill_description,
+                                              on_change=AdminState.set_skill_description,
+                                              width="100%", min_height="5rem")),
+            rx.grid(agent_picker(),
+                    # Effort and context window share the model's column; the
+                    # model takes all of it when the picked model has neither.
+                    rx.flex(rx.box(model_picker(), flex="1", min_width="0"),
+                            effort_picker(),
+                            context_picker(),
+                            direction=rx.breakpoints(
+                                initial="column", sm="row"),
+                            gap="1rem", align="start", width="100%"),
+                    columns=rx.breakpoints(initial="1", md="2"), gap="1rem",
+                    align="start", width="100%"),
+            rx.cond(AdminState.skill_type == "cron trigger",
+                    field("Cron expression", rx.input(value=AdminState.skill_cron,
+                                                      on_change=AdminState.set_skill_cron, width="100%"),
+                          rx.hstack(rx.icon("clock-3", size=14), rx.text(AdminState.cron_description),
+                                    color=MUTED, font_size="0.82rem"))),
+            rx.cond(AdminState.skill_type == "email trigger",
+                    field("Email address", rx.input(value=AdminState.skill_email,
+                                                    on_change=AdminState.set_skill_email, width="100%"))),
+            rx.cond(AdminState.skill_type == "aws-sqs trigger",
+                    field("AWS SQS queue", rx.input(value=AdminState.skill_sqs,
+                                                    on_change=AdminState.set_skill_sqs, width="100%"))),
+            rx.cond(AdminState.skill_type == "issue trigger",
+                    rx.grid(
+                        field("Issue type", rx.select(
+                            AdminState.skill_issue_types,
+                            value=AdminState.skill_issue_type,
+                            on_change=AdminState.set_skill_issue_type, width="100%")),
+                        field("Issue statuses", rx.input(value=AdminState.skill_issue_status,
+                                                         on_change=AdminState.set_skill_issue_status,
+                                                         placeholder="Ready, In progress", width="100%")),
+                        columns=rx.breakpoints(initial="1", md="2"), gap="1rem", width="100%")),
+            rx.cond(AdminState.active_plugin_fields.length() > 0,
+                    rx.vstack(rx.foreach(AdminState.active_plugin_fields,
+                                         plugin_skill_field),
+                              spacing="4", width="100%")),
+            rx.vstack(
+                rx.checkbox("Use other fields in frontmatter (for instance allowed-tools)",
+                            checked=AdminState.skill_extra_enabled,
+                            on_change=AdminState.set_skill_extra_enabled,
+                            size="2"),
+                rx.cond(
+                    AdminState.skill_extra_enabled,
+                    field("Other frontmatter fields",
+                          rx.text_area(value=AdminState.skill_extra,
+                                       on_change=AdminState.set_skill_extra,
+                                       placeholder="allowed-tools: Bash",
+                                       width="100%", min_height="7rem",
+                                       font_family="IBM Plex Mono, monospace"),
+                          rx.text("YAML lines written into the frontmatter as they are.",
+                                  color=MUTED, font_size="0.82rem"))),
+                spacing="3", align="start", width="100%"),
+            rx.cond(AdminState.active_trigger_description != "",
+                    trigger_description_panel()),
+            field("Skill body", rx.text_area(value=AdminState.skill_body, on_change=AdminState.set_skill_body,
+                                             width="100%", min_height="25rem",
+                                             font_family="IBM Plex Mono, monospace")),
             spacing="5", align="start", width="100%"),
             disabled=read_only,
             border="none", padding="0", margin="0", min_width="0",
@@ -5099,7 +5102,8 @@ def plugin_sign_in(section: PluginSection) -> rx.Component:
                               on_click=AdminState.start_plugin_sign_in(section.name))),
             align="center", width="100%"),
         field("Redirect URI",
-              rx.input(value=section.redirect_uri, read_only=True, width="100%"),
+              rx.input(value=section.redirect_uri,
+                       read_only=True, width="100%"),
               rx.text("Register this as a Web redirect URI on the app you sign in with.",
                       color=MUTED, font_size="0.82rem")),
         spacing="3", width="100%", padding_top="0.75rem", border_top=BORDER)
@@ -5186,7 +5190,8 @@ def plugin_card(section: PluginSection) -> rx.Component:
                             rx.foreach(section.fields,
                                        lambda item: plugin_setting_field(section.name, item)),
                             # Before saving: an action tests what was just typed above.
-                            rx.cond(section.actions.length() > 0, plugin_actions(section)),
+                            rx.cond(section.actions.length() >
+                                    0, plugin_actions(section)),
                             rx.button(rx.icon("save", size=16), "Save settings",
                                       variant="outline",
                                       on_click=AdminState.save_plugin_settings(section.name)),
