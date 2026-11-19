@@ -40,9 +40,6 @@ dependencies = [
     "anyio >= 4,<5",             # codee_database.database
     # Pinned exactly by reflex itself, so it carries no range of its own here.
     "reflex-base",               # codee.workflow_graph
-    # Built-in plugins (codee.lib.plugins.BUILT_IN_PLUGINS).
-    "azure-storage-blob >= 12.19,<13",  # codee_azure_blob_files
-    "azure-identity >= 1.15,<2",        # codee_azure_blob_files
 ]
 
 [dependency-groups]
@@ -100,7 +97,7 @@ module-name = [
     "codee_tasks_jira",
     "codee_tasks_azure_devops",
     "codee_teams",
-    "codee_azure_blob_files",
+    "codee_files",
 ]
 
 [build-system]

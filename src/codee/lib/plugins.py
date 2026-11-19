@@ -76,8 +76,8 @@ def _built_in_sources() -> list[PluginSource]:
         return TeamsPlugin
 
     def files():
-        from codee_azure_blob_files.plugin import AzureBlobFilesPlugin
-        return AzureBlobFilesPlugin
+        from codee_files.plugin import FilesPlugin
+        return FilesPlugin
 
     return [PluginSource(load, "codee-agent", version)
             for load in (teams, files)]
