@@ -280,7 +280,7 @@ class PluginSchedulerTest(unittest.TestCase):
 
 
 class BuiltInPluginsTest(unittest.TestCase):
-    """Teams and Azure Blob files ship in codee-agent: loaded with no install."""
+    """Teams and Files ship in codee-agent: loaded with no install."""
 
     def _load(self, entries):
         plugins_module.load_plugins.cache_clear()

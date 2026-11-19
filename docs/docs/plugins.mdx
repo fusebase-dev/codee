@@ -111,10 +111,10 @@ Two plugins ship inside `codee-agent`, so there is nothing to install. They are 
 plugins: each has its card on the Plugins page, its settings and its on/off switch.
 
 - **Microsoft Teams** (`teams`, in `src/codee_teams`): the [Teams trigger](triggers/teams).
-- **Azure Blob files** (`files`, in `src/codee_azure_blob_files`): serves a private Azure
-  Blob container at `/p/files/<path>` on the admin UI, a folder as its `index.html`.
-  Off until you turn it on, because being on shows the container to everyone who can
-  open the admin UI. Its card says how to set up the storage account and upload.
+- **Files** (`files`, in `src/codee_files`): serves a folder of this host at
+  `/p/files/<path>` on the admin UI, a folder URL as its `index.html`. The folder is
+  `.codee/plugins/files` unless its card names another. Off until you turn it on,
+  because being on shows the folder to everyone who can open the admin UI.
 
 If an older separately installed copy (`codee-teams`) is still in your project, the
 built-in one is used and the copy is ignored; `uv remove codee-teams` when convenient.
