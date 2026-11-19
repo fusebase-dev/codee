@@ -40,6 +40,9 @@ dependencies = [
     "anyio >= 4,<5",             # codee_database.database
     # Pinned exactly by reflex itself, so it carries no range of its own here.
     "reflex-base",               # codee.workflow_graph
+    # Built-in plugins (codee.lib.plugins.BUILT_IN_PLUGINS).
+    "azure-storage-blob >= 12.19,<13",  # codee_azure_blob_files
+    "azure-identity >= 1.15,<2",        # codee_azure_blob_files
 ]
 
 [dependency-groups]
@@ -69,8 +72,9 @@ python_files = ["test_*.py", "test.py"]
 testpaths = ["src", "plugins"]
 
 [tool.uv.workspace]
-# Plugins kept in this repo. Each is its own package, released on its own and
-# installed only by whoever adds it; none of it ships in codee-agent.
+# Plugins kept in this repo as their own packages, released on their own and
+# installed only by whoever adds them. Built-in plugins (teams, files) are not
+# here: they ship in codee-agent, under src/.
 # `uv sync --all-packages` installs them all for development and tests.
 members = ["plugins/*"]
 
@@ -95,6 +99,8 @@ module-name = [
     "codee_plugin_abstract",
     "codee_tasks_jira",
     "codee_tasks_azure_devops",
+    "codee_teams",
+    "codee_azure_blob_files",
 ]
 
 [build-system]

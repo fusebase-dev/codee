@@ -10,13 +10,6 @@ resolution-markers = [
     "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[manifest]
-members = [
-    "codee-agent",
-    "codee-azure-blob-files",
-    "codee-teams",
-]
-
 [[package]]
 name = "aiosmtpd"
 version = "1.4.6"
@@ -325,6 +318,8 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosmtpd" },
     { name = "anyio" },
+    { name = "azure-identity" },
+    { name = "azure-storage-blob" },
     { name = "boto3" },
     { name = "cron-descriptor" },
     { name = "pydantic" },
@@ -345,6 +340,8 @@ dev = [
 requires-dist = [
     { name = "aiosmtpd", specifier = ">=1.4,<2" },
     { name = "anyio", specifier = ">=4,<5" },
+    { name = "azure-identity", specifier = ">=1.15,<2" },
+    { name = "azure-storage-blob", specifier = ">=12.19,<13" },
     { name = "boto3", specifier = ">=1.35,<2" },
     { name = "cron-descriptor", specifier = ">=2.1.0,<3" },
     { name = "pydantic", specifier = ">=2.12,<3" },
@@ -358,38 +355,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8,<10" }]
-
-[[package]]
-name = "codee-azure-blob-files"
-version = "0.1.0"
-source = { editable = "plugins/azure-blob-files" }
-dependencies = [
-    { name = "azure-identity" },
-    { name = "azure-storage-blob" },
-    { name = "codee-agent" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "azure-identity", specifier = ">=1.15,<2" },
-    { name = "azure-storage-blob", specifier = ">=12.19,<13" },
-    { name = "codee-agent", editable = "." },
-]
-
-[[package]]
-name = "codee-teams"
-version = "0.1.0"
-source = { editable = "plugins/teams" }
-dependencies = [
-    { name = "codee-agent" },
-    { name = "requests" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "codee-agent", editable = "." },
-    { name = "requests", specifier = ">=2.31,<3" },
-]
 
 [[package]]
 name = "colorama"
