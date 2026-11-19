@@ -185,7 +185,7 @@ class AbstractCodeePlugin(ABC):
     SETTINGS_FIELDS: list[PluginField] = []
     # Markdown on the plugin's card, in a panel the reader can collapse: how
     # to set the plugin up. ``{REDIRECT_URI}`` is replaced with the sign-in
-    # redirect URI of this Codee.
+    # redirect URI of this Codee, ``{ADMIN_URL}`` with the admin UI's address.
     DESCRIPTION: str = ""
     SUPPORTS_SIGN_IN: bool = False
     # False: installed but off until someone turns it on on the Plugins page.
@@ -200,6 +200,11 @@ class AbstractCodeePlugin(ABC):
     # remember between ticks. Set by Codee before the plugin is used; created
     # on first use by whoever writes to it.
     data_dir: Path = Path(".")
+
+    def describe(self, settings: dict[str, str]) -> str:
+        """The card's Markdown for the saved ``settings``; DESCRIPTION unless
+        the plugin has values of its own to show."""
+        return self.DESCRIPTION
 
     def sign_in_url(self, settings: dict[str, str], redirect_uri: str,
                     state: str, code_verifier: str) -> str:

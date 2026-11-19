@@ -2476,8 +2476,8 @@ class AdminService:
             "actions": [{"value": action.key, "label": action.label}
                         for action in plugin.ACTIONS],
             "log_label": plugin.LOG_LABEL,
-            "description": plugin.DESCRIPTION.replace(
-                "{REDIRECT_URI}", self.plugin_redirect_uri(plugin.NAME)),
+            "description": self._plugin_description(
+                plugin, stored.get(plugin.NAME, {})),
             "supports_sign_in": plugin.SUPPORTS_SIGN_IN,
             "signed_in_as": self._signed_in_as(plugin),
             "redirect_uri": (self.plugin_redirect_uri(plugin.NAME)
@@ -2504,6 +2504,16 @@ class AdminService:
     def _plugin(self, name: str) -> AbstractCodeePlugin | None:
         return next((plugin for plugin in self.plugins.plugins
                      if plugin.NAME == name), None)
+
+    def _plugin_description(self, plugin: AbstractCodeePlugin,
+                            settings: dict[str, str]) -> str:
+        try:
+            text = plugin.describe(dict(settings))
+        except Exception:
+            text = plugin.DESCRIPTION
+        return (text
+                .replace("{REDIRECT_URI}", self.plugin_redirect_uri(plugin.NAME))
+                .replace("{ADMIN_URL}", self.admin_base_url()))
 
     def plugin_redirect_uri(self, name: str) -> str:
         """The redirect URI to register for a plugin's sign-in."""
