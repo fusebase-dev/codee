@@ -188,6 +188,9 @@ class AbstractCodeePlugin(ABC):
     # redirect URI of this Codee.
     DESCRIPTION: str = ""
     SUPPORTS_SIGN_IN: bool = False
+    # False: installed but off until someone turns it on on the Plugins page.
+    # For a plugin that exposes something (files, an endpoint) by being on.
+    ENABLED_BY_DEFAULT: bool = True
     # Buttons on the plugin's card; pressing one calls ``run_action``.
     ACTIONS: list[PluginAction] = []
     # Set to put a button by this name on the card that opens ``read_log``.
@@ -254,6 +257,17 @@ class AbstractCodeePlugin(ABC):
 
     def sign_out(self) -> None:
         """Forget the stored tokens."""
+
+    def serve_http(self, request, path: str, settings: dict[str, str]):
+        """Answer a GET or HEAD for ``/p/<NAME>/<path>`` on the admin UI.
+
+        Return a Starlette ``Response``, or None for a 404. ``request`` is the
+        Starlette request, ``settings`` the plugin's section of the Settings
+        page. Runs in a worker thread, so blocking calls are fine. The route
+        is as open as the admin UI itself: whatever guards the UI (a sign-in
+        proxy) guards it too.
+        """
+        return None
 
     def skills_dir(self) -> Path | None:
         """A directory of ``<slug>/SKILL.md`` skills to install, or None.

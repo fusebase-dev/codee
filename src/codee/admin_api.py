@@ -13,13 +13,17 @@ from urllib.parse import urlencode
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from codee.admin_service import PLUGIN_CALLBACK_PATH, AdminService
+from codee_main_context.logging import get_logger
 from codee_tasks_azure_devops.oauth import CALLBACK_PATH
 
+log = get_logger(__name__)
+
 SETTINGS_PATH = "/settings"
+PLUGIN_HTTP_PATH = "/p/{name}/{path:path}"
 PLUGINS_PATH = "/plugins"
 
 # Its own service instance: this route runs outside any Reflex session, and
@@ -78,7 +82,31 @@ def plugin_sign_in_callback(request: Request) -> RedirectResponse:
     return RedirectResponse(f"{PLUGINS_PATH}?{query}", status_code=303)
 
 
+def plugin_http(request: Request) -> Response:
+    """``/p/<name>/<path>``: whatever the plugin serves there.
+
+    Sync so a plugin can make blocking calls (a storage read) without stalling
+    the event loop that serves the rest of the admin UI.
+    """
+    target = _service.plugin_http_target(request.path_params["name"])
+    if target is None:
+        return PlainTextResponse("Not found", status_code=404)
+    plugin, settings = target
+    try:
+        response = plugin.serve_http(
+            request, request.path_params["path"], settings)
+    except Exception as exc:
+        # One plugin's bug costs that request, never the admin UI.
+        log.exception("Plugin %s failed to serve %s: %s",
+                      plugin.NAME, request.url.path, exc)
+        return PlainTextResponse("Plugin error", status_code=502)
+    if response is None:
+        return PlainTextResponse("Not found", status_code=404)
+    return response
+
+
 api_app = Starlette(routes=[
     Route(CALLBACK_PATH, azure_devops_callback, methods=["GET"]),
     Route(PLUGIN_CALLBACK_PATH, plugin_sign_in_callback, methods=["GET"]),
+    Route(PLUGIN_HTTP_PATH, plugin_http, methods=["GET", "HEAD"]),
 ])
