@@ -277,3 +277,37 @@ class PluginSchedulerTest(unittest.TestCase):
 
         tick.assert_not_called()
         self.assertEqual(poll_seconds(Eager()), 10)
+
+
+class BuiltInPluginsTest(unittest.TestCase):
+    """Teams and Azure Blob files ship in codee-agent: loaded with no install."""
+
+    def _load(self, entries):
+        plugins_module.load_plugins.cache_clear()
+        self.addCleanup(plugins_module.load_plugins.cache_clear)
+        with patch.object(plugins_module, "entry_points",
+                          return_value=entries), \
+                tempfile.TemporaryDirectory() as root, \
+                patch.object(plugins_module, "data_dir",
+                             return_value=Path(root)):
+            loaded = plugins_module.load_plugins()
+            data_dirs = {plugin.NAME: plugin.data_dir
+                         for plugin in loaded.plugins}
+            return loaded, data_dirs, Path(root)
+
+    def test_built_ins_load_with_nothing_installed(self) -> None:
+        loaded, data_dirs, root = self._load([])
+        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files"])
+        self.assertEqual(loaded.packages["teams"][0], "codee-agent")
+        self.assertIn("teams-message", loaded.triggers)
+        # Same folder as when teams was its own package: tokens stay.
+        self.assertEqual(data_dirs["teams"], root / "plugins" / "teams")
+        self.assertEqual(loaded.errors, [])
+
+    def test_an_old_separate_copy_is_ignored_not_a_clash(self) -> None:
+        old = Mock()
+        old.name = "teams"
+        old.load.side_effect = AssertionError("must not be imported")
+        loaded, _, _ = self._load([old])
+        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files"])
+        self.assertEqual(loaded.errors, [])

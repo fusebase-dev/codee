@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
+from importlib import metadata
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Callable
@@ -56,19 +57,47 @@ class LoadedPlugins:
     errors: list[str] = field(default_factory=list)
 
 
+# The plugins shipped inside codee-agent, by NAME: nothing to install, and
+# still plugins (a card on the Plugins page, settings, on/off). An old copy
+# installed on its own (codee-teams before it moved here) is left out.
+BUILT_IN_PLUGINS = ("teams", "files")
+
+
+def _built_in_sources() -> list[PluginSource]:
+    """Imported on load, so one that breaks is reported and skipped like any
+    other plugin."""
+    try:
+        version = metadata.version("codee-agent")
+    except metadata.PackageNotFoundError:
+        version = ""
+
+    def teams():
+        from codee_teams.plugin import TeamsPlugin
+        return TeamsPlugin
+
+    def files():
+        from codee_azure_blob_files.plugin import AzureBlobFilesPlugin
+        return AzureBlobFilesPlugin
+
+    return [PluginSource(load, "codee-agent", version)
+            for load in (teams, files)]
+
+
 @lru_cache(maxsize=1)
 def load_plugins() -> LoadedPlugins:
-    """Every installed plugin, read once per process.
+    """The built-in plugins, then every installed one, read once per process.
 
     Installing or removing one is a ``uv add``/``uv remove`` and a restart, so
     there is nothing to pick up between ticks.
     """
-    return build_plugins([
+    installed = [
         PluginSource(entry.load,
                      entry.dist.name if entry.dist else "",
                      entry.dist.version if entry.dist else "")
-        for entry in entry_points(group=ENTRY_POINT_GROUP)],
-        data_root=data_dir() / "plugins")
+        for entry in entry_points(group=ENTRY_POINT_GROUP)
+        if entry.name not in BUILT_IN_PLUGINS]
+    return build_plugins(_built_in_sources() + installed,
+                         data_root=data_dir() / "plugins")
 
 
 def build_plugins(
