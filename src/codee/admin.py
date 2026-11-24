@@ -691,6 +691,14 @@ class AdminState(rx.State):
     # from the one before it, so a watcher that can no longer reach this page
     # cannot leave it on a spinner until Codee is restarted.
     workflow_watch: int = 0
+    # The model the workflow is generated with, saved per coding agent: the one
+    # picked (empty for none) and every one that is tried, in order.
+    workflow_agent: str = ""
+    workflow_model: str = ""
+    workflow_models: list[str] = []
+    workflow_model_options: list[ModelOption] = []
+    workflow_model_query: str = ""
+    workflow_models_loading: bool = False
     edge_menu_skills: list[str] = []
     edge_menu_left: str = "0px"
     edge_menu_top: str = "0px"
@@ -1618,6 +1626,74 @@ class AdminState(rx.State):
                 except Exception as error:
                     print(f"[admin] Failed to refresh runs: {error}")
             await asyncio.sleep(1)
+
+    @rx.var
+    def filtered_workflow_models(self) -> list[ModelOption]:
+        query = self.workflow_model_query.strip().lower()
+        return [
+            model for model in self.workflow_model_options
+            if not query or query in f"{model.name} {model.id}".lower()
+        ]
+
+    @rx.var
+    def workflow_model_label(self) -> str:
+        if not self.workflow_model:
+            return "Best available"
+        model = _model_option(self.workflow_model_options, self.workflow_model)
+        return model.name if model else self.workflow_model
+
+    @rx.var
+    def custom_workflow_model_query(self) -> str:
+        query = self.workflow_model_query.strip()
+        if not query or _model_option(self.workflow_model_options, query):
+            return ""
+        return query
+
+    @rx.var
+    def workflow_model_hint(self) -> str:
+        """Which models are tried, in order, as the line under the picker."""
+        names = [model or "the agent's default" for model in self.workflow_models]
+        return f"Tries {', then '.join(names)}." if names else ""
+
+    def set_workflow_model_query(self, value: str) -> None:
+        self.workflow_model_query = value
+
+    def choose_workflow_model(self, model_id: str) -> Any:
+        """Save the model to generate with. The graph on screen stays as it is."""
+        self.workflow_model_query = ""
+        try:
+            SERVICE.save_workflow_model(self.workflow_agent, model_id.strip())
+        except OSError as error:
+            return rx.toast.error(f"Could not save the model: {error}")
+        self._show_workflow_model()
+        return rx.toast.success(
+            "Workflow model saved. Regenerate to use it.")
+
+    def _show_workflow_model(self) -> None:
+        choice = SERVICE.workflow_model_choice()
+        self.workflow_agent = choice["agent"]
+        self.workflow_model = choice["model"]
+        self.workflow_models = choice["models"]
+
+    @rx.event(background=True)
+    async def load_workflow_model(self) -> None:
+        """Show the saved model, then fetch the agent's catalog for the picker."""
+        async with self:
+            self._show_workflow_model()
+            agent = self.workflow_agent
+            self.workflow_model_query = ""
+            self.workflow_model_options = []
+            self.workflow_models_loading = True
+        try:
+            models = await asyncio.to_thread(SERVICE.list_agent_models, agent)
+        except Exception:
+            models = []
+        async with self:
+            if self.workflow_agent != agent:
+                return
+            self.workflow_model_options = [
+                ModelOption(**model) for model in models]
+            self.workflow_models_loading = False
 
     @rx.event(background=True)
     async def load_workflow(self, force: bool = False) -> None:
@@ -3383,12 +3459,62 @@ def _model_option_row(option: ModelOption, choose_model: Any) -> rx.Component:
             on_click=choose_model(option.id)))
 
 
-def model_option_row(option: ModelOption) -> rx.Component:
-    return _model_option_row(option, AdminState.choose_model)
+def model_select(*, label: Any, query: Any, set_query: Any, custom_query: Any,
+                 choose: Any, options: Any, loading: Any,
+                 default_label: str = "Agent default",
+                 width: str = "100%") -> rx.Component:
+    """Searchable model select that also accepts a model code typed by hand.
 
-
-def agent_test_model_option_row(option: ModelOption) -> rx.Component:
-    return _model_option_row(option, AdminState.choose_agent_test_model)
+    The agent's own catalog is only a convenience: anything typed here is used
+    verbatim, so a model the agent gained after the list was built still works.
+    """
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.button(
+                rx.hstack(rx.text(label), rx.spacer(),
+                          rx.icon("chevrons-up-down", size=14),
+                          align="center", width="100%"),
+                variant="surface", color_scheme="gray", width=width,
+                type="button")),
+        rx.popover.content(
+            rx.vstack(
+                rx.input(placeholder="Search models, or type a model code",
+                         value=query, on_change=set_query,
+                         auto_focus=True, width="100%"),
+                rx.cond(
+                    custom_query != "",
+                    model_menu_item(
+                        rx.button(
+                            rx.hstack(rx.icon("plus", size=14),
+                                      rx.text("Use "), rx.code(custom_query),
+                                      align="center", spacing="2"),
+                            variant="soft", width="100%",
+                            justify_content="start",
+                            padding="0.45rem 0.6rem",
+                            on_click=choose(custom_query)))),
+                rx.scroll_area(
+                    rx.vstack(
+                        model_menu_item(
+                            rx.button(
+                                default_label, variant="ghost",
+                                color_scheme="gray", width="100%",
+                                justify_content="start",
+                                padding="0.45rem 0.6rem",
+                                on_click=choose(""))),
+                        rx.foreach(
+                            options,
+                            lambda option: _model_option_row(option, choose)),
+                        rx.cond(
+                            loading,
+                            rx.text("Loading models from the coding agent…",
+                                    color=MUTED, font_size="0.8rem",
+                                    padding="0.5rem")),
+                        spacing="1", width="100%"),
+                    type="auto", scrollbars="vertical",
+                    max_height="15rem", width="100%"),
+                spacing="2", width="100%"),
+            width="24rem", max_width="calc(100vw - 3rem)"),
+    )
 
 
 def agent_picker() -> rx.Component:
@@ -3405,63 +3531,17 @@ def agent_picker() -> rx.Component:
 
 
 def model_picker() -> rx.Component:
-    """Searchable model select that also accepts a model code typed by hand.
-
-    The agent's own catalog is only a convenience — anything typed here is saved
-    verbatim, so a model the agent gained after this list was built still works.
-    """
+    """Which of the picked agent's models runs this skill."""
     return field(
         "Model",
-        rx.popover.root(
-            rx.popover.trigger(
-                rx.button(
-                    rx.hstack(rx.text(AdminState.skill_model_label), rx.spacer(),
-                              rx.icon("chevrons-up-down", size=14),
-                              align="center", width="100%"),
-                    variant="surface", color_scheme="gray", width="100%",
-                    type="button")),
-            rx.popover.content(
-                rx.vstack(
-                    rx.input(placeholder="Search models, or type a model code",
-                             value=AdminState.model_query,
-                             on_change=AdminState.set_model_query,
-                             auto_focus=True, width="100%"),
-                    rx.cond(
-                        AdminState.custom_model_query != "",
-                        model_menu_item(
-                            rx.button(
-                                rx.hstack(rx.icon("plus", size=14),
-                                          rx.text("Use "),
-                                          rx.code(
-                                              AdminState.custom_model_query),
-                                          align="center", spacing="2"),
-                                variant="soft", width="100%",
-                                justify_content="start",
-                                padding="0.45rem 0.6rem",
-                                on_click=AdminState.choose_model(
-                                    AdminState.custom_model_query)))),
-                    rx.scroll_area(
-                        rx.vstack(
-                            model_menu_item(
-                                rx.button(
-                                    "Agent default", variant="ghost",
-                                    color_scheme="gray", width="100%",
-                                    justify_content="start",
-                                    padding="0.45rem 0.6rem",
-                                    on_click=AdminState.choose_model(""))),
-                            rx.foreach(AdminState.filtered_models,
-                                       model_option_row),
-                            rx.cond(
-                                AdminState.models_loading,
-                                rx.text("Loading models from the coding agent…",
-                                        color=MUTED, font_size="0.8rem",
-                                        padding="0.5rem")),
-                            spacing="1", width="100%"),
-                        type="auto", scrollbars="vertical",
-                        max_height="15rem", width="100%"),
-                    spacing="2", width="100%"),
-                width="24rem"),
-        ),
+        model_select(
+            label=AdminState.skill_model_label,
+            query=AdminState.model_query,
+            set_query=AdminState.set_model_query,
+            custom_query=AdminState.custom_model_query,
+            choose=AdminState.choose_model,
+            options=AdminState.filtered_models,
+            loading=AdminState.models_loading),
         rx.text(
             rx.cond(AdminState.skill_model == "",
                     "Runs on whatever that agent defaults to.",
@@ -4304,14 +4384,38 @@ def workflow_page() -> rx.Component:
                 "Workflow",
                 "Status transitions per work item, inferred from issue-trigger skills."),
             rx.spacer(),
-            rx.button(
-                rx.icon("refresh-cw", size=16),
-                "Regenerate",
-                variant="outline",
-                loading=AdminState.workflow_running,
-                on_click=AdminState.load_workflow(True),
+            rx.vstack(
+                rx.hstack(
+                    model_select(
+                        label=AdminState.workflow_model_label,
+                        query=AdminState.workflow_model_query,
+                        set_query=AdminState.set_workflow_model_query,
+                        custom_query=AdminState.custom_workflow_model_query,
+                        choose=AdminState.choose_workflow_model,
+                        options=AdminState.filtered_workflow_models,
+                        loading=AdminState.workflow_models_loading,
+                        default_label="Best available",
+                        width="15rem"),
+                    rx.button(
+                        rx.icon("refresh-cw", size=16),
+                        "Regenerate",
+                        variant="outline",
+                        loading=AdminState.workflow_running,
+                        on_click=AdminState.load_workflow(True),
+                    ),
+                    spacing="3",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.text(AdminState.workflow_model_hint, color=MUTED,
+                        font_size="0.82rem", max_width="24rem"),
+                spacing="2",
+                align="start",
+                max_width="100%",
             ),
             align="start",
+            wrap="wrap",
+            gap="1rem",
             width="100%",
         ),
         rx.cond(
@@ -4952,62 +5056,14 @@ def agent_test_dialog() -> rx.Component:
                 color=MUTED),
             field(
                 "Model",
-                rx.popover.root(
-                    rx.popover.trigger(
-                        rx.button(
-                            rx.hstack(
-                                rx.text(AdminState.agent_test_model_label),
-                                rx.spacer(),
-                                rx.icon("chevrons-up-down", size=14),
-                                align="center", width="100%"),
-                            variant="surface", color_scheme="gray",
-                            width="100%", type="button")),
-                    rx.popover.content(
-                        rx.vstack(
-                            rx.input(
-                                placeholder=(
-                                    "Search models, or type a model code"),
-                                value=AdminState.agent_test_model_query,
-                                on_change=AdminState.set_agent_test_model_query,
-                                auto_focus=True, width="100%"),
-                            rx.cond(
-                                AdminState.custom_agent_test_model_query != "",
-                                model_menu_item(
-                                    rx.button(
-                                        rx.hstack(
-                                            rx.icon("plus", size=14),
-                                            rx.text("Use "),
-                                            rx.code(
-                                                AdminState.custom_agent_test_model_query),
-                                            align="center", spacing="2"),
-                                        variant="soft", width="100%",
-                                        justify_content="start",
-                                        padding="0.45rem 0.6rem",
-                                        on_click=AdminState.choose_agent_test_model(
-                                            AdminState.custom_agent_test_model_query)))),
-                            rx.scroll_area(
-                                rx.vstack(
-                                    model_menu_item(
-                                        rx.button(
-                                            "Agent default", variant="ghost",
-                                            color_scheme="gray", width="100%",
-                                            justify_content="start",
-                                            padding="0.45rem 0.6rem",
-                                            on_click=AdminState.choose_agent_test_model(""))),
-                                    rx.foreach(
-                                        AdminState.filtered_agent_test_models,
-                                        agent_test_model_option_row),
-                                    rx.cond(
-                                        AdminState.agent_test_models_loading,
-                                        rx.text(
-                                            "Loading models from the coding agent…",
-                                            color=MUTED, font_size="0.8rem",
-                                            padding="0.5rem")),
-                                    spacing="1", width="100%"),
-                                type="auto", scrollbars="vertical",
-                                max_height="15rem", width="100%"),
-                            spacing="2", width="100%"),
-                        width="24rem", max_width="calc(100vw - 3rem)")),
+                model_select(
+                    label=AdminState.agent_test_model_label,
+                    query=AdminState.agent_test_model_query,
+                    set_query=AdminState.set_agent_test_model_query,
+                    custom_query=AdminState.custom_agent_test_model_query,
+                    choose=AdminState.choose_agent_test_model,
+                    options=AdminState.filtered_agent_test_models,
+                    loading=AdminState.agent_test_models_loading),
                 rx.text(
                     rx.cond(
                         AdminState.agent_test_model == "",
@@ -5610,6 +5666,7 @@ app.add_page(plugins_page, route="/plugins", title="Plugins | Codee",
                       AdminState.load_skill_conflicts])
 app.add_page(workflow_page, route="/workflow", title="Workflow | Codee",
              on_load=[AdminState.load_workflow,
+                      AdminState.load_workflow_model,
                       AdminState.load_skill_conflicts])
 app.add_page(memory_page, route="/memory", title="Memory | Codee",
              on_load=[AdminState.load_memories,

@@ -195,6 +195,10 @@ class Settings:
     # Plugins turned on by hand. Matters only for a plugin that is off until
     # someone turns it on (``ENABLED_BY_DEFAULT = False``).
     enabled_plugins: list[str] = field(default_factory=list)
+    # The model picked on the Workflow page to generate the graph with, keyed by
+    # coding agent value because model ids belong to one agent. An agent with no
+    # entry uses its own list of best models.
+    workflow_models: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -228,6 +232,7 @@ def load_settings(data_dir: Path) -> Settings:
                                   data.get("disabled_plugins", [])],
                 enabled_plugins=[str(name) for name in
                                  data.get("enabled_plugins", [])],
+                workflow_models=data.get("workflow_models", {}),
                 claude_code_rotate_keys=bool(
                     data.get("claude_code_rotate_keys", False)),
                 max_parallel_agents=max(1, int(data.get("max_parallel_agents", 3))))
@@ -255,6 +260,7 @@ def save_settings(data_dir: Path, settings: Settings) -> None:
         "plugin_settings": settings.plugin_settings,
         "disabled_plugins": settings.disabled_plugins,
         "enabled_plugins": settings.enabled_plugins,
+        "workflow_models": settings.workflow_models,
         "claude_code_rotate_keys": settings.claude_code_rotate_keys,
         "max_parallel_agents": settings.max_parallel_agents,
     }, indent=2) + "\n"

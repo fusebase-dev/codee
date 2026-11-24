@@ -173,6 +173,18 @@ class CodexRunTest(unittest.TestCase):
         # Codex has no latest-tier alias, so this id is pinned by hand and only
         # a real catalog id will be accepted by the CLI.
         self.assertEqual(CodexAgent.best_model(), "gpt-6-astra")
+        self.assertGreaterEqual(len(CodexAgent.best_models()), 3)
+
+    def test_only_an_unavailable_model_is_reported_as_one(self) -> None:
+        for message, expected in (
+            ("Codex CLI exited 1: The 'nope' model is not supported.", True),
+            ("Codex CLI exited 1: The model `nope` does not exist or you do "
+             "not have access to it.", True),
+            ("Codex CLI exited 1: usage limit reached", False),
+        ):
+            with self.subTest(message):
+                self.assertIs(CodexAgent.is_model_unavailable(
+                    RuntimeError(message)), expected)
 
     def test_a_non_zero_exit_raises_with_the_reason_from_the_stream(self) -> None:
         # Codex reports why it failed in the JSONL, leaving stderr empty.

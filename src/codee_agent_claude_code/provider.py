@@ -93,15 +93,13 @@ class ClaudeCodeAgent(AbstractCodingAgent):
     MAX_BUDGET_USD = "20.00"
     TIMEOUT_SECONDS = 7200  # 2 hours
     # `--model` takes an alias for the latest model of a tier, so asking for the
-    # best one needs no version here and survives the next Opus release.
-    BEST_MODEL = "opus"
+    # best ones needs no version here and survives the next release.
+    BEST_MODELS = ("opus", "sonnet", "haiku")
+    MODEL_UNAVAILABLE = re.compile(
+        r"issue with the selected model \(", re.IGNORECASE)
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
-
-    @classmethod
-    def best_model(cls) -> str:
-        return cls.BEST_MODEL
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:

@@ -194,6 +194,18 @@ class ClaudeCodeAuthFailureTest(unittest.TestCase):
     def test_the_best_model_is_a_version_free_alias(self) -> None:
         # The alias tracks the newest Opus, so no release needs an edit here.
         self.assertEqual(ClaudeCodeAgent.best_model(), "opus")
+        self.assertGreaterEqual(len(ClaudeCodeAgent.best_models()), 3)
+
+    def test_only_an_unavailable_model_is_reported_as_one(self) -> None:
+        for message, expected in (
+            ("Claude CLI exited 1: There's an issue with the selected model "
+             "(claude-nope-9). It may not exist or you may not have access to "
+             "it. Run --model to pick a different model.", True),
+            ("Claude CLI exited 1: You've hit your session limit", False),
+        ):
+            with self.subTest(message):
+                self.assertIs(ClaudeCodeAgent.is_model_unavailable(
+                    RuntimeError(message)), expected)
 
     def test_opus_5_5_is_available_in_the_model_catalog(self) -> None:
         models = [(model.id, model.name) for model in self.agent.list_models()]

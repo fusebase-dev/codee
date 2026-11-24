@@ -1,3 +1,4 @@
+import re
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -110,6 +111,15 @@ class AbstractCodingAgent(ABC):
     DISPLAY_NAME = ""
     CLI_COMMAND = ""
 
+    # Models to run on when no skill names one, best first. Skill-triggered runs
+    # take their model from frontmatter, but internal prompts (workflow
+    # inference, setup checks) have none to read. Workflow inference moves down
+    # the list when the CLI says a model isn't available. An empty id means
+    # whatever the CLI defaults to.
+    BEST_MODELS: tuple[str, ...] = ("",)
+    # What this CLI's error says when it can't run the model it was given.
+    MODEL_UNAVAILABLE: re.Pattern[str] | None = None
+
     def __init__(self, settings: Settings, cwd: Path):
         self._cwd = cwd
 
@@ -184,16 +194,24 @@ class AbstractCodingAgent(ABC):
         return f"/{slug} {argument}".strip()
 
     @classmethod
-    def best_model(cls) -> str:
-        """The id to pass for "the most capable model", for callers with no skill.
+    def best_models(cls) -> tuple[str, ...]:
+        """``BEST_MODELS``: what to run on, best first, for callers with no skill."""
+        return cls.BEST_MODELS
 
-        Skill-triggered runs take their model from frontmatter, but internal
-        prompts (workflow inference, setup checks) have no frontmatter to read
-        and must not silently land on whichever default the CLI happens to
-        resolve. Agents that offer a version-free alias return that alias so the
-        choice tracks the newest release without an edit here.
+    @classmethod
+    def best_model(cls) -> str:
+        """The first of ``best_models``, for callers that don't fall back."""
+        return cls.best_models()[0]
+
+    @classmethod
+    def is_model_unavailable(cls, error: Exception) -> bool:
+        """Whether ``run`` failed because the CLI can't run the model it was given.
+
+        True means another model may work. Any other failure (a timeout, a
+        refused sign-in, a spent budget) would fail the next model too.
         """
-        return ""
+        return bool(cls.MODEL_UNAVAILABLE
+                    and cls.MODEL_UNAVAILABLE.search(str(error)))
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:

@@ -259,7 +259,24 @@ class CopilotRunTest(unittest.TestCase):
     def test_the_best_model_is_an_anthropic_catalog_id(self) -> None:
         # Copilot has no latest-tier alias, so this id is pinned by hand and only
         # a real catalog id will be accepted by the CLI.
-        self.assertEqual(GitHubCopilotAgent.best_model(), "claude-opus-5")
+        self.assertEqual(GitHubCopilotAgent.best_model(), "claude-opus-5.5")
+
+    def test_there_are_models_to_fall_back_to_ending_in_auto(self) -> None:
+        models = GitHubCopilotAgent.best_models()
+
+        self.assertGreaterEqual(len(models), 3)
+        self.assertEqual(models[-1], "auto")
+
+    def test_only_an_unavailable_model_is_reported_as_one(self) -> None:
+        for message, expected in (
+            ('Copilot CLI exited 1: Error: Model "claude-opus-5" from --model '
+             "flag is not available.", True),
+            ("Copilot CLI exited 1: quota exceeded", False),
+            ("Copilot CLI timed out after 2 hours", False),
+        ):
+            with self.subTest(message):
+                self.assertIs(GitHubCopilotAgent.is_model_unavailable(
+                    RuntimeError(message)), expected)
 
     def test_a_non_zero_exit_raises_with_the_stderr_reason(self) -> None:
         completed = _completed(

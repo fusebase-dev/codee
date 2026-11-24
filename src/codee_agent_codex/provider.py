@@ -54,15 +54,15 @@ class CodexAgent(AbstractCodingAgent):
     CLI_COMMAND = "codex"
     TIMEOUT_SECONDS = 7200  # 2 hours
     # Codex's catalog carries only versioned ids and no latest-tier alias, so the
-    # best model has to be named outright and bumped when a newer one lands.
-    BEST_MODEL = "gpt-6-astra"
+    # best models have to be named outright and bumped when newer ones land. The
+    # empty id last is Codex's own default, which works when all of them are gone.
+    BEST_MODELS = ("gpt-6-astra", "gpt-6.2-astra", "gpt-6.2-sol", "")
+    MODEL_UNAVAILABLE = re.compile(
+        r"model_not_found|\bmodel is not supported\b"
+        r"|\bmodel\b.{0,80}\bdoes not exist\b", re.IGNORECASE)
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
-
-    @classmethod
-    def best_model(cls) -> str:
-        return cls.BEST_MODEL
 
     @classmethod
     def list_models(cls) -> list[AgentModel]:

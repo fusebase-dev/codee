@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
@@ -56,6 +57,10 @@ class OpenCodeAgent(AbstractCodingAgent):
     DISPLAY_NAME = "OpenCode"
     CLI_COMMAND = "opencode"
     TIMEOUT_SECONDS = 7200  # 2 hours
+    # No BEST_MODELS: the ids depend on which providers the machine has
+    # connected, so only OpenCode's own default is sure to be there.
+    MODEL_UNAVAILABLE = re.compile(
+        r"\bmodel (unavailable|not found):", re.IGNORECASE)
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
@@ -409,9 +414,10 @@ def _parse_events(output: str) -> tuple[str, str, list[str], bool]:
         elif event_type == "error":
             error = event.get("error")
             if isinstance(error, dict):
-                data = error.get("data") or {}
-                error = data.get("message") if isinstance(
-                    data, dict) else error
+                # 1.x keeps the message under ``data``; 2.x on the error.
+                data = error.get("data")
+                error = ((data.get("message") if isinstance(data, dict)
+                          else None) or error.get("message") or error)
             if error:
                 errors.append(str(error))
     return "\n\n".join(replies), session_id, errors, recognized

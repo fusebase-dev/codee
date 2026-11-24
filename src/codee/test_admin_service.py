@@ -39,6 +39,14 @@ def _empty_workflow() -> dict:
             for issue_type in ("story", "task")}
 
 
+def _workflow_agent() -> Mock:
+    """A coding agent with the one thing workflow inference needs besides run."""
+    agent = Mock()
+    agent.best_models.return_value = ("best",)
+    agent.is_model_unavailable.return_value = False
+    return agent
+
+
 def _generating_service() -> AdminService:
     """A service with only what the shared workflow run needs."""
     service = AdminService.__new__(AdminService)
@@ -1155,8 +1163,8 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "After implementation, move the issue to Review.\n"
             )
-            agent = Mock()
-            agent.best_model.return_value = "claude-opus-5"
+            agent = _workflow_agent()
+            agent.best_models.return_value = ("claude-opus-5",)
             agent.run.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Ready","target":"Review","label":"develop",'
@@ -1206,7 +1214,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "After approval, move the issue to Done.\n"
                 "When fixes are needed, move the issue to Ready.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.side_effect = [
                 '```json\n{"statuses":["Ready","Review","Done"],'
                 '"transitions":[{"source":"Ready","target":"Review",'
@@ -1322,7 +1330,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Keep the issue Ready while work remains.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready"],"transitions":['
                 '{"source":"Ready","target":"Ready","label":"develop",'
@@ -1359,7 +1367,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "---\nMake sure story in [AI] In Progress status before doing any work.\n"
                 "After task is complete move it to [AI] CR Needed.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["[AI] Ready for development","[AI] In Progress",'
                 '"[AI] CR Needed"],"transitions":['
@@ -1425,7 +1433,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-trigger: issue\nx-codee-issue-status: [Ready]\n"
                 "x-codee-issue-type: story\n---\n" + evidence + "\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = json.dumps({
                 "statuses": ["Ready", "AI Human Response Requested"],
                 "transitions": [{
@@ -1466,7 +1474,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move each subtask to Subtask Review once its pull request is open.\n"
                 "Move the story to CR Needed when every subtask is implemented.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
 
             def invalid_workflow(message, session_id, model, on_session_id):
                 on_session_id("agent-thread")
@@ -1535,7 +1543,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Move each subtask to Subtask Review once its pull request is open.\n"
                 "Move the story to CR Needed when every subtask is implemented.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","Subtask Review","CR Needed"],'
                 '"transitions":[{"source":"Ready","target":"CR Needed",'
@@ -1583,7 +1591,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "After planning, move the story to [AI] Ready for human review.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["[AI] Decomposition needed",'
                 '"[AI] Ready for development","[AI] Ready for human review"],'
@@ -1664,7 +1672,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to Human Review, then to CR Needed.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","Human Review","CR Needed"],'
                 '"transitions":[{"source":"Ready","target":"Human Review",'
@@ -1705,7 +1713,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to Review when work is done.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Ready","target":"Review","label":"develop",'
@@ -1760,7 +1768,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to Review when work is done.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","Review"],"transitions":['
                 '{"source":"Blocked","target":"Review","label":"develop",'
@@ -1809,7 +1817,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to Done after approval.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","Review","Done"],"transitions":['
                 '{"source":"Ready","target":"Done","label":"review",'
@@ -1855,7 +1863,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Work on issues in the configured statuses.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","In Progress","Review"],'
                 '"transitions":[],"final_statuses":["Review"]}'
@@ -1893,7 +1901,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to In Progress when work starts.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","In Progress","Done"],"transitions":['
                 '{"source":"Ready","target":"In Progress","label":"develop",'
@@ -1931,7 +1939,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to In Progress when work starts.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","In Progress","Done"],"transitions":['
                 '{"source":"Ready","target":"In Progress","label":"develop",'
@@ -1986,7 +1994,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "Never move the story to Ready for development yourself. "
                 "Approving the plan is a human decision.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Planning","Plan review","Ready for development"],'
                 '"transitions":[{"source":"Planning","target":"Plan review",'
@@ -2050,7 +2058,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to In Progress when work starts.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
                 '"final_statuses":[],"human_actions":[],'
@@ -2095,7 +2103,7 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
                 "x-codee-issue-type: story\n---\n"
                 "Move the issue to In Progress when work starts.\n"
             )
-            agent = Mock()
+            agent = _workflow_agent()
             agent.run.return_value = (
                 '{"statuses":["Ready","In Progress"],"transitions":[],'
                 '"final_statuses":[],"human_actions":[{"status":"Blocked",'
@@ -2255,6 +2263,128 @@ class AdminServiceIssueTriggerTest(unittest.TestCase):
             self.assertEqual(generate.call_count, 1)
 
 
+class AdminServiceWorkflowModelTest(unittest.TestCase):
+    """Which model the workflow is generated with, and what it falls back to."""
+
+    REPLY = (
+        '{"statuses":["Ready","Review"],"transitions":['
+        '{"source":"Ready","target":"Review","label":"develop",'
+        '"evidence":"After implementation, move the issue to Review."}],'
+        '"final_statuses":["Review"]}')
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.service = AdminService.__new__(AdminService)
+        self.service.root = root
+        self.service.skills_dir = _write_issue_skill(root)
+        self.service.data_dir = root / ".codee"
+        self.service.data_dir.mkdir()
+        self.service.context = CodeeMainContext(
+            data_dir=self.service.data_dir,
+            settings=Settings(coding_agent=CodingAgent.CLAUDE_CODE))
+        self.missing: set[str] = set()
+        self.sessions: list[str] = []
+        self.agent = _workflow_agent()
+        self.agent.best_models.return_value = ("first", "second", "third")
+        self.agent.run.side_effect = self._run
+        self.agent.is_model_unavailable.side_effect = (
+            lambda error: "unavailable" in str(error))
+        self.progress: list[str] = []
+
+    def _run(self, prompt, session_id, model, on_session_id):
+        self.sessions.append(session_id)
+        if model in self.missing:
+            raise RuntimeError(f"{model} unavailable")
+        return self.REPLY
+
+    def _generate(self) -> None:
+        with patch.object(AdminService, "_build_coding_agent",
+                          return_value=self.agent):
+            self.service.generate_workflow(
+                force=True, report=self.progress.append)
+
+    def _models_run(self) -> list[str]:
+        return [call.args[2] for call in self.agent.run.call_args_list]
+
+    def test_an_unavailable_model_gives_way_to_the_next(self) -> None:
+        self.missing = {"first", "second"}
+
+        self._generate()
+
+        self.assertEqual(self._models_run(), ["first", "second", "third"])
+        self.assertEqual(len(set(self.sessions)), 3)
+        self.assertIn("Model first is not available, trying second...",
+                      self.progress)
+
+    def test_the_next_work_item_starts_on_the_model_that_ran(self) -> None:
+        self.missing = {"first"}
+        task = self.service.skills_dir / "task-develop"
+        task.mkdir()
+        (task / "SKILL.md").write_text(
+            (self.service.skills_dir / "develop" / "SKILL.md").read_text()
+            .replace("x-codee-issue-type: story", "x-codee-issue-type: task"))
+
+        self._generate()
+
+        self.assertEqual(self._models_run(), ["first", "second", "second"])
+
+    def test_a_correction_goes_to_the_session_and_model_that_ran(self) -> None:
+        self.missing = {"first"}
+        with patch.object(AdminServiceWorkflowModelTest, "REPLY", "not json"):
+            self.agent.continue_conversation.return_value = (
+                '{"statuses":["Ready"],"transitions":[],"final_statuses":[]}')
+            self._generate()
+
+        self.assertEqual(
+            self.agent.continue_conversation.call_args.args[1:3],
+            (self.sessions[-1], "second"))
+
+    def test_any_other_failure_is_not_retried_on_another_model(self) -> None:
+        self.agent.run.side_effect = RuntimeError("timed out")
+
+        with self.assertRaisesRegex(RuntimeError, "timed out"):
+            self._generate()
+
+        self.assertEqual(self._models_run(), ["first"])
+
+    def test_running_out_of_models_names_every_one_tried(self) -> None:
+        self.missing = {"first", "second", "third"}
+
+        with self.assertRaisesRegex(RuntimeError, "first, second, third"):
+            self._generate()
+
+    def test_the_picked_model_is_tried_before_the_agents_own(self) -> None:
+        self.service.save_workflow_model("claude_code", "second")
+        self.missing = {"second"}
+
+        self._generate()
+
+        self.assertEqual(self._models_run(), ["second", "first"])
+
+    def test_a_model_picked_for_another_agent_is_not_used(self) -> None:
+        self.service.save_workflow_model("codex", "gpt")
+
+        self._generate()
+
+        self.assertEqual(self._models_run(), ["first"])
+
+    def test_the_picked_model_survives_a_restart_until_it_is_cleared(self) -> None:
+        self.service.save_workflow_model("claude_code", "picked")
+
+        stored = load_settings(self.service.data_dir)
+        self.assertEqual(stored.workflow_models, {"claude_code": "picked"})
+        self.service.context.settings = stored
+        self.assertEqual(self.service.workflow_model_choice(), {
+            "agent": "claude_code", "model": "picked",
+            "models": ["picked", "opus", "sonnet", "haiku"]})
+
+        self.service.save_workflow_model("claude_code", "")
+        self.assertEqual(
+            load_settings(self.service.data_dir).workflow_models, {})
+
+
 class AdminServiceWorkflowAgentTest(unittest.TestCase):
     """What the graph says about the agent working each status."""
 
@@ -2277,7 +2407,7 @@ class AdminServiceWorkflowAgentTest(unittest.TestCase):
         return service
 
     def _story_nodes(self, service: AdminService) -> dict[str, dict]:
-        agent = Mock()
+        agent = _workflow_agent()
         agent.run.return_value = (
             '{"statuses":["Ready","Review"],"transitions":['
             '{"source":"Ready","target":"Review","label":"develop",'
@@ -4146,6 +4276,14 @@ class AdminServicePluginTest(unittest.TestCase):
         self.assertEqual(section["skills"], "acme-develop")
         self.assertEqual(section["fields"][0]["value"], "t")
         self.assertTrue(section["enabled"])
+
+    def test_the_workflow_model_is_kept_by_the_settings_page(self) -> None:
+        self.service.save_workflow_model("claude_code", "sonnet")
+        with patch.object(self.service, "_reconcile_claude_code_account"):
+            self.service.save_settings("jira", "claude_code", 3, {})
+
+        self.assertEqual(load_settings(self.service.data_dir).workflow_models,
+                         {"claude_code": "sonnet"})
 
     def test_plugin_http_follows_settings_on_disk(self) -> None:
         self.service.save_plugin_settings("acme", {"token": "t"})

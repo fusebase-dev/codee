@@ -394,3 +394,31 @@ def test_switching_agent_resets_model_and_effort() -> None:
 
     assert (state.skill_agent, state.skill_model, state.skill_effort,
             state.skill_context_tier) == ("codex", "", "", "")
+
+
+def test_choosing_a_workflow_model_saves_it_for_the_agent_shown() -> None:
+    state = SimpleNamespace(workflow_agent="codex", workflow_model_query="gpt",
+                            _show_workflow_model=Mock())
+    with patch("codee.admin.SERVICE.save_workflow_model") as save, \
+            patch("codee.admin.rx.toast.success"):
+        AdminState.choose_workflow_model.fn(state, " gpt-6-astra ")
+
+    save.assert_called_once_with("codex", "gpt-6-astra")
+    state._show_workflow_model.assert_called_once_with()
+    assert state.workflow_model_query == ""
+
+
+def test_the_workflow_model_hint_lists_what_is_tried_in_order() -> None:
+    assert _var("workflow_model_hint", SimpleNamespace(
+        workflow_models=["sonnet", "opus", ""])) == (
+            "Tries sonnet, then opus, then the agent's default.")
+
+
+def test_the_workflow_model_is_shown_by_name_when_the_catalog_has_it() -> None:
+    def label(model: str) -> str:
+        return _var("workflow_model_label", SimpleNamespace(
+            workflow_model=model, workflow_model_options=CATALOG))
+
+    assert label("") == "Best available"
+    assert label("claude-haiku-4-5") == "Claude Haiku 4.5"
+    assert label("claude-next") == "claude-next"

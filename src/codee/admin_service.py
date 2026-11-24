@@ -849,6 +849,45 @@ def normalize_work_items(
     return mapping, queries, ""
 
 
+def _run_on_available_model(
+    agent: AbstractCodingAgent,
+    prompt: str,
+    models: list[str],
+    opened: Callable[[str], None],
+    report: Callable[[str], None],
+) -> str:
+    """Run ``prompt`` on the first of ``models`` the agent's CLI will run.
+
+    The ones it won't are taken off ``models``, which leaves the one that ran
+    at the front. Only an unavailable model moves on to the next; any other
+    failure is raised as it is. ``opened`` is told the session of each attempt:
+    every one gets its own, since the CLI may already have taken the last.
+    """
+    unavailable: list[str] = []
+    while True:
+        model = models[0]
+        session_id = str(uuid.uuid4())
+        opened(session_id)
+        try:
+            return agent.run(prompt, session_id, model, opened)
+        except Exception as error:
+            if not agent.is_model_unavailable(error):
+                raise
+            unavailable.append(_model_label(model))
+            if len(models) == 1:
+                raise RuntimeError(
+                    "No model is available to generate the workflow with. "
+                    f"Tried {', '.join(unavailable)}. Last error: {error}"
+                ) from error
+            models.pop(0)
+            report(f"Model {unavailable[-1]} is not available, "
+                   f"trying {_model_label(models[0])}...")
+
+
+def _model_label(model: str) -> str:
+    return model or "the agent's default model"
+
+
 def _is_workflow(value: Any, issue_types: tuple[str, ...]) -> bool:
     """Whether a stored graph still has the shape the workflow page reads.
 
@@ -1167,6 +1206,40 @@ class AdminService:
                 return skill["slug"]
         return ""
 
+    def workflow_model_choice(self) -> dict[str, Any]:
+        """What the workflow is generated with, for the Workflow page's picker.
+
+        ``model`` is the one picked for the current agent, empty when none was,
+        and ``models`` everything that is tried, in order.
+        """
+        settings = self.context.settings
+        agent_type = CODING_AGENTS.get(settings.coding_agent)
+        return {
+            "agent": settings.coding_agent.value,
+            "model": settings.workflow_models.get(
+                settings.coding_agent.value, ""),
+            "models": (self._workflow_models(agent_type.best_models())
+                       if agent_type else []),
+        }
+
+    def save_workflow_model(self, agent: str, model: str) -> None:
+        """Store the model to generate the workflow with; empty clears it."""
+        models = dict(self.context.settings.workflow_models)
+        if model:
+            models[agent] = model
+        else:
+            models.pop(agent, None)
+        self.context.settings = replace(
+            self.context.settings, workflow_models=models)
+        save_settings(self.data_dir, self.context.settings)
+
+    def _workflow_models(self, best_models: Iterable[str]) -> list[str]:
+        """The models to try, in order: the picked one, then the agent's own."""
+        settings = self.context.settings
+        picked = settings.workflow_models.get(settings.coding_agent.value, "")
+        return list(dict.fromkeys(
+            [*([picked] if picked else []), *best_models]))
+
     def start_workflow_generation(
         self, force: bool = False
     ) -> WorkflowGeneration:
@@ -1362,10 +1435,16 @@ class AdminService:
         """Infer one status graph per configured Codee work item."""
         issue_types = self.issue_types()
         skills = find_issue_triggered_skills(self.skills_dir, issue_types)
+        # One list for every work item, so a model that turned out to be
+        # unavailable for the first is not asked for again by the rest.
+        agent = self._build_coding_agent() if skills else None
+        models = self._workflow_models(agent.best_models()) if agent else []
         return {
             issue_type: self._generate_issue_type_workflow(
                 [skill for skill in skills if skill.issue_type == issue_type],
                 issue_type,
+                agent,
+                models,
                 report,
                 issue_types,
             )
@@ -1376,6 +1455,8 @@ class AdminService:
         self,
         skills: list[IssueTriggeredSkill],
         issue_type: str,
+        agent: AbstractCodingAgent | None,
+        models: list[str],
         report: Callable[[str], None] = lambda message: None,
         issue_types: tuple[str, ...] = DEFAULT_ISSUE_TYPES,
     ) -> dict[str, Any]:
@@ -1458,12 +1539,11 @@ class AdminService:
             "transition already listed in transitions.\n\n"
             + "\n\n".join(documents)
         )
-        agent = self._build_coding_agent()
         report(
             f"Generating workflow for work item {issue_type.capitalize()} "
             f"from {_count(len(skills), 'issue-trigger skill')}..."
         )
-        session_id = str(uuid.uuid4())
+        session_id = ""
 
         def opened(agent_session_id: str) -> None:
             nonlocal session_id
@@ -1476,12 +1556,12 @@ class AdminService:
                     "Your previous response was invalid: "
                     f"{validation_error}. Return corrected JSON only.",
                     session_id,
-                    agent.best_model(),
+                    models[0],
                     opened,
                 )
             else:
-                response = agent.run(
-                    prompt, session_id, agent.best_model(), opened)
+                response = _run_on_available_model(
+                    agent, prompt, models, opened, report)
             payload_text = _strip_code_fence(response)
             try:
                 payload = json.loads(payload_text)
@@ -2446,6 +2526,8 @@ class AdminService:
             plugin_settings=current.plugin_settings,
             disabled_plugins=current.disabled_plugins,
             enabled_plugins=current.enabled_plugins,
+            # Edited on the Workflow page, likewise.
+            workflow_models=current.workflow_models,
         )
         save_settings(self.data_dir, self.context.settings)
         self._reconcile_claude_code_account()

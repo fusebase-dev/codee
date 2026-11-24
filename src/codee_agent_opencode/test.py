@@ -147,6 +147,20 @@ class OpenCodeRunTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "bad model"):
             self._run(_completed(error))
 
+    def test_an_unavailable_model_is_reported_as_one(self) -> None:
+        # What OpenCode 2.x prints; 1.x nests the message under ``data``.
+        error = _event("error", error={
+            "type": "provider.no-route",
+            "message": "Model unavailable: anthropic/nope-9"})
+
+        with self.assertRaises(RuntimeError) as raised:
+            self._run(_completed(error, returncode=1))
+
+        self.assertIn("anthropic/nope-9", str(raised.exception))
+        self.assertTrue(OpenCodeAgent.is_model_unavailable(raised.exception))
+        self.assertFalse(OpenCodeAgent.is_model_unavailable(
+            RuntimeError("OpenCode CLI timed out after 2 hours")))
+
     def test_plain_successful_output_is_returned(self) -> None:
         self.assertEqual(self._run(_completed(
             "plain output\n")), "plain output\n")

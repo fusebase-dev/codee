@@ -90,17 +90,19 @@ class GitHubCopilotAgent(AbstractCodingAgent):
     CLI_COMMAND = "copilot"
     TIMEOUT_SECONDS = 7200  # 2 hours
     # Copilot's catalog carries only versioned ids -- its one version-free value
-    # is `auto`, which picks for cost rather than capability -- so the best model
-    # has to be named outright and bumped when a newer Opus lands in the catalog.
-    BEST_MODEL = "claude-opus-5"
+    # is `auto`, which picks for cost rather than capability -- so the best models
+    # have to be named outright and bumped when newer ones land in the catalog.
+    # One is from another vendor, because an organization can turn a vendor's
+    # models off, and `auto` is last because it outlives every versioned id.
+    BEST_MODELS = ("claude-opus-5.5", "claude-sonnet-5.5", "gpt-6.2-astra",
+                   AUTO_MODEL)
+    MODEL_UNAVAILABLE = re.compile(
+        r'\bmodel "[^"]+"[^"\n]{0,40} is not available'
+        r"|\brequested model is not supported\b", re.IGNORECASE)
 
     def __init__(self, settings: Settings, cwd: Path):
         super().__init__(settings, cwd)
         self._settings = settings
-
-    @classmethod
-    def best_model(cls) -> str:
-        return cls.BEST_MODEL
 
     def skill_prompt(self, slug: str, path: Path, argument: str = "",
                      argument_name: str = "") -> str:
