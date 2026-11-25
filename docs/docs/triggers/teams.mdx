@@ -5,8 +5,9 @@ sidebar_position: 6
 # Microsoft Teams trigger
 
 Runs a skill when a message is posted in the Microsoft Teams channels it watches. It comes
-from the built-in Microsoft Teams plugin (`src/codee_teams`), which ships with Codee:
-there is nothing to install.
+from the built-in [Microsoft Teams plugin](../plugins/teams.mdx). Set the plugin up first:
+that page covers the Entra app, signing in, the decision model and the limits. This page
+covers the skill.
 
 ```yaml
 ---
@@ -34,11 +35,9 @@ Answer the message marked "triggered this run".
   model (OpenAI's Decisions API or TypeSafe Jev, chosen on the Plugins page) first judges whether the
   triggering message is about one of them; only then does the skill run, with the topic
   in `{TEAMS_TOPIC}`.
-- **Sign-in:** Codee reads Teams as a user you sign in with on the **Plugins** page, through
-  an Entra app with the delegated permissions `ChannelMessage.Read.All`,
-  `User.ReadBasic.All`, `User.Read`, `offline_access`, `Team.ReadBasic.All` and
-  `Channel.ReadBasic.All` (admin consent needed). It sees
-  only the teams that account belongs to, and never runs a skill for that account's own
+- **Sign-in:** Codee reads Teams as the user you sign in with on the **Plugins** page. It
+  sees only the teams that account belongs to, and never runs a skill for that account's own
   messages.
 
-Setup, limits and how new messages are found: see `plugins/teams/README.md`.
+For how new messages are found, retries and limits, see
+[Microsoft Teams plugin](../plugins/teams.mdx#how-it-finds-new-messages).

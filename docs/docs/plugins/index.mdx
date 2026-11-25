@@ -1,0 +1,43 @@
+---
+sidebar_position: 1
+---
+
+# Plugins
+
+Plugins add to Codee without changing it. Some come with Codee; you can also install others or
+[write your own](./custom-plugins.mdx).
+
+## Built-in plugins
+
+Three plugins ship inside `codee-agent`, so there is nothing to install. They are still
+plugins: each has its card on the Plugins page, its settings and its on/off switch.
+
+- **[Microsoft Teams](./teams.mdx)** (`teams`, in `src/codee_teams`): runs a skill when a
+  message is posted in a Teams channel. On by default, but it does nothing until you set it
+  up and sign in.
+- **[Files](./files.mdx)** (`files`, in `src/codee_files`): serves a folder of this host at
+  `/p/files/<path>` on the admin UI. Off until you turn it on, because being on shows the
+  folder to everyone who can open the admin UI.
+- **MCP server** (`mcp`, in `src/codee_mcp`): lets other agents talk to Codee over MCP at
+  `<admin UI>/mcp`, authenticated with OAuth on the same host. Its card shows the URL and
+  the paths a sign-in proxy has to let through. It has one tool, `send_message`
+  (`message`, optional `provider`, `model` and `session_id`), which returns `response` and
+  the `session_id` to continue with. Runs are on the **Runs** page under `mcp`, and the
+  client closing the call stops the agent. Off until you turn it on: an approved client
+  can run agents, which have every permission on the host.
+
+If an older separately installed copy (`codee-teams`) is still in your project, the
+built-in one is used and the copy is ignored; `uv remove codee-teams` when convenient.
+
+## The Plugins page
+
+**Plugins** in the sidebar lists every installed plugin with its package and version,
+the triggers and skills it adds, and its settings. Each one has an on/off switch:
+
+- **Off** removes its skills from `.claude/skills` straight away, and the executor stops
+  ticking its triggers from its next tick on. No restart is needed. Its settings are
+  kept, and so are your skills that use its triggers; they just don't run while it is off.
+- **On** brings both back.
+
+The switch is stored as `disabled_plugins` and `enabled_plugins` in `.codee/settings.json`. A plugin that failed
+to load is listed at the top of the page with the reason.

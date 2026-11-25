@@ -1,0 +1,121 @@
+---
+sidebar_position: 3
+---
+
+# Files plugin
+
+The Files plugin serves a folder of the machine Codee runs on, through the admin UI. An agent
+writes a file into the folder and gives you a link to it. It suits HTML reports, mockups,
+screenshots and exports that you want to open in a browser.
+
+It ships with Codee, so there is nothing to install. It is **off until you turn it on**.
+
+:::warning[Everyone who can open the admin UI can open the files]
+
+The plugin has no sign-in or permissions of its own. If the admin UI can be reached by other
+people, put it behind a proxy that asks them to sign in before you turn the plugin on.
+
+:::
+
+## Turn it on
+
+1. Open **Plugins** in the Codee UI and find the **Files** card.
+2. Optional: open **Settings** on the card, fill in **Folder** and click **Save settings**.
+   See [Choosing the folder](#choosing-the-folder).
+3. Turn on the switch at the top of the card.
+4. Create the folder if it doesn't exist. The plugin does not create it. For the default
+   folder, run this in your Codee project:
+
+   ```bash
+   mkdir -p .codee/plugins/files
+   ```
+
+You don't need to restart Codee. Turning the plugin on or off, or changing the folder,
+applies from the next request.
+
+## Check that it works
+
+In your Codee project:
+
+```bash
+mkdir -p .codee/plugins/files/hello
+echo '<h1>It works</h1>' > .codee/plugins/files/hello/index.html
+```
+
+Then open `http://localhost:8501/p/files/hello/`. Replace the host and port with your own if
+your admin UI is at another address.
+
+## URLs
+
+A file's URL is the admin UI's address, then `/p/files/`, then the file's path inside the
+folder. These examples use the default folder:
+
+| File | URL |
+| --- | --- |
+| `.codee/plugins/files/export.csv` | `/p/files/export.csv` |
+| `.codee/plugins/files/report/index.html` | `/p/files/report/` |
+| `.codee/plugins/files/report/style.css` | `/p/files/report/style.css` |
+
+- **A folder URL opens its `index.html`.** A folder without one is a 404: the plugin never
+  lists what is in a folder.
+- **`/p/files/report` redirects to `/p/files/report/`**, so that relative links in the page
+  work. The redirect drops any query string, so link to the address with the slash.
+- **The file type comes from the file name.** A name with no known extension is sent as
+  `application/octet-stream`, which browsers usually download.
+- **Changes show at once.** Browsers are told to check for a newer version every time.
+- **It is read-only.** You can't upload, change or delete files through it.
+
+## Choosing the folder
+
+| Setting | What it is | If empty |
+| --- | --- | --- |
+| **Folder** | Absolute path of the folder to serve | `.codee/plugins/files` in the Codee project |
+
+Use a full path such as `/home/me/codee-files`. `~` is not expanded. Codee must be able to
+read the folder, and the agents must be able to write to it.
+
+The card shows the folder that is being served. Changing the setting does not move any files.
+
+The default folder is inside `.codee`, which Git ignores, so its files are not committed.
+
+## Tell the agents about it
+
+Agents don't read the plugin's card. Put the folder and the URL where they will see them:
+`AGENTS.md`, if any agent may share files, or the one skill that makes the reports. For
+example:
+
+```markdown
+To share a page with the team, write it to
+`/home/me/my-codee/.codee/plugins/files/<name>/index.html`
+and give the link `https://codee.example.com/p/files/<name>/`.
+```
+
+The card shows this text with your own folder and address already filled in, ready to copy.
+Use the full path, because an agent may be working in another directory.
+
+If the address on the card is `localhost` but people open Codee at another address, set
+`CODEE_ADMIN_BASE_URL` to that address (for example `https://codee.example.com`) and restart
+Codee.
+
+## What is and isn't protected
+
+- **Files outside the folder can't be opened.** A path that leaves the folder is a 404. So is
+  a symbolic link that points outside it.
+- **Every file inside the folder can be opened**, including hidden ones such as `.env`. Don't
+  point **Folder** at your project, your home directory, or any other folder with
+  credentials in it.
+- **HTML pages run on the admin UI's own address.** A script in a page can do what the person
+  viewing it can do in the admin UI. Only put pages there that you would trust with that.
+- **Files stay until you delete them.** Turning the plugin off makes every URL a 404 but
+  keeps the files.
+
+## Troubleshooting
+
+| Problem | What to check |
+| --- | --- |
+| Every URL is a 404 | The plugin is on, and the folder shown on the card exists. |
+| A folder URL is a 404 | The folder has an `index.html`. The name must match exactly. |
+| One file is a 404 | It is inside the folder, and not a symbolic link to somewhere else. |
+| `Plugin error` (502) | Codee couldn't serve the file, for example because it isn't allowed to read it. The reason is in the admin UI's log. |
+| A page loads without styles or images | Its links must be relative (`style.css`), not start with `/`. |
+| The agent doesn't share links | [Tell the agents about it](#tell-the-agents-about-it). |

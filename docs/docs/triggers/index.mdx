@@ -16,6 +16,7 @@ fields that trigger needs:
 | [Cron](./cron) | `cron` | the clock | `x-codee-cron` |
 | [AWS SQS](./aws-sqs) | `aws-sqs` | an SQS queue | `x-codee-aws-sqs-queue` |
 | [Email](./email) | `email` | an email address | `x-codee-email-address` |
+| [Microsoft Teams](./teams) | `teams-message` | Teams channels | `x-teams-channels`, `x-teams-mode`, `x-teams-topics` |
 
 A skill has at most one trigger.
 
@@ -37,7 +38,7 @@ x-codee-cron: 0 0 * * 2-6
   logs an error, because a triggered skill must not also be picked up by the agent on its
   own.
 - `name` and `description` are the usual Agent Skills fields.
-- The body of the file is the prompt. For cron it is sent as it is; the other three
+- The body of the file is the prompt. For cron it is sent as it is; the other
   triggers pass content along with it (see each page).
 
 ## Choosing the agent and model
@@ -65,6 +66,7 @@ You do not have to edit the file by hand. On the **Skills** page, open a skill a
 | `cron trigger` | `x-codee-trigger: cron` + the cron expression |
 | `email trigger` | `x-codee-trigger: email` + the address |
 | `aws-sqs trigger` | `x-codee-trigger: aws-sqs` + the queue |
+| `teams-message trigger` | `x-codee-trigger: teams-message` + the channels, and the topics in *Specific topics* mode |
 | `slash command` | `disable-model-invocation: true`, no trigger |
 | `knowledge` | nothing |
 
@@ -74,7 +76,8 @@ in your repo either way.
 
 ## When triggers fire
 
-The executor ticks **every 60 seconds**. Each tick checks every trigger.
+The executor ticks **every 60 seconds**. Each tick checks every trigger. Plugin triggers run on
+their own schedule: the Teams trigger checks every 30 seconds.
 
 Issue-triggered tasks run in parallel, up to
 [Max parallel tasks](../configuration#max-parallel-tasks).

@@ -1,0 +1,206 @@
+---
+sidebar_position: 2
+---
+
+# Microsoft Teams plugin
+
+The Microsoft Teams plugin watches Teams channels and runs a skill when a message is posted in
+one of them. It ships with Codee, so there is nothing to install. It is on by default, but
+does nothing until you set it up and a skill uses it.
+
+This page covers setting it up and running it. For the skill itself, with its fields and
+placeholders, see [Microsoft Teams trigger](../triggers/teams.mdx).
+
+:::note[It only reads Teams]
+
+The plugin does not post to Teams. For a skill to answer in Teams, the agent needs a tool of
+its own that can post, such as a Teams MCP server.
+
+:::
+
+## Before you start
+
+You need:
+
+- **Someone who can register an app in Microsoft Entra ID**, and an admin who can consent to
+  its permissions.
+- **A Microsoft 365 account for Codee to read Teams as.** It must be a member of every team
+  whose channels you want to watch. A separate account for Codee is easiest, because messages
+  from this account never run a skill.
+
+## Set it up
+
+### 1. Register an app
+
+1. Open **Plugins** in the Codee UI, find the **Microsoft Teams** card, open **Settings** and
+   copy the **Redirect URI**. It looks like
+   `https://codee.example.com/api/oauth/plugins/teams/callback`.
+2. In the [Microsoft Entra admin center](https://entra.microsoft.com), go to **App
+   registrations** → **New registration**.
+3. Enter any name, such as `Codee Teams`.
+4. Under **Supported account types**, choose the single-tenant option.
+5. Under **Redirect URI**, choose the platform **Web** and paste the redirect URI.
+6. Click **Register**.
+
+:::tip[The redirect URI must match the address you use]
+
+If the card shows `localhost` but you open Codee at another address, set
+`CODEE_ADMIN_BASE_URL` to that address and restart Codee before you copy the URI.
+
+:::
+
+### 2. Add the permissions
+
+In the app, go to **API permissions** → **Add a permission** → **Microsoft Graph** →
+**Delegated permissions** and add all six:
+
+| Permission | What Codee uses it for |
+| --- | --- |
+| `ChannelMessage.Read.All` | Read channel messages |
+| `Team.ReadBasic.All` | List the account's teams |
+| `Channel.ReadBasic.All` | List each team's channels |
+| `User.ReadBasic.All` | Read senders' names and emails |
+| `User.Read` | Read who is signed in |
+| `offline_access` | Stay signed in |
+
+Then click **Grant admin consent** and check that every permission shows as granted.
+
+### 3. Copy the IDs and create a secret
+
+1. On the app's **Overview**, copy **Application (client) ID** and **Directory (tenant) ID**.
+2. Go to **Certificates & secrets** → **New client secret**. Copy its **Value**, not the
+   *Secret ID*. It is shown only once.
+3. Note when the secret expires. Codee stops reading Teams then, until you save a new one.
+
+### 4. Sign in
+
+1. On the card, fill in the tenant ID, client ID and client secret, then click **Save
+   settings**.
+2. Click **Sign in** and choose the account Codee should read Teams as. The card then shows
+   **Signed in as** and the account.
+3. If the agent replies in Teams as a different account, add that account to **Ignore
+   messages from**. Otherwise its replies can start new runs.
+
+### 5. Create a skill
+
+1. On the **Skills** page, create a skill and choose the skill type `teams-message trigger`.
+2. In **Teams channels**, search by team or channel name and pick the channels.
+3. Leave **Messages** on *All messages*, or choose *Specific topics*. See
+   [Run only for some topics](#run-only-for-some-topics).
+4. Write the prompt and save. See [Microsoft Teams trigger](../triggers/teams.mdx) for an
+   example and the placeholders.
+
+### 6. Check that it works
+
+Post a message in one of the channels from an account **other than** the signed-in one. The
+run normally starts within about 30 seconds and appears on the Dashboard. When it ends, it is
+on the **Runs** page under `teams-message`.
+
+## Settings
+
+| Setting | What it is |
+| --- | --- |
+| **Directory (tenant) ID** | Your Entra tenant. Empty accepts any work or school account, which needs a multi-tenant app. Fill it in for the single-tenant app above. |
+| **Application (client) ID** | The app's client ID. |
+| **Client secret** | The secret's value. |
+| **Ignore messages from** | Emails or user IDs, one per line. Their messages never run a skill. The signed-in account is always ignored. |
+| **Decision model** | Who judges messages for skills in *Specific topics* mode: OpenAI or TypeSafe. Not used otherwise. |
+| **OpenAI API key** | For OpenAI. |
+| **OpenAI base URL** | Empty for OpenAI. For Azure OpenAI: `https://<resource>.openai.azure.com/openai/v1`, with a `gpt-6-luna` deployment named `gpt-6-luna`. |
+| **TypeSafe API key** | For TypeSafe, from console.typesafe.ai/keys. |
+| **TypeSafe model** | `jev-latest`, or a fixed version such as `jev-1.14.0`. |
+| **Match threshold** | For TypeSafe: the probability, from 0 to 1, from which a message counts as a match. `0.7` by default. |
+
+Settings, including the secrets, are stored as plain text in `.codee/settings.json`.
+
+## Run only for some topics
+
+With **Messages** set to *Specific topics*, each new message first goes to a decision model.
+The skill runs only if the message is about one of the skill's topics. The topic it matched
+is in `{TEAMS_TOPIC}`.
+
+The model judges the message that arrived, read as part of its conversation. A reply such as
+"are you sure?" in a thread about an outage counts as being about the outage. A message that
+changes the subject does not.
+
+Message text and the conversation around it, with senders' names, emails and user IDs, are
+sent to the provider you choose.
+
+| Provider | How it decides |
+| --- | --- |
+| **OpenAI** | One question: which of the topics is it, or none of them. If the model refuses to answer, that is no match. |
+| **TypeSafe (Jev)** | One yes/no question per topic. The most likely topic is the match if it reaches **Match threshold**. |
+
+A message judged to be about none of the topics is finished, and is not asked about again.
+
+**Test decision model**, on the card, asks the model about a sample message. It uses the
+values you have typed, even before you save them. The result is shown on the card.
+
+**Decision log**, at the top of the card, shows the latest decisions with the message, the
+topics asked, the scores and any error. Use it to reword topics or adjust the threshold.
+
+## How it finds new messages
+
+Every 30 seconds, the plugin reads the 50 most recently active threads of each watched
+channel, with all their replies, and looks for messages it has not handled.
+
+- **Every new message counts**, whether it starts a thread or replies in one. Deleted
+  messages and system messages, such as someone joining, do not. Editing a message does not
+  run the skill again.
+- **Older messages are skipped.** The first time a skill watches a channel, messages posted
+  before the skill file was last saved are treated as history.
+- **Only text is passed on.** Images and attached files are not.
+- **One run per channel at a time**, even when several skills watch it. Messages that arrive
+  during a run wait, and are then handled oldest first. The next message is judged with the
+  run's own reply in the thread. Different channels run side by side.
+- **Each check is limited** to 3 new runs and 20 decisions, over all skills and channels. The
+  rest wait for the next check.
+- **A failed run is tried again**, up to three tries in all, and so is a decision that failed.
+  After that the message is given up. A run you kill is not tried again.
+
+:::warning[A pause leaves a backlog]
+
+Messages posted while Codee is paused or stopped, while the plugin is off, or while it is
+signed out are not lost. They run afterwards, one per channel at a time, if they are under 14
+days old and still in the channel's 50 most recently active threads. The same happens if you
+remove a channel from a skill and add it back later. To skip a backlog, rename the skill on the
+**Skills** page while Codee is paused. Under its new name it starts fresh: messages posted
+before you saved it are skipped.
+
+:::
+
+## Limits
+
+- A message more than 14 days old never runs a skill.
+- A thread outside a channel's 50 most recently active is not seen. A new reply moves its
+  thread to the top, so this only matters in very busy channels or after a long break.
+- Only teams the signed-in account has joined are seen.
+- Only channels are watched, not chats.
+- **Messages from bots, apps and incoming webhooks run the skill, and can't be ignored.**
+  **Ignore messages from** matches people's emails and user IDs, which these messages don't
+  have. If the agent answers as a bot, its own replies start new runs in *All messages* mode.
+  Have it answer as a user account instead.
+
+## Files it keeps
+
+These are in `.codee/plugins/teams`, which Git ignores:
+
+| File | What is in it |
+| --- | --- |
+| `token.json` | The sign-in tokens. Keep it private. **Sign out** deletes it. |
+| `state.json` | Which messages are handled, per skill and channel. Don't delete it: messages posted since a skill file was last saved (up to 14 days back) would run again. |
+| `decisions.jsonl` | The decision log: message text, senders and scores. It is cut back to the newest 1,000 decisions when it passes 2,000. |
+
+## Troubleshooting
+
+| Problem | What to check |
+| --- | --- |
+| *Need admin approval* when signing in | Someone must click **Grant admin consent** on the app. |
+| The redirect URI does not match | The URI on the app must be exactly the one on the card, on the **Web** platform. |
+| *That sign-in link was already used or expired* | Click **Sign in** again. |
+| *Teams did not allow listing teams* | Add `Team.ReadBasic.All` and `Channel.ReadBasic.All`, grant admin consent, then **Sign out** and **Sign in**. |
+| A channel is *not visible to the signed-in account* | Add the account to that team. |
+| Nothing runs | The plugin is on, Codee isn't paused, the skill has `disable-model-invocation: true`, and the message is not from the signed-in account or an ignored one. Then read the executor's log. |
+| It used to run and stopped | The client secret may have expired or the sign-in been revoked. The card still says **Signed in as** in that case, so look in the executor's log for *Teams sign-in expired*. Save a new secret if it expired. If that doesn't help, **Sign out** and **Sign in**. |
+| Nothing runs in *Specific topics* mode | The skill has at least one topic. Open **Decision log**, and try **Test decision model**. |
+| A run starts from the agent's own reply | Add its account to **Ignore messages from**. See [Limits](#limits) if it posts as a bot. |
