@@ -104,10 +104,11 @@ class AcmePlugin(AbstractCodeePlugin):
 | `POLL_SECONDS` | trigger | How often `tick` is called; 60 by default, never below 10. |
 | `data_dir` | plugin | A folder of the plugin's own (`.codee/plugins/<NAME>`), set by Codee, for tokens and polling state. |
 | `SUPPORTS_SIGN_IN` + `sign_in_url()`, `complete_sign_in()`, `signed_in_as()`, `sign_out()` | plugin | Sign in to a service as a user (OAuth). Codee puts **Sign in** on the plugin's card, serves the callback at `/api/oauth/plugins/<NAME>/callback`, and checks the `state` it sent; the plugin exchanges the code and keeps the tokens in `data_dir`. Raise `SignInError` to show a message. |
+| `http_routes(host)` | plugin | Starlette routes at the root of the admin UI, for paths a protocol fixes (`/mcp`, `/.well-known/…`). 404 while the plugin is off. `host` has the admin UI's URL, the plugin's live settings and Codee's context. A route the sign-in proxy lets through must authenticate by itself. |
 
 ### Built-in plugins
 
-Two plugins ship inside `codee-agent`, so there is nothing to install. They are still
+Three plugins ship inside `codee-agent`, so there is nothing to install. They are still
 plugins: each has its card on the Plugins page, its settings and its on/off switch.
 
 - **Microsoft Teams** (`teams`, in `src/codee_teams`): the [Teams trigger](triggers/teams).
@@ -115,6 +116,13 @@ plugins: each has its card on the Plugins page, its settings and its on/off swit
   `/p/files/<path>` on the admin UI, a folder URL as its `index.html`. The folder is
   `.codee/plugins/files` unless its card names another. Off until you turn it on,
   because being on shows the folder to everyone who can open the admin UI.
+- **MCP server** (`mcp`, in `src/codee_mcp`): lets other agents talk to Codee over MCP at
+  `<admin UI>/mcp`, authenticated with OAuth on the same host. Its card shows the URL and
+  the paths a sign-in proxy has to let through. It has one tool, `send_message`
+  (`message`, optional `provider`, `model` and `session_id`), which returns `response` and
+  the `session_id` to continue with. Runs are on the **Runs** page under `mcp`, and the
+  client closing the call stops the agent. Off until you turn it on: an approved client
+  can run agents, which have every permission on the host.
 
 If an older separately installed copy (`codee-teams`) is still in your project, the
 built-in one is used and the copy is ignored; `uv remove codee-teams` when convenient.

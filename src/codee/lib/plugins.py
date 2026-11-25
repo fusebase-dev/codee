@@ -60,7 +60,7 @@ class LoadedPlugins:
 # The plugins shipped inside codee-agent, by NAME: nothing to install, and
 # still plugins (a card on the Plugins page, settings, on/off). An old copy
 # installed on its own (codee-teams before it moved here) is left out.
-BUILT_IN_PLUGINS = ("teams", "files")
+BUILT_IN_PLUGINS = ("teams", "files", "mcp")
 
 
 def _built_in_sources() -> list[PluginSource]:
@@ -79,8 +79,12 @@ def _built_in_sources() -> list[PluginSource]:
         from codee_files.plugin import FilesPlugin
         return FilesPlugin
 
+    def mcp():
+        from codee_mcp.plugin import McpPlugin
+        return McpPlugin
+
     return [PluginSource(load, "codee-agent", version)
-            for load in (teams, files)]
+            for load in (teams, files, mcp)]
 
 
 @lru_cache(maxsize=1)

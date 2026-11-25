@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from codee_agent_abstract.provider import AbstractCodingAgent
@@ -20,7 +21,7 @@ from codee_main_context.logging import DEBUG_ENV_VAR, configure_logging, get_log
 from codee_tasks_abstract.provider import AbstractTasksProvider
 
 from codee.coding_agents import resolve_agent_code
-from codee.lib import claude_key_rotation, runs_db
+from codee.lib import agent_requests, claude_key_rotation, runs_db
 from codee.lib.plugins import (
     PluginScheduler, active_plugins, disabled_plugin_names, load_plugins,
     poll_seconds, sync_plugin_skills)
@@ -296,8 +297,14 @@ def _pull_latest_code() -> bool:
 
 def _run_agent(user_message: str, session_id: str, model: str = "",
                agent_code: str = "", label: str = "", effort: str = "",
-               context_tier: str = "") -> str:
+               context_tier: str = "", *, resume: bool = False,
+               on_job: Callable[[int | None], None] | None = None,
+               on_session: Callable[[str], None] | None = None) -> str:
     """Run the skill's coding agent and return its response text.
+
+    ``resume`` continues ``session_id`` instead of starting it. ``on_job`` is
+    told the live job's id before the agent starts, and ``on_session`` the
+    session the agent opened.
 
     ``model`` comes from the triggering skill's ``model:`` frontmatter; agents
     that can't be told which model to use ignore it. ``effort`` comes from its
@@ -326,6 +333,8 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
         changes nothing. Codex names its own, and both the live dashboard row
         and the run this ends up writing should carry that name instead.
         """
+        if on_session:
+            on_session(agent_session_id)
         if agent_session_id == session_id:
             return
         log.debug("job %s runs under agent session %s",
@@ -335,8 +344,11 @@ def _run_agent(user_message: str, session_id: str, model: str = "",
 
     _job_scope.job_id = job_id
     try:
-        return agent.run(user_message, session_id, model, opened, effort,
-                         context_tier)
+        if on_job:
+            on_job(job_id)
+        run = agent.continue_conversation if resume else agent.run
+        return run(user_message, session_id, model, opened, effort,
+                   context_tier)
     except Exception:
         # The agent exits however SIGTERM makes it exit, usually as a failure.
         # Asked for from the dashboard, that is a kill and not worth a retry.
@@ -572,6 +584,10 @@ def main() -> None:
                  poll_seconds(trigger))
     PluginScheduler(_run_agent, skills_dir(REPO_ROOT), context,
                     lambda: is_paused(context)).start()
+
+    agent_requests.RequestWorker(
+        _run_agent, context, lambda: is_paused(context),
+        _max_parallel_agents).start()
 
     log.info("Starting the main loop (ticking every %ss)...", POLL_INTERVAL)
     log.info("Tasks provider: %s", tasks_provider.describe())

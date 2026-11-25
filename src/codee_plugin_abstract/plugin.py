@@ -162,6 +162,22 @@ class LogEntry:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class PluginHost:
+    """What Codee gives a plugin that serves HTTP routes of its own.
+
+    The callables read live values: a setting saved on the Plugins page applies
+    to the next request.
+    """
+
+    # The admin UI's public origin, without a trailing slash.
+    base_url: Callable[[], str]
+    # The plugin's section of the Settings page.
+    settings: Callable[[], dict[str, str]]
+    # The :class:`CodeeMainContext`, for Codee's database and pause switch.
+    context: object
+
+
 class SignInError(Exception):
     """Signing in could not start or finish; the message is shown to the user."""
 
@@ -273,6 +289,17 @@ class AbstractCodeePlugin(ABC):
         proxy) guards it too.
         """
         return None
+
+    def http_routes(self, host: PluginHost) -> list:
+        """Starlette routes to serve at the root of the admin UI.
+
+        For an endpoint whose path is fixed by a protocol (``/mcp``,
+        ``/.well-known/...``); anything else belongs under ``serve_http``.
+        Asked for once, at startup; while the plugin is off they answer 404.
+        Each is as open as the proxy in front of the admin UI leaves it, so a
+        route the proxy lets through must do its own authentication.
+        """
+        return []
 
     def skills_dir(self) -> Path | None:
         """A directory of ``<slug>/SKILL.md`` skills to install, or None.

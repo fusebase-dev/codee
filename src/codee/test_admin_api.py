@@ -99,3 +99,40 @@ class PluginHttpTest(unittest.TestCase):
         self.plugin.serve_http.side_effect = RuntimeError("boom")
         with self._target((self.plugin, {})):
             self.assertEqual(self.client.get("/p/files/x").status_code, 502)
+
+
+class PluginRoutesTest(unittest.TestCase):
+    """A plugin's own routes: gated by its switch, never falling through."""
+
+    def setUp(self) -> None:
+        from starlette.applications import Starlette
+        from starlette.responses import PlainTextResponse
+        from starlette.routing import Mount, Route
+
+        plugin = unittest.mock.Mock(NAME="acme")
+        plugin.http_routes.return_value = [Route(
+            "/acme", lambda request: PlainTextResponse("acme"),
+            methods=["POST"])]
+        ui = Starlette(routes=[Route(
+            "/{path:path}", lambda request: PlainTextResponse("ui"))])
+        self.client = TestClient(Starlette(routes=[
+            *admin_api._plugin_routes(plugin), Mount("", ui)]))
+        self.plugin = plugin
+
+    def _on(self, on: bool):
+        return patch.object(admin_api._service, "plugin_http_target",
+                            return_value=(self.plugin, {}) if on else None)
+
+    def test_served_while_on_and_404_while_off(self) -> None:
+        with self._on(True):
+            self.assertEqual(self.client.post("/acme").text, "acme")
+        with self._on(False):
+            self.assertEqual(self.client.post("/acme").status_code, 404)
+
+    def test_another_method_does_not_reach_the_ui(self) -> None:
+        with self._on(True):
+            self.assertEqual(self.client.get("/acme").status_code, 405)
+
+    def test_a_plugin_that_fails_has_no_routes(self) -> None:
+        self.plugin.http_routes.side_effect = RuntimeError("boom")
+        self.assertEqual(admin_api._plugin_routes(self.plugin), [])

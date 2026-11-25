@@ -38,6 +38,8 @@ dependencies = [
     "pydantic >= 2.12,<3",       # codee.admin
     "starlette >= 1.3,<2",       # codee.admin_api
     "anyio >= 4,<5",             # codee_database.database
+    # 2.x serves both the 2026-07-28 protocol and the handshake ones before it.
+    "mcp >= 2.3,<3",             # codee_mcp
     # Pinned exactly by reflex itself, so it carries no range of its own here.
     "reflex-base",               # codee.workflow_graph
 ]
@@ -98,6 +100,7 @@ module-name = [
     "codee_tasks_azure_devops",
     "codee_teams",
     "codee_files",
+    "codee_mcp",
 ]
 
 [build-system]

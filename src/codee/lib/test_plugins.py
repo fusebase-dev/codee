@@ -280,7 +280,7 @@ class PluginSchedulerTest(unittest.TestCase):
 
 
 class BuiltInPluginsTest(unittest.TestCase):
-    """Teams and Files ship in codee-agent: loaded with no install."""
+    """Teams, Files and MCP ship in codee-agent: loaded with no install."""
 
     def _load(self, entries):
         plugins_module.load_plugins.cache_clear()
@@ -297,7 +297,7 @@ class BuiltInPluginsTest(unittest.TestCase):
 
     def test_built_ins_load_with_nothing_installed(self) -> None:
         loaded, data_dirs, root = self._load([])
-        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files"])
+        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files", "mcp"])
         self.assertEqual(loaded.packages["teams"][0], "codee-agent")
         self.assertIn("teams-message", loaded.triggers)
         # Same folder as when teams was its own package: tokens stay.
@@ -309,5 +309,5 @@ class BuiltInPluginsTest(unittest.TestCase):
         old.name = "teams"
         old.load.side_effect = AssertionError("must not be imported")
         loaded, _, _ = self._load([old])
-        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files"])
+        self.assertEqual([p.NAME for p in loaded.plugins], ["teams", "files", "mcp"])
         self.assertEqual(loaded.errors, [])

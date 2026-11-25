@@ -15,9 +15,11 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from codee.admin_service import PLUGIN_CALLBACK_PATH, AdminService
 from codee_main_context.logging import get_logger
+from codee_plugin_abstract.plugin import AbstractCodeePlugin, PluginHost
 from codee_tasks_azure_devops.oauth import CALLBACK_PATH
 
 log = get_logger(__name__)
@@ -105,8 +107,44 @@ def plugin_http(request: Request) -> Response:
     return response
 
 
+class _WhileEnabled:
+    """A plugin's route, answering 404 while the plugin is off."""
+
+    def __init__(self, name: str, app: ASGIApp) -> None:
+        self.name = name
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive,
+                       send: Send) -> None:
+        app = self.app
+        if _service.plugin_http_target(self.name) is None:
+            app = PlainTextResponse("Not found", status_code=404)
+        await app(scope, receive, send)
+
+
+def _plugin_routes(plugin: AbstractCodeePlugin) -> list[Route]:
+    host = PluginHost(
+        base_url=_service.admin_base_url,
+        settings=lambda: (_service.plugin_http_target(plugin.NAME)
+                          or (plugin, {}))[1],
+        context=_service.context)
+    try:
+        routes = plugin.http_routes(host)
+    except Exception as exc:
+        # One plugin's bug costs that plugin its routes, never the admin UI.
+        log.exception("Plugin %s has no routes: %s", plugin.NAME, exc)
+        return []
+    # Every method is taken here and refused by the plugin's own route: one
+    # Codee didn't match would fall through to the UI, and a proxy rule that
+    # opens the path would open that with it.
+    return [Route(route.path, _WhileEnabled(plugin.NAME, route.handle))
+            for route in routes]
+
+
 api_app = Starlette(routes=[
     Route(CALLBACK_PATH, azure_devops_callback, methods=["GET"]),
     Route(PLUGIN_CALLBACK_PATH, plugin_sign_in_callback, methods=["GET"]),
     Route(PLUGIN_HTTP_PATH, plugin_http, methods=["GET", "HEAD"]),
+    *(route for plugin in _service.plugins.plugins
+      for route in _plugin_routes(plugin)),
 ])
